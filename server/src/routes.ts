@@ -21,7 +21,7 @@ import type { Logger } from './logger';
 import type { AuthService } from './auth';
 import type { EmailProvider } from './providers/email';
 import type { BankApiProvider } from './providers/bank';
-import { parseStatement } from './providers/bank';
+import { StatementFormatError, parseStatement } from './providers/bank';
 import { badRequest, conflict, notFound, route, type RequestContext, type Reply, type RouteDefinition } from './http';
 import { v } from './validate';
 import {
@@ -125,12 +125,17 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
   const health = route('GET', '/api/health', async () => {
     // Reports what it can prove. A database it cannot reach makes this
     // degraded, with the reason, rather than 200 with a cheerful body.
+    // The driver's message goes to the log, not the body: this route needs no
+    // sign-in, and a connection error can name the database host and user.
     let database: { reachable: boolean; detail?: string };
     try {
       const r = await pool.query<{ one: string }>('SELECT 1::text AS one');
       database = { reachable: r.rows[0]?.one === '1' };
     } catch (err) {
-      database = { reachable: false, detail: err instanceof Error ? err.message : 'unknown' };
+      deps.log.error('health check could not reach the database', {
+        error: err instanceof Error ? err.message : 'unknown',
+      });
+      database = { reachable: false, detail: 'The database could not be reached.' };
     }
 
     const migrations = database.reachable
@@ -385,6 +390,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
         key: ctx.params.key,
         value: input.value,
         note: input.note ?? null,
+        requestedBy: principal.userId,
       });
       await audit(tx, {
         societyId: principal.societyId,
@@ -408,14 +414,20 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     }));
 
     const result = await pool.transaction(async (tx) => {
-      const existing = await tx.query<{ value: string; approved_by: string | null }>(
-        'SELECT value::text, approved_by FROM society_settings WHERE society_id = $1 AND key = $2',
+      const existing = await tx.query<{ value: string; approved_by: string | null; requested_by: string | null }>(
+        `SELECT value::text, approved_by, requested_by FROM society_settings
+          WHERE society_id = $1 AND key = $2`,
         [principal.societyId, ctx.params.key],
       );
       const row = existing.rows[0];
       if (row === undefined) throw notFound(`Setting ${ctx.params.key}`);
       if (row.approved_by === principal.userId) {
         throw conflict('That setting is already approved by this account.');
+      }
+      if (row.requested_by === principal.userId) {
+        // Maker-checker: the person who typed the value cannot also be the
+        // person who says the committee agreed to it.
+        throw conflict('A setting has to be approved by someone other than the person who set it.');
       }
       await tx.query(
         `UPDATE society_settings SET approved_by = $1, approved_on = $2, note = COALESCE($3, note)
@@ -474,10 +486,11 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     const result = await pool.transaction(async (tx) => {
       const inserted = await tx.query<{ id: string }>(
         `INSERT INTO maintenance_rates
-           (society_id, rate_paise_per_sqft, area_basis, effective_from, authority)
-         VALUES ($1,$2,$3,$4,$5)
+           (society_id, rate_paise_per_sqft, area_basis, effective_from, authority, requested_by)
+         VALUES ($1,$2,$3,$4,$5,$6)
          RETURNING id`,
-        [principal.societyId, input.paisePerSqFt, input.basis, input.effectiveFrom, input.authority],
+        [principal.societyId, input.paisePerSqFt, input.basis, input.effectiveFrom, input.authority,
+         principal.userId],
       );
       await audit(tx, {
         societyId: principal.societyId,
@@ -506,14 +519,17 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     const input = ctx.body(v.object({ on: v.isoDate() }));
 
     await pool.transaction(async (tx) => {
-      const found = await tx.query<{ effective_from: string; approved_by: string | null }>(
-        `SELECT effective_from::text, approved_by FROM maintenance_rates
+      const found = await tx.query<{ effective_from: string; approved_by: string | null; requested_by: string | null }>(
+        `SELECT effective_from::text, approved_by, requested_by FROM maintenance_rates
           WHERE id = $1 AND society_id = $2`,
         [ctx.params.id, principal.societyId],
       );
       const rate = found.rows[0];
       if (rate === undefined) throw notFound('That rate');
       if (rate.approved_by !== null) throw conflict('That rate is already approved.');
+      if (rate.requested_by === principal.userId) {
+        throw conflict('A rate has to be approved by someone other than the person who entered it.');
+      }
 
       await tx.query(
         'UPDATE maintenance_rates SET approved_by = $1, approved_on = $2 WHERE id = $3',
@@ -1498,7 +1514,15 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
       content: v.text({ max: 900_000 }),
     }));
 
-    const parsed = parseStatement(input.format, input.content);
+    let parsed: ReturnType<typeof parseStatement>;
+    try {
+      parsed = parseStatement(input.format, input.content);
+    } catch (err) {
+      // What is wrong with the file is the uploader's to fix, and the message
+      // says what; it is not a server fault.
+      if (err instanceof StatementFormatError) throw badRequest(err.message);
+      throw err;
+    }
     const digest = sha256(input.content);
 
     const result = await pool.transaction(async (tx) => {
@@ -2256,7 +2280,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
               max_attempts::text, next_attempt_at::text, last_error, result::text,
               finished_at::text
          FROM scheduled_jobs
-        WHERE society_id = $1 OR society_id IS NULL
+        WHERE society_id = $1
         ORDER BY scheduled_for DESC
         LIMIT 200`,
       [principal.societyId],
@@ -2281,19 +2305,39 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
   });
 
   const scheduleJob = route('POST', '/api/jobs', async (ctx) => {
-    const principal = need(ctx, 'billing.run');
     const input = ctx.body(v.object({
       kind: v.enumOf(['monthly-billing', 'due-date-conversion', 'notification-dispatch'] as const),
       runKey: v.string({ min: 3, max: 120 }),
       scheduledFor: v.isoDate(),
       payload: v.json({ maxBytes: 4000 }),
     }));
+    // A job does what its kind does, so it needs the permission that work
+    // needs when done by hand. Scheduling a conversion with `billing.run`
+    // would otherwise turn proformas into tax invoices without the treasurer.
+    const principal = need(ctx, input.kind === 'due-date-conversion' ? 'billing.convert' : 'billing.run');
+    const payload = input.payload;
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw badRequest('payload must be an object.');
+    }
+    const fields = payload as Record<string, unknown>;
+    for (const name of ['on', 'issuedOn'] as const) {
+      const value = fields[name];
+      if (value === undefined) continue;
+      if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        throw badRequest(`payload.${name} must be a date as YYYY-MM-DD.`);
+      }
+    }
+    if (input.kind === 'due-date-conversion' && typeof fields.on === 'string' && fields.on > today()) {
+      // Conversion is for bills whose due date has passed. A date in the
+      // future would convert bills that are not yet due.
+      throw badRequest('payload.on cannot be after today.');
+    }
 
     const result = await pool.transaction(async (tx) => {
       const inserted = await tx.query<{ id: string }>(
         `INSERT INTO scheduled_jobs (society_id, kind, run_key, scheduled_for, payload)
          VALUES ($1,$2,$3,$4::date,$5::jsonb)
-         ON CONFLICT (kind, run_key) DO NOTHING
+         ON CONFLICT (society_id, kind, run_key) DO NOTHING
          RETURNING id`,
         [
           principal.societyId, input.kind, input.runKey, input.scheduledFor,

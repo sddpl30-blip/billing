@@ -108,7 +108,12 @@ export function createApp(routes: readonly RouteDefinition[], deps: AppDependenc
       let ok = true;
       for (const [i, segment] of route.segments.entries()) {
         if (segment.startsWith(':')) {
-          params[segment.slice(1)] = decodeURIComponent(parts[i]);
+          try {
+            params[segment.slice(1)] = decodeURIComponent(parts[i]);
+          } catch {
+            // A stray '%' is a malformed request, not a server fault.
+            throw new HttpError(400, 'The request path is not valid.');
+          }
         } else if (segment !== parts[i]) {
           ok = false;
           break;
@@ -143,17 +148,20 @@ export function createApp(routes: readonly RouteDefinition[], deps: AppDependenc
   /**
    * The caller's address.
    *
-   * `X-Forwarded-For` is a list, appended to by each hop; the left-most entry
-   * is the original client and the ones after it are proxies. Only the
-   * left-most is of any use for rate limiting, and only where the header can
-   * be believed at all — see `config.trustProxy`.
+   * `X-Forwarded-For` is a list, appended to by each hop. Everything to the
+   * left of the last entry arrived from the client and can say anything it
+   * likes; only the right-most entry was written by the proxy in front of us,
+   * and only where that proxy can be believed at all — see
+   * `config.trustProxy`. Taking the left-most would let every request claim a
+   * fresh address and walk straight past the rate limits.
    */
   const addressOf = (req: IncomingMessage): string => {
     if (deps.config.trustProxy) {
       const forwarded = req.headers['x-forwarded-for'];
       const list = Array.isArray(forwarded) ? forwarded.join(',') : forwarded;
-      const first = (list ?? '').split(',')[0].trim();
-      if (first !== '') return first;
+      const entries = (list ?? '').split(',').map(e => e.trim()).filter(e => e !== '');
+      const last = entries[entries.length - 1];
+      if (last !== undefined) return last;
     }
     return req.socket?.remoteAddress ?? 'unknown';
   };
@@ -228,6 +236,28 @@ export function createApp(routes: readonly RouteDefinition[], deps: AppDependenc
       // is readable by the site's own script and not by another origin, so a
       // cross-site form post can send the cookie but cannot set the header.
       const isWrite = method !== 'GET' && method !== 'HEAD';
+      if (isWrite && found.route.csrfExempt === true && typeof origin === 'string') {
+        // The sign-in routes cannot use the double-submit check — there is no
+        // session to hold a token yet — but a browser always names the page
+        // that sent a cross-site POST. Refusing foreign origins stops another
+        // site from signing a visitor into an account of the attacker's
+        // choosing (login CSRF). A request with no Origin is not a browser
+        // form and is let through.
+        let sameSite = origin === deps.config.allowedOrigin;
+        if (!sameSite) {
+          // An Origin is scheme://host[:port]; compare its authority with the
+          // Host this request was sent to.
+          const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/]+)$/i.exec(origin)?.[1];
+          sameSite = authority !== undefined && authority === req.headers.host;
+        }
+        if (!sameSite) {
+          send({
+            status: 403,
+            body: { error: 'csrf_failed', message: 'Sign-in is only accepted from this site.' },
+          });
+          return;
+        }
+      }
       if (isWrite && found.route.csrfExempt !== true) {
         const header = req.headers['x-csrf-token'];
         const headerValue = Array.isArray(header) ? header[0] : header;

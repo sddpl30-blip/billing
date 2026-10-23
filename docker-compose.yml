@@ -44,7 +44,7 @@ services:
     environment:
       # Set DATABASE_URL and DIRECT_URL in the environment to migrate a hosted
       # database; the defaults point at the local-db profile's container.
-      DATABASE_URL: ${DATABASE_URL:-postgresql://societybooks:${POSTGRES_PASSWORD:-local-development-only}@db:5432/societybooks}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://societybooks:${POSTGRES_PASSWORD:-local-development-only}@db:5432/societybooks?sslmode=disable}
       # Migrations take session-level locks a pooler does not hold, so this is
       # the direct endpoint.
       DIRECT_URL: ${DIRECT_URL:-}
@@ -80,7 +80,7 @@ services:
       # The one origin allowed to call the API with cookies. With the web
       # container in front of it this is where a browser loads the app from.
       ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:8080}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://societybooks:${POSTGRES_PASSWORD:-local-development-only}@db:5432/societybooks}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://societybooks:${POSTGRES_PASSWORD:-local-development-only}@db:5432/societybooks?sslmode=disable}
       # Required: the server refuses to start in production without it.
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET, e.g. openssl rand -hex 32}
       SECURE_COOKIES: ${SECURE_COOKIES:-true}

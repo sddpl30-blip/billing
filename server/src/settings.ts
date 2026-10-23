@@ -67,13 +67,16 @@ export async function writeSetting(
     approvedBy?: string | null;
     approvedOn?: string | null;
     note?: string | null;
+    /** Who proposed the value. Whoever approves it must be someone else. */
+    requestedBy?: string | null;
   },
 ): Promise<void> {
   await tx.query(
-    `INSERT INTO society_settings (society_id, key, value, approved_by, approved_on, note, updated_at)
-     VALUES ($1,$2,$3::jsonb,$4,$5,$6, now())
+    `INSERT INTO society_settings (society_id, key, value, approved_by, approved_on, note, requested_by, updated_at)
+     VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7, now())
      ON CONFLICT (society_id, key) DO UPDATE
         SET value = EXCLUDED.value,
+            requested_by = EXCLUDED.requested_by,
             -- A changed value drops the old sign-off rather than inheriting it:
             -- approving 5% does not approve 18%.
             approved_by = EXCLUDED.approved_by,
@@ -87,6 +90,7 @@ export async function writeSetting(
       input.approvedBy ?? null,
       input.approvedOn ?? null,
       input.note ?? null,
+      input.requestedBy ?? null,
     ],
   );
 }

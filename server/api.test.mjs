@@ -321,6 +321,30 @@ await check('a one-time code request says the same thing either way', async () =
   equal(known.body.message, unknown.body.message, 'the two messages');
 });
 
+await check('a wrong one-time code is counted, even though the attempt is refused', async () => {
+  const email = `auditor@${domain}`;
+  equal((await anonymous.post('/api/auth/request-code', { email })).status, 200, 'code issued');
+  for (let i = 0; i < 2; i++) {
+    const r = await anonymous.post('/api/auth/verify-code', { email, code: '000000' });
+    equal(r.status, 401, `wrong code ${i + 1}`);
+  }
+  // Counted on the pool, outside the transaction the refusal rolls back.
+  const attempts = psql(
+    `SELECT c.attempts FROM login_codes c JOIN users u ON u.id = c.user_id
+      WHERE u.email = '${email}' AND c.consumed_at IS NULL
+      ORDER BY c.issued_at DESC LIMIT 1;`,
+  );
+  equal(attempts.out, '2', 'attempts recorded');
+});
+
+await check('sign-in from another site is refused', async () => {
+  const r = await anonymous.post('/api/auth/password', {
+    email: `auditor@${domain}`, password: PASSWORD,
+  }, { Origin: 'https://attacker.example' });
+  equal(r.status, 403, 'status');
+  equal(r.body.error, 'csrf_failed', 'error');
+});
+
 // --- CSRF ------------------------------------------------------------------
 
 suite('CSRF');
@@ -1600,8 +1624,28 @@ await check('and is abandoned with its last error once the attempts run out', as
     't', 'last_error is kept');
 });
 
+await check('a manager cannot schedule a conversion, which is the treasurer\'s call', async () => {
+  const r = await manager.post('/api/jobs', {
+    kind: 'due-date-conversion',
+    runKey: `mgr-convert-${stamp}`,
+    scheduledFor: '2026-08-20',
+    payload: { on: '2026-08-20' },
+  });
+  equal(r.status, 403, 'status');
+});
+
+await check('a conversion cannot be scheduled for a date still to come', async () => {
+  const r = await treasurer.post('/api/jobs', {
+    kind: 'due-date-conversion',
+    runKey: `future-convert-${stamp}`,
+    scheduledFor: '2026-08-20',
+    payload: { on: '2099-12-31' },
+  });
+  equal(r.status, 400, 'status');
+});
+
 await check('the due-date conversion job converts what is past due', async () => {
-  await manager.post('/api/jobs', {
+  await treasurer.post('/api/jobs', {
     kind: 'due-date-conversion',
     runKey: `aug-convert-${stamp}`,
     scheduledFor: '2026-08-20',
@@ -1770,6 +1814,17 @@ await check('a tax invoice renders as a PDF', async () => {
   matches(invoicePdfBytes.subarray(0, 8).toString('latin1'), /^%PDF-1\.4/, 'the file header');
   matches(invoicePdfBytes.subarray(-6).toString('latin1'), /%%EOF/, 'the trailer');
   truthy(invoicePdfBytes.length > 1200, `a plausible size, got ${invoicePdfBytes.length}`);
+});
+
+await check('a resident cannot regenerate the official copy of a document', async () => {
+  const documents = await manager.get('/api/billing/documents?period=Jul%202026');
+  const own = documents.body.documents.find(d => d.flatNo === 'B-204' && d.state !== 'draft');
+  truthy(own, 'a printable document for B-204');
+  const response = await fetch(
+    `${base}/api/billing/documents/${own.id}/pdf?regenerate=true`,
+    { headers: { Cookie: [...resident.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') } },
+  );
+  equal(response.status, 409, 'status');
 });
 
 await check('the PDF carries the figures, not placeholders', async () => {
@@ -2036,6 +2091,20 @@ await check('the queue is visible with what each delivery is evidenced by', asyn
 suite('administration');
 
 let newUserId = null;
+
+await check('nobody can change their own roles', async () => {
+  const r = await secretary.post(`/api/users/${userOf('secretary').id}/roles`, {
+    roles: ['secretary', 'auditor'],
+  });
+  equal(r.status, 409, 'status');
+});
+
+await check('secretary and treasurer cannot be held by one account', async () => {
+  const r = await secretary.post(`/api/users/${userOf('auditor').id}/roles`, {
+    roles: ['secretary', 'treasurer'],
+  });
+  equal(r.status, 400, 'status');
+});
 
 await check('only the secretary may list accounts', async () => {
   equal((await treasurer.get('/api/users')).status, 403, 'treasurer');
@@ -2406,6 +2475,11 @@ await check('an unknown path is 404', async () => {
 await check('a known path with the wrong verb is 405', async () => {
   const r = await treasurer.post('/api/health');
   equal(r.status, 405, 'status');
+});
+
+await check('a malformed percent-escape in the path is 400, not 500', async () => {
+  const r = await treasurer.get('/api/billing/documents/%E0%A4%A/pdf');
+  equal(r.status, 400, 'status');
 });
 
 await check('a body that is not JSON is 400', async () => {

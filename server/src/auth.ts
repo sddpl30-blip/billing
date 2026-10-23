@@ -77,6 +77,25 @@ export class AuthService {
       }
     }
 
+    try {
+      await this.issueCode(input.email);
+    } catch (err) {
+      // A delivery failure is logged, not reported. Answering a known address
+      // with an error and an unknown one with the usual message would tell a
+      // caller which addresses belong to members. The transaction has already
+      // rolled back, so no usable code is left behind.
+      this.log.error('one-time code could not be delivered', {
+        error: err instanceof Error ? err.name : 'unknown',
+      });
+      return { accepted: true, message: sameMessage, delivered: false };
+    }
+
+    return { accepted: true, message: sameMessage, delivered: this.otp.delivers };
+  }
+
+  /** Mints, stores and sends a code; throws if it could not be delivered. */
+  private async issueCode(email: string): Promise<void> {
+    const input = { email };
     await this.pool.transaction(async (tx) => {
       const found = await tx.query<{ id: string }>(
         'SELECT id FROM users WHERE email = $1 AND is_active = true LIMIT 1',
@@ -126,8 +145,6 @@ export class AuthService {
         throw err;
       }
     });
-
-    return { accepted: true, message: sameMessage, delivered: this.otp.delivers };
   }
 
   /** Exchanges a code for a session. */
@@ -146,6 +163,31 @@ export class AuthService {
         decision.retryAfterSeconds,
       );
     }
+    // A second bucket per address, so rotating source addresses does not buy
+    // an attacker more guesses at one member's code.
+    const perEmail = await consumeRateLimit(this.pool, {
+      subject: input.email, action: 'login:email',
+      limit: this.config.rateLimit.loginPerHour,
+      windowMinutes: this.config.rateLimit.windowMinutes,
+      secretKey: this.config.secretKey,
+    });
+    if (!perEmail.allowed) {
+      throw new RateLimitError(
+        'Too many sign-in attempts. Try again shortly.',
+        perEmail.retryAfterSeconds,
+      );
+    }
+
+    // The attempt counter and the burn are written on the pool, not on `tx`:
+    // the refusal that follows them throws, the transaction rolls back, and an
+    // update made inside it would be undone along with everything else —
+    // leaving a code that can be guessed at without limit.
+    const countFailure = (codeId: string) => this.pool.query(
+      'UPDATE login_codes SET attempts = attempts + 1 WHERE id = $1', [codeId],
+    );
+    const burn = (codeId: string) => this.pool.query(
+      'UPDATE login_codes SET consumed_at = now() WHERE id = $1', [codeId],
+    );
 
     return this.pool.transaction(async (tx) => {
       const found = await tx.query<{ id: string; society_id: string; email: string }>(
@@ -169,15 +211,12 @@ export class AuthService {
       if (candidate === undefined) refuse();
 
       if (Number(candidate.attempts) >= this.config.loginCodeMaxAttempts) {
-        await tx.query('UPDATE login_codes SET consumed_at = now() WHERE id = $1', [candidate.id]);
+        await burn(candidate.id);
         throw new AuthError('That code has been tried too many times. Request a new one.');
       }
 
       if (!verifyCode(input.code, candidate.code_hash, this.config.secretKey)) {
-        await tx.query(
-          'UPDATE login_codes SET attempts = attempts + 1 WHERE id = $1',
-          [candidate.id],
-        );
+        await countFailure(candidate.id);
         refuse();
       }
 

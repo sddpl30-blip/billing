@@ -20,7 +20,7 @@ import {
 import { v } from './validate';
 import { hashPassword } from './security';
 import {
-  ALL_ROLES, isValidRole, permissionsOf, requireFlatAccess, requirePermission,
+  ALL_ROLES, hasPermission, isValidRole, permissionsOf, requireFlatAccess, requirePermission,
   type Permission, type Principal, type Role,
 } from './rbac';
 import { audit } from './audit';
@@ -95,12 +95,21 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         );
       }
 
+      // Regenerating writes a new official copy that later reprints serve, so
+      // it is staff work. A resident gets the copy on file.
+      const regenerate = ctx.query.get('regenerate') === 'true';
+      if (regenerate && !hasPermission(principal, 'invoice.read.any')) {
+        throw conflict('Only the office can regenerate a document. Ask for a fresh copy.');
+      }
+      const asAt = ctx.query.get('asAt') ?? today();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(asAt)) throw badRequest('asAt must be YYYY-MM-DD.');
+
       const generated = await generateDocument(tx, {
         societyId: principal.societyId,
         kind: document.state === 'tax-invoice' ? 'tax-invoice' : 'proforma',
         documentId: ctx.params.id,
-        asAt: ctx.query.get('asAt') ?? today(),
-        reprint: ctx.query.get('regenerate') !== 'true',
+        asAt,
+        reprint: !regenerate,
       });
       return { generated, proformaNo: document.proforma_no };
     });
@@ -136,7 +145,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         kind: 'receipt',
         paymentId: ctx.params.id,
         asAt: today(),
-        reprint: ctx.query.get('regenerate') !== 'true',
+        reprint: !(ctx.query.get('regenerate') === 'true' && hasPermission(principal, 'payment.read.any')),
       });
       return { generated, receiptNo: payment.receipt_no };
     });
@@ -611,6 +620,18 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         'An account cannot hold manager together with treasurer or secretary: maker and ' +
         'checker would be the same person.',
       );
+    }
+    if (roles.includes('secretary') && roles.includes('treasurer')) {
+      // The secretary enters rates and settings and the treasurer approves
+      // them; one account holding both could sign off its own figures.
+      throw badRequest(
+        'An account cannot hold secretary together with treasurer: the person who sets a ' +
+        'rate and the person who approves it would be the same.',
+      );
+    }
+    if (ctx.params.id === principal.userId) {
+      // Otherwise whoever manages users can grant themselves anything.
+      throw conflict('You cannot change your own roles. Ask another committee member.');
     }
 
     await pool.transaction(async (tx) => {

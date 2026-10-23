@@ -239,9 +239,14 @@ export class PgConnection {
     plain.setNoDelay(true);
 
     // Over a unix socket there is nothing to encrypt — the bytes never leave
-    // the machine — so TLS defaults off there and on everywhere else.
+    // the machine — so TLS defaults off there. To this machine's loopback
+    // 'prefer' is enough; to any other host it is 'require', because 'prefer'
+    // quietly falls back to plain text if the server (or someone in the
+    // middle) declines TLS.
+    const host = this.options.host;
+    const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
     const mode: SslMode = this.options.sslMode
-      ?? (isSocketDir ? 'disable' : 'prefer');
+      ?? (isSocketDir ? 'disable' : loopback ? 'prefer' : 'require');
 
     this.socket = mode === 'disable'
       ? plain
@@ -1145,8 +1150,10 @@ function sslFromParameters(
   if (sslmode !== null && sslmode !== '') out.sslMode = asSslMode(sslmode);
   else if (ssl === 'true') out.sslMode = 'require';
   else if (!host.startsWith('/')) {
-    // No sslmode given, over TCP. libpq's own default is 'prefer'.
-    out.sslMode = 'prefer';
+    // No sslmode given, over TCP. libpq's own default is 'prefer', which falls
+    // back to plain text when TLS is refused; that is tolerable on loopback and
+    // not across a network, where it is 'require'.
+    out.sslMode = ['localhost', '127.0.0.1', '::1'].includes(host) ? 'prefer' : 'require';
   }
 
   const binding = parameters.get('channel_binding');
@@ -1182,7 +1189,8 @@ export function describeConnection(options: ConnectionOptions): Record<string, u
     user: options.user,
     // Never the password, and never the URL it came from.
     passwordConfigured: options.password !== undefined && options.password !== '',
-    sslMode: options.sslMode ?? (options.host.startsWith('/') ? 'disable' : 'prefer'),
+    sslMode: options.sslMode ?? (options.host.startsWith('/') ? 'disable'
+      : ['localhost', '127.0.0.1', '::1'].includes(options.host) ? 'prefer' : 'require'),
     channelBinding: options.channelBinding ?? 'prefer',
     pooledHostname: looksPooled(options.host),
   };

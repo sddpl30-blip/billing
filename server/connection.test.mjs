@@ -71,11 +71,16 @@ await check('a hosted URL is parsed, with its TLS parameters', async () => {
   equal(options.channelBinding, 'require', 'channelBinding');
 });
 
-await check('TLS defaults to prefer over TCP and disable over a socket', async () => {
+await check('TLS defaults to require over a network, prefer on loopback, disable over a socket', async () => {
   equal(
     connectionFromEnv({ DATABASE_URL: 'postgresql://u:p@db.example.org/books' }).sslMode,
+    'require',
+    'no sslmode, to another host',
+  );
+  equal(
+    connectionFromEnv({ DATABASE_URL: 'postgresql://u:p@127.0.0.1/books' }).sslMode,
     'prefer',
-    'no sslmode, over TCP',
+    'no sslmode, on loopback',
   );
   equal(
     connectionFromEnv({
