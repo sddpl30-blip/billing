@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Mail, ArrowRight, ShieldCheck, RefreshCw, ChevronLeft, Lock } from 'lucide-react';
 import { ThemeSwitcher } from './ThemeSwitcher';
+import { apiBase } from '../api/session';
 
 /**
  * What the server can do for sign-in.
@@ -24,6 +25,28 @@ interface LoginScreenProps {
 
 type Step = 'email' | 'otp' | 'password';
 
+/** What the server's Google callback means by each reason it sends back. */
+const GOOGLE_PROBLEMS: Record<string, string> = {
+  google_not_registered:
+    'That Google account is not registered with the society. Use the Google account whose e-mail the office has on record, or ask the office to add it.',
+  google_unverified: 'Google did not confirm that e-mail address, so it cannot be used to sign in.',
+  google_cancelled: 'Google sign-in was cancelled.',
+  google_state: 'That sign-in attempt expired or did not start here. Please try again.',
+  google_failed: 'Google could not be reached to finish signing in. Please try again.',
+  google_rate_limited: 'Too many sign-in attempts. Try again shortly.',
+  google_not_configured: 'Sign in with Google is not set up on this site.',
+};
+
+/** Google's "G", in its own colours, for the sign-in button. */
+const GoogleMark = () => (
+  <svg className="w-4 h-4" viewBox="0 0 48 48" aria-hidden="true">
+    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+  </svg>
+);
+
 const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => {
@@ -35,8 +58,41 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
   const [serverNote, setServerNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+
+  // Whether the server offers Google sign-in, and what it said if a Google
+  // attempt was just refused (it sends the reason back in ?login_error=).
+  useEffect(() => {
+    if (server === undefined) return;
+    let live = true;
+    void fetch(`${apiBase()}/api/auth/google/status`, { credentials: 'include' })
+      .then(r => (r.ok ? r.json() : { enabled: false }))
+      .then((b: { enabled?: unknown }) => { if (live) setGoogleEnabled(b.enabled === true); })
+      .catch(() => undefined);
+    const params = new URLSearchParams(window.location.search);
+    const problem = params.get('login_error');
+    if (problem !== null) {
+      setError(GOOGLE_PROBLEMS[problem] ?? 'Google sign-in did not complete. Please try again.');
+      params.delete('login_error');
+      const rest = params.toString();
+      window.history.replaceState(null, '', `${window.location.pathname}${rest === '' ? '' : `?${rest}`}${window.location.hash}`);
+    }
+    return () => { live = false; };
+  }, [server]);
 
   const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+
+  // With Google offered to members, the e-mail form is the committee's, and
+  // the committee signs in with a password.
+  const continueWithPassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (!isValidEmail(email)) {
+      setError('Please enter a valid email address.');
+      return;
+    }
+    setStep('password');
+  };
 
   const handleSendOtp = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -174,11 +230,33 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
               </button>
             </form>
           ) : step === 'email' ? (
-            <form onSubmit={handleSendOtp}>
+            <form onSubmit={googleEnabled ? continueWithPassword : handleSendOtp}>
               <h1 className="text-lg font-extrabold text-[var(--mv-ink)]">Member Login</h1>
-              <p className="text-xs text-[var(--mv-muted)] mt-1 mb-5">
-                Enter your registered email to receive a one-time password.
-              </p>
+              {googleEnabled ? (
+                <>
+                  <p className="text-xs text-[var(--mv-muted)] mt-1 mb-4">
+                    Members: sign in with the Google account whose e-mail the society has on record.
+                  </p>
+                  {/* A full navigation, not a fetch: Google's consent screen
+                      cannot be shown inside the page. */}
+                  <a
+                    href={`${apiBase()}/api/auth/google/start`}
+                    className="w-full py-3 bg-white text-[#1F1F1F] border border-[#747775] rounded-xl text-sm font-semibold flex items-center justify-center gap-2.5 hover:bg-[#F8F9FA] transition-colors"
+                  >
+                    <GoogleMark /> Sign in with Google
+                  </a>
+                  <div className="my-5 flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider text-[var(--mv-muted)]" aria-hidden="true">
+                    <span className="h-px flex-1 bg-[var(--mv-border)]" /> Committee <span className="h-px flex-1 bg-[var(--mv-border)]" />
+                  </div>
+                  <p className="text-xs text-[var(--mv-muted)] -mt-2 mb-4">
+                    Committee members can also sign in with their e-mail and password.
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-[var(--mv-muted)] mt-1 mb-5">
+                  Enter your registered email to receive a one-time password.
+                </p>
+              )}
 
               <label htmlFor="login-email" className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Email Address</label>
               <div className="mt-1.5 flex items-center gap-2 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl px-3 focus-within:border-[var(--mv-accent)] transition-colors">
@@ -203,10 +281,18 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 disabled={busy}
                 className="mt-5 w-full py-3 bg-[var(--mv-accent)] text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 hover:opacity-90 active:scale-[0.99] transition-all disabled:opacity-60"
               >
-                {busy ? 'Working\u2026' : 'Send OTP'} <ArrowRight className="w-4 h-4" />
+                {busy ? 'Working\u2026' : googleEnabled ? 'Continue with password' : 'Send OTP'} <ArrowRight className="w-4 h-4" />
               </button>
 
-              {server !== undefined && (
+              {server !== undefined && (googleEnabled ? (
+                <button
+                  type="button"
+                  onClick={() => handleSendOtp()}
+                  className="mt-3 w-full text-[11px] font-bold text-[var(--mv-muted)] hover:text-[var(--mv-accent)] flex items-center justify-center gap-1 transition-colors"
+                >
+                  <Mail className="w-3 h-3" /> Send a one-time code instead
+                </button>
+              ) : (
                 <button
                   type="button"
                   onClick={() => { setError(''); setStep('password'); }}
@@ -214,7 +300,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 >
                   <Lock className="w-3 h-3" /> Use a password instead
                 </button>
-              )}
+              ))}
             </form>
           ) : (
             <form onSubmit={handleVerify}>

@@ -73,6 +73,12 @@ export interface Config {
    * once a production society exists, but should be removed after use.
    */
   readonly setupToken: string | null;
+  /**
+   * Sign in with Google, for members whose e-mail is already on file. Null
+   * when GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are not both set; the
+   * button is then not offered.
+   */
+  readonly google: GoogleSignIn | null;
   /** 'vercel' when running as a serverless function. Reporting only. */
   readonly platform: 'node' | 'vercel';
 }
@@ -99,6 +105,15 @@ function integer(
     throw new ConfigError(`${key} must be a whole number between ${min} and ${max}, got "${raw}"`);
   }
   return n;
+}
+
+export interface GoogleSignIn {
+  readonly clientId: string;
+  readonly clientSecret: string;
+  /** Must match an Authorized redirect URI on the Google OAuth client exactly. */
+  readonly redirectUri: string;
+  readonly authUrl: string;
+  readonly tokenUrl: string;
 }
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
@@ -203,11 +218,30 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     );
   }
 
+  const googleId = (env.GOOGLE_CLIENT_ID ?? '').trim();
+  const googleSecret = (env.GOOGLE_CLIENT_SECRET ?? '').trim();
+  if ((googleId === '') !== (googleSecret === '')) {
+    throw new ConfigError(
+      'Sign in with Google needs both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET, or neither.',
+    );
+  }
+  const allowedOrigin = (env.ALLOWED_ORIGIN ?? 'http://localhost:3600').replace(/\/$/, '');
+  const google: GoogleSignIn | null = googleId === '' ? null : {
+    clientId: googleId,
+    clientSecret: googleSecret,
+    redirectUri: (env.GOOGLE_REDIRECT_URI ?? '').trim() || `${allowedOrigin}/api/auth/google/callback`,
+    // Overridable only outside production, so the test suite can stand in for
+    // Google; a production deployment always talks to Google itself.
+    authUrl: (!isProduction && env.GOOGLE_OAUTH_AUTH_URL) || 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: (!isProduction && env.GOOGLE_OAUTH_TOKEN_URL) || 'https://oauth2.googleapis.com/token',
+  };
+
   return {
     mode,
     trustProxy,
     cronSecret: cronSecret === '' ? null : cronSecret,
     setupToken: setupToken === '' ? null : setupToken,
+    google,
     platform: onVercel ? 'vercel' : 'node',
     // 0 is allowed: it asks the operating system for a free port, which is
     // how the integration tests start a real server without picking one.

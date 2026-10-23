@@ -19,6 +19,7 @@ import { createAdminRoutes } from './routesAdmin';
 import { createCronRoutes } from './routesCron';
 import { createSetupRoutes } from './routesSetup';
 import { createScheduleRoutes } from './routesSchedule';
+import { createGoogleRoutes } from './routesGoogle';
 import { createOnboardingRoutes } from './routesOnboarding';
 import { AuthService } from './auth';
 import { resolveOtpProvider, type OtpProvider } from './providers/otp';
@@ -97,6 +98,7 @@ export function buildApp(
     ...createCronRoutes({ pool, config, log, email }),
     ...createSetupRoutes({ pool, config, log }),
     ...createScheduleRoutes({ pool }),
+    ...createGoogleRoutes({ config, log, auth }),
   ];
 
   const { server, handler } = createApp(routes, {

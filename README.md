@@ -88,6 +88,7 @@ reading invented numbers and believing them is the failure worth preventing.
 | Payment checkout | Not implemented. Receipts record money the association has already received; nothing here takes a payment. |
 | Banking | Statement import works from a CSV or MT940 file. There is no bank API connection, and no column anywhere in the schema for a bank credential. |
 | GST / TDS filing | The registers and summaries are built and cross-checked against the ledger. Nothing is filed: there is no GSTN or TRACES connection. |
+| Sign in with Google | Implemented for members already on file (no sign-up); off until `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set. See `docs/GOOGLE-SIGN-IN.md`. |
 | Google Sheets sync | Not implemented. Export produces a JSON file; invoices and receipts produce PDFs. |
 
 The GST and TDS rates are society settings with an approval flag, not constants

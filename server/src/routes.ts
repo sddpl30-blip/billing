@@ -183,6 +183,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
           email: deps.email.name,
           emailDelivers: deps.email.delivers,
           bankApi: deps.bankApi.name,
+          google: config.google !== null,
         },
         pool: pool.stats,
       },
