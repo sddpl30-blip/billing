@@ -204,7 +204,7 @@ flat — a new owner does not inherit it and it is not cleared.
 
 | | |
 | --- | --- |
-| `GET`/`POST /api/vendors` | `vendor.manage`. Last four digits and IFSC only; there is no column for anything more. |
+| `GET`/`POST /api/vendors` | `report.read` to list, `vendor.manage` to add. Last four digits and IFSC only; there is no column for anything more. |
 | `POST /api/vendors/:id/bills` | Enters a bill for approval and computes the withholding — 2% under 194C for a company, 1% for an individual or HUF, 10% under 194J and 194I. A lower-deduction certificate is an explicit `tdsRateBps` override, recorded on the bill. |
 | `POST /api/vendor-bills/:id/approve` | `vendor.bill.approve`. Posts nothing. |
 | `POST /api/vendor-bills/:id/book` | `vendor.bill.book`. Expense at gross, payable net of tax, TDS withheld. |
@@ -220,7 +220,7 @@ movement all appeared the moment somebody clicked Approve.
 | | |
 | --- | --- |
 | `GET /api/bank-accounts` | With each account's ledger balance. |
-| `POST /api/bank/imports` | `bank.import`. CSV or MT940 text. The same file twice is refused on a content hash; a line already seen is skipped on a dedupe key. Posts nothing. |
+| `POST /api/bank/imports` | `bank.import` (manager). CSV or MT940 text. The same file twice is refused on a content hash; a line already seen is skipped on a dedupe key. Posts nothing. |
 | `GET /api/bank/transactions` | `?state=`. Each unmatched line comes with a suggestion — same amount within three days, not already matched — labelled as a suggestion. |
 | `POST /api/bank/transactions/:id/match` | `bank.match`. One of `paymentId`, `vendorPaymentId` or `suspenseReason`. A match whose amount disagrees is refused. |
 | `POST /api/bank/reconciliations` | `bank.reconcile`. Signed off only when the difference is zero, which the database also enforces. |

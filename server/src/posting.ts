@@ -15,6 +15,7 @@
  * the engine's suites still apply.
  */
 
+import { formatRupees } from '../../src/accounting/money';
 import { areaCharge, type AreaBasis, type MaintenanceRate } from '../../src/accounting/rates';
 import { gstOnContribution } from '../../src/accounting/transactions';
 import type { Queryable } from './pg';
@@ -727,7 +728,7 @@ export async function recordReceipt(
     narration:
       `Receipt ${input.receiptNo} — flat ${input.flatNo} via ${input.method}` +
       (allocations.length > 0 ? ` against ${allocations.map(a => a.taxInvoiceNo).join(', ')}` : '') +
-      (heldAsAdvance > 0 ? ` (${heldAsAdvance} paise held as advance)` : ''),
+      (heldAsAdvance > 0 ? ` (${formatRupees(heldAsAdvance)} held as advance)` : ''),
     sourceKind: 'member-receipt',
     sourceRef: input.receiptNo,
     idempotencyKey: `receipt:${input.receiptNo}`,
@@ -941,7 +942,7 @@ export async function payVendor(
   });
   if (input.amount > outstanding) {
     throw badRequest(
-      `That payment of ${input.amount} paise exceeds the ${outstanding} paise outstanding on ` +
+      `That payment of ${formatRupees(input.amount)} exceeds the ${formatRupees(outstanding)} outstanding on ` +
       `bill ${bill.bill_no}.`,
     );
   }

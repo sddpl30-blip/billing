@@ -931,7 +931,7 @@ await check('paying more than the bill is refused', async () => {
     paymentRef: `PAY-${stamp}-over`,
   }, { 'Idempotency-Key': key('vendor-over') });
   equal(r.status, 400, 'status');
-  matches(r.body.message, /exceeds the 980000 paise outstanding/, 'message');
+  matches(r.body.message, /exceeds the ₹9,800 outstanding/, 'message');
 });
 
 await check('paying the net clears the payable and says what it did not do', async () => {
@@ -1064,6 +1064,49 @@ await check('a line nobody can place goes to suspense with a reason', async () =
   });
   equal(r.status, 200, 'status');
   equal(r.body.matched, false, 'matched');
+});
+
+let matchedPaymentId = null;
+
+await check('a Description column before Deposit is not read as the credit', async () => {
+  // 'cr' as a substring found "Description" first, and the narration was
+  // parsed as the amount.
+  const r = await manager.post('/api/bank/imports', {
+    bankAccountId: fixture.bankAccountId,
+    format: 'csv',
+    filename: `july-dup-${stamp}.csv`,
+    content: [
+      'Txn Date,Description,Ref No,Withdrawal,Deposit,Balance',
+      '20/07/2026,UPI RECEIPT AGAIN,UPI-DUP-1,,2000.00,4000.00',
+    ].join('\n'),
+  });
+  equal(r.status, 201, 'status');
+  equal(r.body.inserted, 1, 'inserted');
+  const lines = await manager.get('/api/bank/transactions?state=unmatched');
+  const line = lines.body.transactions.find(t => t.reference === 'UPI-DUP-1');
+  equal(line.amountPaise, 200_000, 'the deposit column is the amount');
+  equal(line.narration, 'UPI RECEIPT AGAIN', 'and the description is the narration');
+});
+
+await check('each statement line is listed once, however many receipts could match it', async () => {
+  const lines = await manager.get('/api/bank/transactions?state=unmatched');
+  const ids = lines.body.transactions.map(t => t.id);
+  equal(new Set(ids).size, ids.length, 'no line appears twice');
+});
+
+await check('a receipt already matched cannot be matched to a second line', async () => {
+  const matched = await manager.get('/api/bank/transactions?state=matched');
+  matchedPaymentId = psql(
+    `SELECT matched_payment_id FROM bank_transactions
+      WHERE id = '${matched.body.transactions[0].id}';`,
+  ).out;
+  const lines = await manager.get('/api/bank/transactions?state=unmatched');
+  const line = lines.body.transactions.find(t => t.reference === 'UPI-DUP-1');
+  const r = await manager.post(`/api/bank/transactions/${line.id}/match`, {
+    paymentId: matchedPaymentId,
+  });
+  equal(r.status, 409, 'status');
+  matches(r.body.message, /already matched to another statement line/, 'message');
 });
 
 await check('a reconciliation with a difference is not signed off', async () => {
@@ -2110,6 +2153,15 @@ await check('secretary and treasurer cannot be held by one account', async () =>
   equal(r.status, 400, 'status');
 });
 
+await check('a new account cannot be created as secretary and treasurer at once', async () => {
+  // The roles route refused this combination and account creation did not,
+  // so one account could still propose a rate and approve it.
+  const r = await secretary.post('/api/users', {
+    email: `dual-${stamp}@${domain}`, roles: ['secretary', 'treasurer'],
+  });
+  equal(r.status, 400, 'status');
+});
+
 await check('only the secretary may list accounts', async () => {
   equal((await treasurer.get('/api/users')).status, 403, 'treasurer');
   equal((await manager.get('/api/users')).status, 403, 'manager');
@@ -2778,7 +2830,7 @@ await check('cancelling an invoice with money against it is refused', async () =
     reason: 'Raised in error.', on: '2026-07-21',
   });
   equal(r.status, 409, 'status');
-  matches(r.body.message, /100000 paise received or credited/, 'message');
+  matches(r.body.message, /₹1,000 received or credited/, 'message');
   const state = psql(`SELECT state FROM billing_documents WHERE id = '${a101.documentId}';`);
   equal(state.out, 'tax-invoice', 'the invoice was left as it was');
   equal(dOutstanding(convert.body.taxInvoiceNo), 569_250 - 100_000, 'and nothing went below zero');
@@ -2910,7 +2962,7 @@ await check('and a credit note larger than the invoice is refused', async () => 
     kind: 'credit', amountPaise: 600_000, reason: 'Too much.', on: '2026-08-11', withTax: false,
   });
   equal(r.status, 400, 'status');
-  matches(r.body.message, /more than the 519250 paise/, 'message');
+  matches(r.body.message, /more than the ₹5,192.50/, 'message');
 });
 
 // 7. Tax invoices numbered by financial year.

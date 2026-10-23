@@ -107,8 +107,13 @@ export function parseCsvStatement(text: string): ParseResult {
   }
 
   const header = splitCsvLine(lines[0]).map(h => h.trim().toLowerCase());
+  // A short needle like 'dr' or 'cr' is matched as a word, not a substring:
+  // as a substring 'cr' finds "Description", and a statement whose narration
+  // column came before its deposit column read the narration as the credit.
+  const matches = (h: string, n: string): boolean =>
+    n.length <= 2 ? new RegExp(`(^|[^a-z])${n}([^a-z]|$)`).test(h) : h.includes(n);
   const find = (...needles: string[]): number =>
-    header.findIndex(h => needles.some(n => h.includes(n)));
+    header.findIndex(h => needles.some(n => matches(h, n)));
 
   const dateAt = find('value date', 'txn date', 'transaction date', 'date');
   const narrationAt = find('narration', 'description', 'particulars', 'remarks');

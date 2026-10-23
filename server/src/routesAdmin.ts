@@ -29,7 +29,7 @@ import { generateDocument } from './documents';
 import { A, accountBalance, postEntry, type Leg } from './posting';
 import { allocateNumber, lockFlatBalance } from './series';
 import { gstTreatment } from './settings';
-import { percentOf } from '../../src/accounting/money';
+import { formatRupees, percentOf } from '../../src/accounting/money';
 import { isoDateInIndia } from '../../src/accounting/clock';
 
 export interface AdminRouteDependencies {
@@ -54,6 +54,29 @@ function need(ctx: RequestContext, permission: Permission): Principal {
   const principal = who(ctx);
   requirePermission(principal, permission);
   return principal;
+}
+
+/**
+ * Role sets that would make one account both maker and checker.
+ *
+ * Checked wherever roles are handed out — creating an account as well as
+ * changing one — since a rule enforced on one of two doors is not enforced.
+ */
+function refuseCombinedRoles(roles: readonly Role[]): void {
+  if (roles.includes('manager') && (roles.includes('treasurer') || roles.includes('secretary'))) {
+    throw badRequest(
+      'An account cannot hold manager together with treasurer or secretary: that one ' +
+      'account could then raise a bill and approve it. Use two accounts.',
+    );
+  }
+  if (roles.includes('secretary') && roles.includes('treasurer')) {
+    // The secretary enters rates and settings and the treasurer approves
+    // them; one account holding both could sign off its own figures.
+    throw badRequest(
+      'An account cannot hold secretary together with treasurer: the person who sets a ' +
+      'rate and the person who approves it would be the same.',
+    );
+  }
 }
 
 export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition[] {
@@ -248,7 +271,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         const creditable = Number(document.gross) + Number(adjustments.rows[0]?.net ?? '0');
         if (total > creditable) {
           throw badRequest(
-            `A credit note of ${total} paise is more than the ${creditable} paise ` +
+            `A credit note of ${formatRupees(total)} is more than the ${formatRupees(creditable)} ` +
             `${document.tax_invoice_no} has charged, after earlier notes. A credit beyond that ` +
             `is not an adjustment of this invoice.`,
           );
@@ -609,12 +632,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     const roles = input.roles as Role[];
     // The maker-checker separation is a property of the role set, so it has to
     // be checked when the roles are handed out, not only when they are used.
-    if (roles.includes('manager') && (roles.includes('treasurer') || roles.includes('secretary'))) {
-      throw badRequest(
-        'An account cannot hold manager together with treasurer or secretary: that one ' +
-        'account could then raise a bill and approve it. Use two accounts.',
-      );
-    }
+    refuseCombinedRoles(roles);
 
     const result = await pool.transaction(async (tx) => {
       if (input.ownerId !== undefined) {
@@ -677,20 +695,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
       if (!isValidRole(role)) throw badRequest(`"${role}" is not a role.`);
     }
     const roles = input.roles as Role[];
-    if (roles.includes('manager') && (roles.includes('treasurer') || roles.includes('secretary'))) {
-      throw badRequest(
-        'An account cannot hold manager together with treasurer or secretary: maker and ' +
-        'checker would be the same person.',
-      );
-    }
-    if (roles.includes('secretary') && roles.includes('treasurer')) {
-      // The secretary enters rates and settings and the treasurer approves
-      // them; one account holding both could sign off its own figures.
-      throw badRequest(
-        'An account cannot hold secretary together with treasurer: the person who sets a ' +
-        'rate and the person who approves it would be the same.',
-      );
-    }
+    refuseCombinedRoles(roles);
     if (ctx.params.id === principal.userId) {
       // Otherwise whoever manages users can grant themselves anything.
       throw conflict('You cannot change your own roles. Ask another committee member.');

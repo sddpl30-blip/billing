@@ -26,7 +26,7 @@
 -- applied has since changed. This file ends by recording the same rows, so a
 -- database created from it is consistent with the runner too.
 --
--- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql
+-- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql
 
 -- ====================================================================
 -- 001_initial.sql
@@ -1527,6 +1527,30 @@ COMMIT;
 
 
 -- ====================================================================
+-- 009_bank_match_once.sql
+-- ====================================================================
+
+-- Migration 009: a payment matches at most one statement line.
+--
+-- Nothing stopped the same receipt (or vendor payment) being matched to two
+-- bank lines, which reconciles one movement of money twice and hides a line
+-- that has no counterpart. The match route now checks; these indexes make
+-- the database refuse it too, including two matches made at the same moment.
+
+BEGIN;
+
+CREATE UNIQUE INDEX bank_transactions_payment_matched_once
+  ON bank_transactions (matched_payment_id)
+  WHERE state = 'matched' AND matched_payment_id IS NOT NULL;
+
+CREATE UNIQUE INDEX bank_transactions_vendor_payment_matched_once
+  ON bank_transactions (matched_vendor_payment_id)
+  WHERE state = 'matched' AND matched_vendor_payment_id IS NOT NULL;
+
+COMMIT;
+
+
+-- ====================================================================
 -- The runner's own record, so both migration tools agree about this database.
 -- ====================================================================
 
@@ -1538,5 +1562,6 @@ INSERT INTO schema_migrations (version, checksum) VALUES
   ('005_login_identity.sql', 'eb89c1fd5be6f0ed'),
   ('006_gst_register_notes.sql', '411b78307f3d1e99'),
   ('007_canonical_billing_period.sql', 'f6d8d54e046a1cd1'),
-  ('008_security_hardening.sql', '8834e5fcb5e17160')
+  ('008_security_hardening.sql', '8834e5fcb5e17160'),
+  ('009_bank_match_once.sql', '3eacc49926960f12')
 ON CONFLICT (version) DO NOTHING;

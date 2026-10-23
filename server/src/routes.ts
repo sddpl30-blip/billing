@@ -36,7 +36,7 @@ import {
   A, accountBalance, bookVendorBill, convertToTaxInvoice, financialYearStart, outstandingDocuments,
   payVendor, recordReceipt, remitTds, reverseEntry, tdsQuarter,
 } from './posting';
-import { percentOf } from '../../src/accounting/money';
+import { formatRupees, percentOf } from '../../src/accounting/money';
 import { listDocuments, runBilling } from './billing';
 import { cancellationCreditNote } from './documents';
 import { allocateNumber, lockFlatBalance } from './series';
@@ -846,10 +846,10 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
           const settled = gross - outstanding;
           throw conflict(
             settled > 0
-              ? `${doc.tax_invoice_no} has ${settled} paise received or credited against it. ` +
+              ? `${doc.tax_invoice_no} has ${formatRupees(settled)} received or credited against it. ` +
                 `Reverse that receipt or note first; cancelling now would reverse the whole ` +
-                `${gross} paise and leave the member's account below zero.`
-              : `${doc.tax_invoice_no} carries ${-settled} paise of debit notes beyond the ` +
+                `${formatRupees(gross)} and leave the member's account below zero.`
+              : `${doc.tax_invoice_no} carries ${formatRupees(-settled)} of debit notes beyond the ` +
                 `invoice. Reverse those first; cancelling now would leave them standing ` +
                 `against a cancelled invoice.`,
           );
@@ -1669,28 +1669,40 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
   const listBankTransactions = route('GET', '/api/bank/transactions', async (ctx) => {
     const principal = need(ctx, 'report.read');
     const state = ctx.query.get('state') ?? 'unmatched';
+    const account = ctx.query.get('bankAccountId');
     const result = await pool.query<{
-      id: string; value_date: string; narration: string; reference: string | null;
-      amount: string; state: string; suggestion: string | null; suggestion_receipt: string | null;
+      id: string; bank_account_id: string; value_date: string; narration: string;
+      reference: string | null; amount: string; state: string;
+      suggestion: string | null; suggestion_receipt: string | null;
     }>(
-      `SELECT t.id, t.value_date::text, t.narration, t.reference, t.amount::text, t.state,
+      // One row per statement line. A plain join returned the line once per
+      // candidate receipt; the lateral join keeps only the closest by date.
+      `SELECT t.id, t.bank_account_id, t.value_date::text, t.narration, t.reference,
+              t.amount::text, t.state,
               s.id AS suggestion, s.receipt_no AS suggestion_receipt
          FROM bank_transactions t
-         LEFT JOIN payments s
-                ON s.society_id = t.society_id
-               AND s.amount = t.amount
-               AND s.received_on BETWEEN t.value_date - 3 AND t.value_date + 3
-               AND NOT EXISTS (
-                     SELECT 1 FROM bank_transactions o
-                      WHERE o.matched_payment_id = s.id)
+         LEFT JOIN LATERAL (
+                SELECT p.id, p.receipt_no
+                  FROM payments p
+                 WHERE p.society_id = t.society_id
+                   AND p.amount = t.amount
+                   AND p.received_on BETWEEN t.value_date - 3 AND t.value_date + 3
+                   AND NOT EXISTS (
+                         SELECT 1 FROM bank_transactions o
+                          WHERE o.matched_payment_id = p.id AND o.state = 'matched')
+                 ORDER BY abs(p.received_on - t.value_date), p.received_on
+                 LIMIT 1
+              ) s ON t.state = 'unmatched'
         WHERE t.society_id = $1 AND t.state = $2
+          AND ($3::uuid IS NULL OR t.bank_account_id = $3::uuid)
         ORDER BY t.value_date DESC
         LIMIT 500`,
-      [principal.societyId, state],
+      [principal.societyId, state, account],
     );
     return ok({
       transactions: result.rows.map(r => ({
         id: r.id,
+        bankAccountId: r.bank_account_id,
         valueDate: r.value_date,
         narration: r.narration,
         reference: r.reference,
@@ -1748,9 +1760,21 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
           : -Number(counterpart.rows[0].amount);
         if (expected !== Number(line.amount)) {
           throw conflict(
-            `That line is ${line.amount} paise and the payment is ${expected} paise. ` +
-            `A match that does not agree on the amount is not a match.`,
+            `That line is ${formatRupees(Number(line.amount))} and the payment is ` +
+            `${formatRupees(expected)}. A match that does not agree on the amount is not a match.`,
           );
+        }
+        // One payment is one movement on the statement. Matching it to a
+        // second line would reconcile money that never arrived twice; the
+        // unique index in migration 009 stops a concurrent attempt as well.
+        const column = input.paymentId !== undefined ? 'matched_payment_id' : 'matched_vendor_payment_id';
+        const already = await tx.query<{ id: string }>(
+          `SELECT id FROM bank_transactions
+            WHERE ${column} = $1 AND state = 'matched' AND id <> $2 LIMIT 1`,
+          [id as string, ctx.params.id],
+        );
+        if (already.rows[0] !== undefined) {
+          throw conflict('That payment is already matched to another statement line.');
         }
         await tx.query(
           `UPDATE bank_transactions
