@@ -3158,6 +3158,224 @@ await check('and this society\'s books tie after all of it', async () => {
   }
 });
 
+// --- GST treatment choices: sinking fund taxable, rounding to the rupee -----
+
+suite('GST treatment: sinkingFundTaxable and roundToRupee');
+
+// A society of its own, as "billing defects" has, so changing its GST
+// treatment month by month touches nobody else's figures. The worked figures
+// are the approach note's: ₹4.50/sq ft at 18%.
+const gStamp = randomUUID().slice(0, 8);
+const gDomain = `g${gStamp}.invalid`;
+const gSeedPool = new PgPool(connectionFromEnv(process.env));
+const gFixture = await seed(gSeedPool, {
+  name: `GST treatment society ${gStamp}`, password: PASSWORD, emailDomain: gDomain,
+});
+await gSeedPool.end();
+const gFlat = (flatNo) => {
+  const flat = gFixture.flats.find(f => f.flatNo === flatNo);
+  if (flat === undefined) throw new Error(`no seeded flat ${flatNo}`);
+  return flat;
+};
+const gManager = new Client(base);
+const gTreasurer = new Client(base);
+const gSecretary = new Client(base);
+await gManager.signIn(`manager@${gDomain}`, PASSWORD);
+await gTreasurer.signIn(`treasurer@${gDomain}`, PASSWORD);
+await gSecretary.signIn(`secretary@${gDomain}`, PASSWORD);
+const gCookie = () => [...gTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+
+// 1,750 and 2,250 sq ft from the note; 1,600 sq ft is ₹7,200 of maintenance,
+// under the ₹7,500 exemption alone and over it once a 10% sinking fund counts.
+psql(`UPDATE flats SET billing_area_sqft = 1750 WHERE id = '${gFlat('A-101').id}';`);
+psql(`UPDATE flats SET billing_area_sqft = 2250 WHERE id = '${gFlat('A-102').id}';`);
+psql(`UPDATE flats SET billing_area_sqft = 1600 WHERE id = '${gFlat('B-101').id}';`);
+
+/** Sets the treatment as the secretary and has the treasurer sign it off. */
+const gTreat = async (value, sinkingPercent) => {
+  equal((await gSecretary.put('/api/settings/gst.treatment', { value })).status, 200, 'setting GST');
+  equal((await gTreasurer.post('/api/settings/gst.treatment/approve', { on: '2026-07-01' })).status,
+    200, 'signing GST off');
+  equal((await gSecretary.put('/api/settings/billing.sinkingFundPercent', { value: sinkingPercent })).status,
+    200, 'setting the sinking share');
+};
+/** Runs a month, approves and converts the named flats, and says what each became. */
+const gBill = async (period, issuedOn, flatNos) => {
+  const run = await gManager.post('/api/billing/run', { period, issuedOn });
+  equal(run.status, 201, `the ${period} run`);
+  const out = {};
+  for (const flatNo of flatNos) {
+    const issued = run.body.issued.find(d => d.flatNo === flatNo);
+    truthy(issued, `a ${period} document for ${flatNo}`);
+    equal((await gTreasurer.post(`/api/billing/documents/${issued.documentId}/approve`, { on: issuedOn })).status,
+      200, `approving ${flatNo}`);
+    const converted = await gTreasurer.post(`/api/billing/documents/${issued.documentId}/convert`, {
+      on: issuedOn, because: 'manual',
+    });
+    equal(converted.status, 200, `converting ${flatNo}`);
+    const register = psql(
+      `SELECT taxable_value || ',' || cgst || ',' || sgst FROM gst_register
+        WHERE document_id = '${issued.documentId}';`,
+    ).out;
+    const lines = psql(
+      `SELECT string_agg(head || ':' || taxable::text, ',' ORDER BY position)
+         FROM billing_document_lines WHERE document_id = '${issued.documentId}';`,
+    ).out;
+    out[flatNo] = { issued, converted: converted.body, register, lines };
+  }
+  return out;
+};
+
+let gAug = null;
+
+await check('flags absent: the note\'s figures to the paisa, as before', async () => {
+  await gTreat({ chargeGst: true, ratePercent: 18 }, 0);
+  const july = await gBill('Jul 2026', '2026-07-01', ['A-101', 'A-102']);
+  const a = july['A-101'];
+  equal(a.issued.estimatedTax, 141_750, '1,750 sq ft: the proforma estimate');
+  equal(a.converted.cgst, 70_875, '1,750 sq ft: CGST ₹708.75');
+  equal(a.converted.sgst, 70_875, '1,750 sq ft: SGST ₹708.75');
+  equal(a.converted.gross, 929_250, '1,750 sq ft: total ₹9,292.50');
+  equal(a.register, '787500,70875,70875', '1,750 sq ft: the GST register row');
+  const b = july['A-102'];
+  equal(b.converted.cgst, 91_125, '2,250 sq ft: CGST ₹911.25');
+  equal(b.converted.gross, 1_194_750, '2,250 sq ft: total ₹11,947.50');
+  equal(b.register, '1012500,91125,91125', '2,250 sq ft: the GST register row');
+});
+
+await check('roundToRupee: CGST and SGST each to the nearest rupee, half up, still equal', async () => {
+  await gTreat({ chargeGst: true, ratePercent: 18, roundToRupee: true }, 0);
+  gAug = await gBill('Aug 2026', '2026-08-01', ['A-101', 'A-102']);
+  const a = gAug['A-101'];
+  equal(a.issued.estimatedTax, 141_800, '1,750 sq ft: the proforma estimate');
+  equal(a.issued.gross, 929_300, '1,750 sq ft: the proforma total');
+  equal(a.converted.cgst, 70_900, '1,750 sq ft: CGST ₹709');
+  equal(a.converted.sgst, 70_900, '1,750 sq ft: SGST ₹709');
+  equal(a.converted.gross, 929_300, '1,750 sq ft: total ₹9,293.00');
+  equal(a.register, '787500,70900,70900', '1,750 sq ft: the GST register row');
+  const b = gAug['A-102'];
+  equal(b.converted.cgst, 91_100, '2,250 sq ft: CGST ₹911 — .25 rounds down');
+  equal(b.converted.sgst, 91_100, '2,250 sq ft: SGST ₹911');
+  equal(b.converted.gross, 1_194_700, '2,250 sq ft: total ₹11,947.00');
+  const report = await gTreasurer.get('/api/reports/gst?taxPeriod=2026-08');
+  equal(report.body.agrees, true, 'register against ledger');
+  equal(report.body.cgst, 70_900 + 91_100, 'register CGST for August');
+});
+
+await check('roundToRupee: the tax invoice PDF prints the whole rupees and says so', async () => {
+  const id = gAug['A-101'].issued.documentId;
+  const response = await fetch(`${base}/api/billing/documents/${id}/pdf`, { headers: { Cookie: gCookie() } });
+  equal(response.status, 200, 'status');
+  const text = Buffer.from(await response.arrayBuffer()).toString('latin1');
+  matches(text, /709\.00/, 'CGST and SGST');
+  matches(text, /9,293\.00/, 'the total');
+  matches(text, /rounded to the nearest rupee/, 'the rounding, stated');
+});
+
+await check('roundToRupee: a credit note carries tax rounded the same way', async () => {
+  // ₹1,000.50 at 9% is ₹90.045 a half: ₹90 to the rupee, where the paisa
+  // rule would give ₹90.05.
+  const id = gAug['A-101'].issued.documentId;
+  const r = await gTreasurer.post(`/api/billing/documents/${id}/notes`, {
+    kind: 'credit', amountPaise: 100_050, reason: 'Rounding check.', on: '2026-08-05', withTax: true,
+  });
+  equal(r.status, 201, 'status');
+  equal(r.body.taxPaise, 18_000, 'tax on the note');
+  equal(r.body.totalPaise, 118_050, 'note total');
+  const report = await gTreasurer.get('/api/reports/gst?taxPeriod=2026-08');
+  equal(report.body.agrees, true, 'register against ledger after the note');
+});
+
+await check('sinkingFundTaxable: the sinking line is taxed and counts towards the exemption', async () => {
+  await gTreat({ chargeGst: true, ratePercent: 18, sinkingFundTaxable: true }, 10);
+  const sept = await gBill('Sep 2026', '2026-09-01', ['A-101', 'B-101']);
+  const a = sept['A-101'];
+  equal(a.lines, 'maintenance:true,sinking:true', 'both lines taxable');
+  // ₹7,875 + ₹787.50 = ₹8,662.50 taxable; 9% is ₹779.625, ₹779.63 to the paisa.
+  equal(a.issued.estimatedTax, 155_926, '1,750 sq ft + 10% sinking: the proforma estimate');
+  equal(a.converted.cgst, 77_963, '1,750 sq ft + 10% sinking: CGST');
+  equal(a.converted.sgst, 77_963, '1,750 sq ft + 10% sinking: SGST');
+  equal(a.converted.gross, 866_250 + 155_926, '1,750 sq ft + 10% sinking: total ₹10,221.76');
+  equal(a.register, '866250,77963,77963', 'the register\'s taxable value includes the sinking fund');
+  // ₹7,200 of maintenance alone is exempt; with ₹720 of sinking fund the
+  // taxable contribution is ₹7,920, so GST is due on all of it.
+  const b = sept['B-101'];
+  equal(b.converted.cgst, 71_280, '1,600 sq ft: CGST on ₹7,920');
+  equal(b.converted.gross, 792_000 + 142_560, '1,600 sq ft: total');
+});
+
+await check('both flags: sinking fund taxed and each half rounded to the rupee', async () => {
+  await gTreat({ chargeGst: true, ratePercent: 18, sinkingFundTaxable: true, roundToRupee: true }, 10);
+  const oct = await gBill('Oct 2026', '2026-10-01', ['A-101']);
+  const a = oct['A-101'];
+  equal(a.converted.cgst, 78_000, '₹779.625 rounds to ₹780');
+  equal(a.converted.sgst, 78_000, 'SGST equal');
+  equal(a.converted.gross, 866_250 + 156_000, 'total ₹10,222.50');
+});
+
+await check('an approved proforma\'s PDF shows the estimated halves, not "No GST"', async () => {
+  const list = await gManager.get('/api/billing/documents?period=Oct%202026');
+  const proforma = list.body.documents.find(d => d.flatNo === 'A-102');
+  equal((await gTreasurer.post(`/api/billing/documents/${proforma.id}/approve`, { on: '2026-10-01' })).status,
+    200, 'approving A-102');
+  const response = await fetch(`${base}/api/billing/documents/${proforma.id}/pdf`, { headers: { Cookie: gCookie() } });
+  equal(response.status, 200, 'status');
+  const text = Buffer.from(await response.arrayBuffer()).toString('latin1');
+  // ₹10,125 + ₹1,012.50 taxable: 9% is ₹1,002.375, so ₹1,002 a half.
+  matches(text, /1,002\.00/, 'each half, to the rupee');
+  // Parentheses are escaped inside a PDF string.
+  matches(text, /SGST @ 9\.00% \\\(estimate\\\)/, 'marked as an estimate');
+  matches(text, /13,141\.50/, 'the total');
+  truthy(!/No GST charged/.test(text), 'no claim that nothing is charged');
+});
+
+await check('flags off again: the sinking fund is not taxed and not counted', async () => {
+  await gTreat({ chargeGst: true, ratePercent: 18, sinkingFundTaxable: false, roundToRupee: false }, 10);
+  const nov = await gBill('Nov 2026', '2026-11-01', ['A-101', 'B-101']);
+  equal(nov['A-101'].lines, 'maintenance:true,sinking:false', 'the sinking line is not taxable');
+  equal(nov['A-101'].converted.cgst, 70_875, '1,750 sq ft: CGST on maintenance alone');
+  equal(nov['A-101'].converted.gross, 787_500 + 78_750 + 141_750, '1,750 sq ft: total');
+  equal(nov['B-101'].converted.cgst, 0, '1,600 sq ft: exempt on ₹7,200 of maintenance');
+  equal(nov['B-101'].converted.gross, 792_000, '1,600 sq ft: total');
+  equal(nov['B-101'].register, '', 'no register row for an exempt supply');
+});
+
+await check('a flag that is not true or false is refused, not guessed', async () => {
+  equal((await gSecretary.put('/api/settings/gst.treatment', {
+    value: { chargeGst: true, ratePercent: 18, roundToRupee: 'yes' },
+  })).status, 200, 'stored');
+  const r = await gManager.post('/api/billing/run', { period: 'Dec 2026', issuedOn: '2026-12-01' });
+  equal(r.status, 400, 'the run refuses');
+  matches(r.body.message, /roundToRupee/, 'and names the field');
+});
+
+await check('the GST treatment society\'s trial balance ties out', async () => {
+  const r = await gTreasurer.get('/api/reports/trial-balance?asAt=2026-12-31');
+  equal(r.body.tiesOut, true, 'tiesOut');
+});
+
+await check('computeBillTax applies both flags as the engine rule does', async () => {
+  const gst = {
+    chargeGst: true, ratePercent: 18, approved: true, memberThresholdPaise: 750_000,
+    sinkingFundTaxable: false, roundToRupee: false,
+  };
+  const lines = [{ head: 'maintenance', amount: 787_500, taxable: true }];
+  equal(computeBillTax(lines, gst).cgst, 70_875, 'to the paisa');
+  const rounded = computeBillTax(lines, { ...gst, roundToRupee: true });
+  equal(rounded.cgst, 70_900, 'to the rupee');
+  equal(rounded.sgst, 70_900, 'halves equal');
+  equal(rounded.total, 141_800, 'total twice one half');
+  // Exactly half a rupee rounds up: 0.3% of ₹3,500 is ₹10.50, so ₹11.
+  const half = computeBillTax([{ head: 'maintenance', amount: 350_000, taxable: true }],
+    { ...gst, memberThresholdPaise: 0, ratePercent: 0.6, roundToRupee: true });
+  equal(half.cgst, 1_100, '₹10.50 rounds half up to ₹11');
+  // The paisa figure is not rounded again: 0.3% of ₹4,165 is ₹12.495, which
+  // is ₹12 — rounding ₹12.50 would have made it ₹13.
+  const exact = computeBillTax([{ head: 'maintenance', amount: 416_500, taxable: true }],
+    { ...gst, memberThresholdPaise: 0, ratePercent: 0.6, roundToRupee: true });
+  equal(exact.cgst, 1_200, '₹12.495 rounds to ₹12, not via ₹12.50');
+});
+
 // --- one last consistency sweep --------------------------------------------
 
 suite('consistency');

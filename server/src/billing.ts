@@ -223,8 +223,11 @@ export async function runBilling(
       const sinking = percentOf(maintenance, sinkingPercent);
       if (sinking > 0) {
         // A sinking fund contribution is a corpus collection, not a service,
-        // so it is not taxable.
-        lines.push({ head: 'sinking', amount: sinking, taxable: false });
+        // so it is not taxable — unless the society's GST treatment says it
+        // is (`sinkingFundTaxable`). Then the line is taxable, carries GST at
+        // the maintenance rate, and counts towards the per-member threshold,
+        // both here and when conversion recomputes from the stored lines.
+        lines.push({ head: 'sinking', amount: sinking, taxable: gst.sinkingFundTaxable });
       }
     }
 

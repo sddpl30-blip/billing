@@ -57,7 +57,9 @@ export async function installSocietyStructure(
     // Which heads carry GST is a tax determination, not a fact about the head:
     // maintenance and rental are services, a sinking fund contribution is a
     // corpus collection. Whether any of it is charged still depends on the
-    // society's approved treatment, which starts off.
+    // society's approved treatment, which starts off. This row is the default
+    // reading only: a society whose `gst.treatment` sets `sinkingFundTaxable`
+    // has its sinking-fund bill lines marked taxable when they are raised.
     const taxable = head.key === 'maintenance' || head.key === 'rental' || head.key === 'other';
     // A sinking contribution is credited to the fund rather than to income, so
     // it never appears as surplus the committee could spend.
