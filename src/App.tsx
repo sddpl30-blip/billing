@@ -3118,8 +3118,8 @@ export default function App() {
           <img src="/branding/mani-vista-logo.png" alt="Mani Vista" className="h-11 w-11 object-contain bg-[var(--mv-surface)] rounded-lg border border-[var(--mv-accent-border)] shrink-0" />
           <div className="flex flex-col flex-1 min-w-0 text-left">
             <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Residents Association</p>
-            <h1 className="text-sm font-bold truncate text-[var(--mv-ink)]" title="Mani Vista Residents Association">
-              Mani Vista Residents Association
+            <h1 className="text-sm font-bold truncate text-[var(--mv-ink)]" title={onServer ? societyName : 'Mani Vista Residents Association'}>
+              {onServer ? societyName : 'Mani Vista Residents Association'}
             </h1>
           </div>
 
