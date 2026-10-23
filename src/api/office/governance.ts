@@ -134,6 +134,27 @@ export function deactivateUser(
   return client.post(`/api/users/${encodeURIComponent(id)}/deactivate`, { reason });
 }
 
+/** A resident's sign-in address. The server refuses this for an office-bearer. */
+export function changeUserEmail(
+  client: ApiClient, id: string, email: string,
+): Promise<{ id: string; email: string; ownerEmailUpdated: boolean }> {
+  return client.post(`/api/users/${encodeURIComponent(id)}/email`, { email });
+}
+
+/** Sets a resident's password and ends their sessions. Refused for an office-bearer. */
+export function setUserPassword(
+  client: ApiClient, id: string, password: string,
+): Promise<{ id: string; passwordSet: true; sessionsRevoked: number }> {
+  return client.post(`/api/users/${encodeURIComponent(id)}/password`, { password });
+}
+
+/** The signed-in account's own password; its other sessions end. */
+export function changeOwnPassword(
+  client: ApiClient, currentPassword: string, newPassword: string,
+): Promise<{ changed: true; otherSessionsEnded: number }> {
+  return client.post('/api/auth/password/change', { currentPassword, newPassword });
+}
+
 // --- flats and owners ----------------------------------------------------
 
 export interface FlatRow {

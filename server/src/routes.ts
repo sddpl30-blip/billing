@@ -306,6 +306,32 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     };
   });
 
+  const changePassword = route('POST', '/api/auth/password/change', async (ctx) => {
+    const principal = who(ctx);
+    const input = ctx.body(v.object({
+      currentPassword: v.string({ min: 1, max: 200 }),
+      newPassword: v.string({ min: 12, max: 200 }),
+    }));
+    const result = await auth.changeOwnPassword({
+      userId: principal.userId,
+      sessionToken: ctx.cookies[SESSION_COOKIE],
+      currentPassword: input.currentPassword,
+      newPassword: input.newPassword,
+      ip: ctx.ip,
+    });
+    await audit(pool, {
+      societyId: principal.societyId,
+      actorUser: principal.userId,
+      actorLabel: principal.email,
+      action: 'user.password.change',
+      subjectTable: 'users',
+      subjectId: principal.userId,
+      detail: { sessionsRevoked: result.sessionsRevoked },
+      requestId: ctx.requestId,
+    });
+    return ok({ changed: true, otherSessionsEnded: result.sessionsRevoked });
+  });
+
   const me = route('GET', '/api/auth/me', async (ctx) => {
     const principal = who(ctx);
     const flats = await pool.query<{ id: string; flat_no: string }>(
@@ -2455,7 +2481,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
 
   return [
     health, databaseReport,
-    requestCode, verifyCode, passwordSignIn, signOut, me,
+    requestCode, verifyCode, passwordSignIn, signOut, me, changePassword,
     listFlats, flatDues,
     getSettings, putSetting, approveSetting,
     listRates, addRate, approveRate,

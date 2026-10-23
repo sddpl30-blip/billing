@@ -13,9 +13,10 @@ import type { Logger } from './logger';
 import type { OtpProvider } from './providers/otp';
 import {
   AuthError, RateLimitError, consumeRateLimit, hashToken, mintCsrfToken, mintLoginCode,
-  mintSessionToken, verifyCode, verifyPassword,
+  hashPassword, mintSessionToken, verifyCode, verifyPassword,
 } from './security';
 import { isValidRole, type Principal, type Role } from './rbac';
+import { badRequest } from './http';
 
 export interface SignInStart {
   readonly accepted: true;
@@ -407,6 +408,59 @@ export class AuthService {
       'UPDATE sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL',
       [hashToken(token, this.config.secretKey)],
     );
+  }
+
+  /**
+   * A signed-in user changing their own password.
+   *
+   * The current password is asked for even though the session is valid: a
+   * session left open on a shared computer should not be enough to take the
+   * account over. Rate-limited like a sign-in, since a wrong current password
+   * is a guess. Every other session of the account ends; this one stays.
+   */
+  async changeOwnPassword(input: {
+    userId: string; sessionToken: string | undefined;
+    currentPassword: string; newPassword: string; ip: string;
+  }): Promise<{ sessionsRevoked: number }> {
+    const decision = await consumeRateLimit(this.pool, {
+      subject: `${input.ip}|${input.userId}`, action: 'password:change',
+      limit: this.config.rateLimit.loginPerHour,
+      windowMinutes: this.config.rateLimit.windowMinutes,
+      secretKey: this.config.secretKey,
+    });
+    if (!decision.allowed) {
+      throw new RateLimitError('Too many attempts. Try again shortly.', decision.retryAfterSeconds);
+    }
+
+    return this.pool.transaction(async (tx) => {
+      const found = await tx.query<{ password_hash: string | null }>(
+        'SELECT password_hash FROM users WHERE id = $1 AND is_active = true',
+        [input.userId],
+      );
+      const stored = found.rows[0]?.password_hash ?? null;
+      if (stored === null) {
+        throw badRequest('This account has no password to change. Ask the secretary to set one.');
+      }
+      if (!verifyPassword(input.currentPassword, stored)) {
+        throw badRequest('The current password is not right.');
+      }
+      if (input.currentPassword === input.newPassword) {
+        throw badRequest('The new password is the same as the current one.');
+      }
+
+      await tx.query('UPDATE users SET password_hash = $1 WHERE id = $2', [
+        hashPassword(input.newPassword), input.userId,
+      ]);
+      const keep = input.sessionToken === undefined || input.sessionToken === ''
+        ? ''
+        : hashToken(input.sessionToken, this.config.secretKey);
+      const revoked = await tx.query(
+        `UPDATE sessions SET revoked_at = now()
+          WHERE user_id = $1 AND revoked_at IS NULL AND token_hash <> $2`,
+        [input.userId, keep],
+      );
+      return { sessionsRevoked: revoked.rowCount };
+    });
   }
 
   /** Revokes every session for a user. Used when a role changes or on request. */

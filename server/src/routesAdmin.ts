@@ -9,7 +9,7 @@
  * have.
  */
 
-import type { PgPool } from './pg';
+import type { PgPool, Queryable } from './pg';
 import type { Config } from './config';
 import type { Logger } from './logger';
 import type { EmailProvider } from './providers/email';
@@ -790,6 +790,127 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     return ok({ id: ctx.params.id, active: false, sessionsRevoked: result });
   });
 
+  /**
+   * The account behind a member-only action, locked for the transaction.
+   *
+   * The office may change a resident's e-mail or password, because a member
+   * whose address is not a Google account needs some way in. It may not do
+   * either to an office-bearer: a secretary who could reset the treasurer's
+   * password could sign in as the treasurer and approve their own rate, which
+   * is the one thing maker-checker exists to stop. Office-bearers change
+   * their own password, and an e-mail change for one goes through a new
+   * account.
+   */
+  async function residentAccount(
+    tx: Queryable, principal: Principal, userId: string,
+  ): Promise<{ email: string; ownerId: string | null }> {
+    if (userId === principal.userId) {
+      throw conflict('Change your own password from "Change my password", not here.');
+    }
+    const found = await tx.query<{ email: string; owner_id: string | null; is_active: string }>(
+      `SELECT email, owner_id, is_active::text FROM users
+        WHERE id = $1 AND society_id = $2 FOR UPDATE`,
+      [userId, principal.societyId],
+    );
+    const user = found.rows[0];
+    if (user === undefined) throw notFound('That user');
+    if (!(user.is_active === 't' || user.is_active === 'true')) {
+      throw conflict('That account is deactivated.');
+    }
+    const roles = await tx.query<{ role: string }>(
+      'SELECT role FROM user_roles WHERE user_id = $1', [userId],
+    );
+    if (roles.rows.some(r => r.role !== 'resident')) {
+      throw conflict(
+        'Only a resident account can be changed here. An office-bearer changes their own ' +
+        'password, so nobody else can sign in as them.',
+      );
+    }
+    return { email: user.email, ownerId: user.owner_id };
+  }
+
+  const changeUserEmail = route('POST', '/api/users/:id/email', async (ctx) => {
+    const principal = need(ctx, 'user.manage');
+    const input = ctx.body(v.object({ email: v.email() }));
+
+    const result = await pool.transaction(async (tx) => {
+      const user = await residentAccount(tx, principal, ctx.params.id);
+      if (user.email === input.email) throw badRequest('That is already the account\'s e-mail.');
+
+      const taken = await tx.query(
+        'SELECT 1 FROM users WHERE lower(email) = lower($1) AND is_active = true AND id <> $2',
+        [input.email, ctx.params.id],
+      );
+      if (taken.rows.length > 0) throw conflict('Another active account already uses that e-mail.');
+
+      await tx.query('UPDATE users SET email = $1 WHERE id = $2', [input.email, ctx.params.id]);
+
+      // Bills and notices go to the owner record's address. When it was the
+      // same as the sign-in address, it moves with it; when the office had
+      // set a different one on purpose, it is left alone.
+      let ownerUpdated = false;
+      if (user.ownerId !== null) {
+        const owner = await tx.query(
+          `UPDATE owners SET email = $1
+            WHERE id = $2 AND society_id = $3 AND lower(email) = lower($4)`,
+          [input.email, user.ownerId, principal.societyId, user.email],
+        );
+        ownerUpdated = owner.rowCount > 0;
+      }
+
+      // Pending sign-in codes were sent to the old address.
+      await tx.query(
+        'UPDATE login_codes SET consumed_at = now() WHERE user_id = $1 AND consumed_at IS NULL',
+        [ctx.params.id],
+      );
+
+      await audit(tx, {
+        societyId: principal.societyId,
+        actorUser: principal.userId,
+        actorLabel: principal.email,
+        action: 'user.email',
+        subjectTable: 'users',
+        subjectId: ctx.params.id,
+        detail: { from: user.email, to: input.email, ownerEmailUpdated: ownerUpdated },
+        requestId: ctx.requestId,
+      });
+      return ownerUpdated;
+    });
+
+    return ok({ id: ctx.params.id, email: input.email, ownerEmailUpdated: result });
+  });
+
+  const setUserPassword = route('POST', '/api/users/:id/password', async (ctx) => {
+    const principal = need(ctx, 'user.manage');
+    const input = ctx.body(v.object({ password: v.string({ min: 12, max: 200 }) }));
+
+    const revoked = await pool.transaction(async (tx) => {
+      const user = await residentAccount(tx, principal, ctx.params.id);
+      await tx.query('UPDATE users SET password_hash = $1 WHERE id = $2', [
+        hashPassword(input.password), ctx.params.id,
+      ]);
+      // Whoever knew the old password is signed out of every device.
+      const sessions = await tx.query(
+        'UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL',
+        [ctx.params.id],
+      );
+      await audit(tx, {
+        societyId: principal.societyId,
+        actorUser: principal.userId,
+        actorLabel: principal.email,
+        action: 'user.password.set',
+        subjectTable: 'users',
+        subjectId: ctx.params.id,
+        // That it was set, never what to.
+        detail: { email: user.email, sessionsRevoked: sessions.rowCount },
+        requestId: ctx.requestId,
+      });
+      return sessions.rowCount;
+    });
+
+    return ok({ id: ctx.params.id, passwordSet: true, sessionsRevoked: revoked });
+  });
+
   // --- flats and owners ----------------------------------------------------
 
   const addFlat = route('POST', '/api/flats', async (ctx) => {
@@ -908,7 +1029,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     invoicePdf, receiptPdf,
     issueNote, listNotes,
     queueNotices, listNotifications,
-    listUsers, addUser, setRoles, deactivateUser,
+    listUsers, addUser, setRoles, deactivateUser, changeUserEmail, setUserPassword,
     addFlat, setOwner,
   ];
 }

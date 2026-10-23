@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { addUser, deactivateUser, listUsers, setRoles, type UserAccount } from '../../../api/office/governance';
+import {
+  addUser, changeUserEmail, deactivateUser, listUsers, setRoles, setUserPassword, type UserAccount,
+} from '../../../api/office/governance';
 import type { OfficeContext } from '../types';
 import {
   Badge, Button, Card, FormDialog, LoadState, Table, cellClass, inputClass, labelClass,
@@ -10,6 +12,14 @@ const SEPARATION_HINT =
   'Manager cannot be combined with treasurer or secretary, nor secretary with treasurer: one account would ' +
   'then both make and check the same figures. The server refuses those, and refuses a change to your own roles.';
 
+/**
+ * Only a resident's e-mail and password are the office's to change. An
+ * office-bearer's are not: a secretary who could set the treasurer's password
+ * could sign in as the treasurer and approve their own figures.
+ */
+const isResidentOnly = (u: UserAccount): boolean =>
+  u.roles.length > 0 && u.roles.every(r => r === 'resident');
+
 /** Users and their roles. Every rule about who may hold what is the server's. */
 export function UsersSection({ ctx }: { ctx: OfficeContext }) {
   const loaded = useLoad(() => listUsers(ctx.client), [ctx]);
@@ -17,6 +27,8 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<UserAccount | null>(null);
   const [deactivating, setDeactivating] = useState<UserAccount | null>(null);
+  const [emailing, setEmailing] = useState<UserAccount | null>(null);
+  const [resetting, setResetting] = useState<UserAccount | null>(null);
   const [showInactive, setShowInactive] = useState(false);
   const users = loaded.data?.users ?? [];
   const roles = loaded.data?.availableRoles ?? [];
@@ -29,7 +41,8 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-[var(--mv-muted)] flex-1 min-w-[200px]">
-          Role changes take effect at once. Deactivating an account ends its sessions.
+          Role changes take effect at once. Deactivating an account ends its sessions. For a resident whose
+          e-mail is not a Google account, change the e-mail or set a password here; office-bearers change their own.
         </p>
         <div className="flex items-center gap-2">
           <input id="gov-users-inactive" type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} className="w-4 h-4 accent-[var(--mv-accent)]" />
@@ -57,6 +70,14 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
                 {u.active && (
                   <>
                     <Button onClick={() => setEditing(u)} aria-label={`Change roles for ${u.email}`}>Roles</Button>
+                    {isResidentOnly(u) && (
+                      <>
+                        <Button onClick={() => setEmailing(u)} aria-label={`Change e-mail for ${u.email}`}>E-mail</Button>
+                        <Button onClick={() => setResetting(u)} aria-label={`Set password for ${u.email}`}>
+                          {u.hasPassword ? 'Reset password' : 'Set password'}
+                        </Button>
+                      </>
+                    )}
                     <Button onClick={() => setDeactivating(u)} aria-label={`Deactivate ${u.email}`}>Deactivate</Button>
                   </>
                 )}
@@ -102,7 +123,104 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
           }}
         />
       )}
+      {emailing !== null && (
+        <EmailDialog
+          user={emailing}
+          busy={busy === 'email'}
+          onClose={() => setEmailing(null)}
+          onSubmit={async email => {
+            const done = await run(
+              'email', () => changeUserEmail(ctx.client, emailing.id, email),
+              result => (result as { ownerEmailUpdated: boolean }).ownerEmailUpdated
+                ? `Sign-in e-mail changed to ${email}; bills and notices now go there too.`
+                : `Sign-in e-mail changed to ${email}. The owner record's e-mail was different and is unchanged.`,
+            );
+            if (done) setEmailing(null);
+          }}
+        />
+      )}
+      {resetting !== null && (
+        <PasswordDialog
+          user={resetting}
+          busy={busy === 'password'}
+          onClose={() => setResetting(null)}
+          onSubmit={async password => {
+            const done = await run(
+              'password', () => setUserPassword(ctx.client, resetting.id, password),
+              result => `Password set for ${resetting.email}; ${String((result as { sessionsRevoked: number }).sessionsRevoked)} session(s) ended. Give it to them in person, not by e-mail.`,
+            );
+            if (done) setResetting(null);
+          }}
+        />
+      )}
     </Card>
+  );
+}
+
+function EmailDialog({ user, busy, onClose, onSubmit }: {
+  user: UserAccount; busy: boolean; onClose: () => void; onSubmit: (email: string) => void;
+}) {
+  const [email, setEmail] = useState('');
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <FormDialog
+      id="gov-user-email-change"
+      title={`Change e-mail for ${user.email}`}
+      intro="The member signs in with the new address from now on (with Google, if it is a Google account). If the owner record had the same address, bills and notices move to the new one too."
+      submitLabel="Change e-mail"
+      busy={busy}
+      onClose={onClose}
+      onSubmit={() => {
+        const next = email.trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(next)) { setProblem('Enter an e-mail address.'); return; }
+        if (next.toLowerCase() === user.email.toLowerCase()) { setProblem('That is already the address.'); return; }
+        setProblem(null);
+        onSubmit(next);
+      }}
+    >
+      <div>
+        <label htmlFor="gov-user-new-email" className={labelClass}>New e-mail</label>
+        <input id="gov-user-new-email" type="email" data-autofocus className={inputClass} value={email}
+          onChange={e => setEmail(e.target.value)} autoComplete="off" required />
+      </div>
+      {problem !== null && <p role="alert" className="text-xs text-red-700">{problem}</p>}
+    </FormDialog>
+  );
+}
+
+function PasswordDialog({ user, busy, onClose, onSubmit }: {
+  user: UserAccount; busy: boolean; onClose: () => void; onSubmit: (password: string) => void;
+}) {
+  const [password, setPassword] = useState('');
+  const [again, setAgain] = useState('');
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <FormDialog
+      id="gov-user-password-set"
+      title={`${user.hasPassword ? 'Reset' : 'Set'} password for ${user.email}`}
+      intro="Every session the account has ends now. The member can then sign in with this password; they can still use Google if their e-mail is a Google account."
+      submitLabel="Set password"
+      busy={busy}
+      onClose={onClose}
+      onSubmit={() => {
+        if (password.length < 12) { setProblem('A password is at least 12 characters.'); return; }
+        if (password !== again) { setProblem('The two entries do not match.'); return; }
+        setProblem(null);
+        onSubmit(password);
+      }}
+    >
+      <div>
+        <label htmlFor="gov-user-set-password" className={labelClass}>New password (12+ characters)</label>
+        <input id="gov-user-set-password" type="password" data-autofocus className={inputClass} value={password}
+          onChange={e => setPassword(e.target.value)} autoComplete="new-password" required />
+      </div>
+      <div>
+        <label htmlFor="gov-user-set-password-again" className={labelClass}>Again</label>
+        <input id="gov-user-set-password-again" type="password" className={inputClass} value={again}
+          onChange={e => setAgain(e.target.value)} autoComplete="new-password" required />
+      </div>
+      {problem !== null && <p role="alert" className="text-xs text-red-700">{problem}</p>}
+    </FormDialog>
   );
 }
 

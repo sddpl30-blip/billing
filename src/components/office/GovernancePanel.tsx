@@ -17,13 +17,14 @@ import { FlatsSection } from './governance/FlatsSection';
 import { HelpdeskSection } from './governance/HelpdeskSection';
 import { OpeningBalancesSection } from './governance/OpeningBalancesSection';
 import { SocietyProfileSection } from './governance/SocietyProfileSection';
+import { MyPasswordSection } from './governance/MyPasswordSection';
 
-type TabKey = 'rates' | 'settings' | 'periods' | 'users' | 'flats' | 'opening' | 'profile' | 'helpdesk';
+type TabKey = 'rates' | 'settings' | 'periods' | 'users' | 'flats' | 'opening' | 'profile' | 'helpdesk' | 'password';
 
 interface Tab {
   readonly key: TabKey;
   readonly label: string;
-  /** Any one of these opens the tab. */
+  /** Any one of these opens the tab; none listed means every account. */
   readonly anyOf: readonly string[];
 }
 
@@ -36,10 +37,11 @@ const TABS: readonly Tab[] = [
   { key: 'opening', label: 'Opening balances', anyOf: ['settings.manage', 'period.close'] },
   { key: 'profile', label: 'Society profile', anyOf: ['settings.manage', 'report.read'] },
   { key: 'helpdesk', label: 'Helpdesk', anyOf: ['ticket.assign', 'ticket.resolve'] },
+  { key: 'password', label: 'My password', anyOf: [] },
 ];
 
 export default function GovernancePanel({ ctx }: { ctx: OfficeContext }) {
-  const offered = TABS.filter(t => t.anyOf.some(p => ctx.can(p)));
+  const offered = TABS.filter(t => t.anyOf.length === 0 || t.anyOf.some(p => ctx.can(p)));
   const [open, setOpen] = useState<TabKey | null>(offered[0]?.key ?? null);
   const current = offered.find(t => t.key === open) ?? offered[0];
 
@@ -77,6 +79,7 @@ export default function GovernancePanel({ ctx }: { ctx: OfficeContext }) {
         {current.key === 'opening' && <OpeningBalancesSection ctx={ctx} />}
         {current.key === 'profile' && <SocietyProfileSection ctx={ctx} />}
         {current.key === 'helpdesk' && <HelpdeskSection ctx={ctx} />}
+        {current.key === 'password' && <MyPasswordSection ctx={ctx} />}
       </div>
     </div>
   );
