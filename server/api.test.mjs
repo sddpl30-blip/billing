@@ -2285,7 +2285,9 @@ await check('a back-dated run charges the rate in force in that month', async ()
   });
   equal(r.status, 201, 'status');
   equal(r.body.rate.ratePerSqFt, 4.5, 'the rate used');
-  equal(r.body.rate.effectiveFrom, '2025-10-22', 'the rate it came from');
+  // The seed dates the older rate a year before today, so the date itself
+  // moves; what matters is that it is the rate in force before June.
+  equal(r.body.rate.effectiveFrom < '2026-06-01', true, 'the rate it came from predates June');
 
   const b204 = r.body.issued.find(d => d.flatNo === 'B-204');
   // 985 sq ft at 450 paise, plus the 10% sinking share.

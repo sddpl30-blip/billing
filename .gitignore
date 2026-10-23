@@ -5,3 +5,5 @@
 
 # Real configuration. .env.example is the template and carries no secret.
 .env
+node_modules/
+dist/
