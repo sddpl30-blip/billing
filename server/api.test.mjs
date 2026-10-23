@@ -26,6 +26,9 @@ const { runDueJobs, backoffMinutes } = await import(`${build}/jobs.js`);
 const { createLogger } = await import(`${build}/logger.js`);
 const { createProductionSociety, AlreadyBootstrappedError } = await import(`${build}/bootstrap.js`);
 const { resolveEmailProvider } = await import(`${build}/providers/email.js`);
+const { runBilling } = await import(`${build}/billing.js`);
+const { pendingBillingTerms, writeSetting } = await import(`${build}/settings.js`);
+const { importFlats } = await import(`${build}/flatImport.js`);
 const {
   summariseTrialBalance, assembleBalanceSheet, registerAgreesWithLedger,
 } = await import(`${build}/reports.js`);
@@ -297,6 +300,96 @@ await check('setup creates one production society with its structure and secreta
     });
   } catch (err) {
     if (err !== rollback) throw err;
+  } finally {
+    await pool.end();
+  }
+});
+
+await check('a live society starts with its payment terms pending verification, and cannot bill until they are approved', async () => {
+  const pool = new PgPool(connectionFromEnv(process.env));
+  const rollback = new Error('rollback');
+  try {
+    await pool.transaction(async (tx) => {
+      const { societyId, secretaryId } = await createProductionSociety(tx, {
+        societyName: `Terms test ${stamp}`,
+        invoicePrefix: 'TT',
+        secretaryEmail: `terms-${stamp}@example.invalid`,
+        secretaryPassword: 'a-long-enough-password',
+      });
+      const keys = (await tx.query(
+        `SELECT key FROM society_settings WHERE society_id = $1 AND key IN ('billing.dueDays','billing.sinkingFundPercent')`,
+        [societyId],
+      )).rows;
+      equal(keys.length, 0, 'no days-to-pay or sinking share is written at setup');
+      equal((await pendingBillingTerms(tx, societyId)).length, 2, 'both terms pending');
+
+      // An approved rate, so the only thing in the way is the terms.
+      const treasurer = (await tx.query(
+        `INSERT INTO users (society_id, email, password_hash) VALUES ($1, $2, 'x') RETURNING id`,
+        [societyId, `terms-treasurer-${stamp}@example.invalid`],
+      )).rows[0].id;
+      await tx.query(
+        `INSERT INTO maintenance_rates (society_id, rate_paise_per_sqft, area_basis, effective_from, authority, approved_by, approved_on)
+         VALUES ($1, 450, 'super-built-up', '2026-10-01', 'test', $2, '2026-10-01')`,
+        [societyId, treasurer],
+      );
+      let refused = null;
+      try {
+        await tx.query('SAVEPOINT terms');
+        await runBilling(tx, { societyId, period: 'Oct 2026', issuedOn: '2026-10-01', requestedBy: secretaryId });
+      } catch (err) { refused = err; await tx.query('ROLLBACK TO SAVEPOINT terms'); }
+      truthy(refused !== null && /pending verification/.test(refused.message), `billing refused: ${refused?.message}`);
+
+      // Entered but not approved is still pending.
+      await writeSetting(tx, { societyId, key: 'billing.dueDays', value: 10, requestedBy: secretaryId });
+      await writeSetting(tx, { societyId, key: 'billing.sinkingFundPercent', value: 10, requestedBy: secretaryId });
+      const awaiting = await pendingBillingTerms(tx, societyId);
+      equal(awaiting.length, 2, 'entered, not approved');
+      truthy(awaiting.every(t => /awaiting approval/.test(t)), 'says awaiting approval');
+
+      await tx.query(
+        `UPDATE society_settings SET approved_by = $1, approved_on = '2026-10-01'
+          WHERE society_id = $2 AND key IN ('billing.dueDays','billing.sinkingFundPercent')`,
+        [treasurer, societyId],
+      );
+      equal((await pendingBillingTerms(tx, societyId)).length, 0, 'approved terms clear the check');
+      throw rollback;
+    });
+  } catch (err) {
+    if (err !== rollback) throw err;
+  } finally {
+    await pool.end();
+  }
+});
+
+await check('with no approved rate, an imported flat without a basis keeps it pending, not a guessed one', async () => {
+  const pool = new PgPool(connectionFromEnv(process.env));
+  const rollback = new Error('rollback');
+  try {
+    await pool.transaction(async (tx) => {
+      const { societyId, secretaryId } = await createProductionSociety(tx, {
+        societyName: `Basis test ${stamp}`, invoicePrefix: 'BT',
+        secretaryEmail: `basis-${stamp}@example.invalid`, secretaryPassword: 'a-long-enough-password',
+      });
+      const csv = 'flat_no,area_sqft,owner_name,owner_email\r\nT-1,1200,Test Owner,basis-owner-' + stamp + '@example.invalid\r\n';
+      const report = await importFlats(tx, { societyId, csv, dryRun: false, heldFrom: '2026-10-01', actorUserId: secretaryId });
+      equal(report.errors.length, 0, `no errors: ${JSON.stringify(report.errors)}`);
+      equal(report.defaultAreaBasis, null, 'no default basis without an approved rate');
+      const flat = (await tx.query(`SELECT area_basis FROM flats WHERE society_id = $1 AND flat_no = 'T-1'`, [societyId])).rows[0];
+      equal(flat.area_basis, null, 'the basis is left pending');
+      throw rollback;
+    });
+  } catch (err) {
+    if (err !== rollback) throw err;
+  } finally {
+    await pool.end();
+  }
+});
+
+await check('a demo society keeps billing on its seeded terms', async () => {
+  const pool = new PgPool(connectionFromEnv(process.env));
+  try {
+    equal((await pendingBillingTerms(pool, fixture.societyId)).length, 0, 'nothing pending for a demo society');
   } finally {
     await pool.end();
   }

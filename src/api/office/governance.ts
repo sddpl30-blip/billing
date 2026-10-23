@@ -234,7 +234,8 @@ export interface FlatImportReport {
   readonly rows: number;
   readonly columns: readonly string[];
   readonly ignoredColumns: readonly string[];
-  readonly defaultAreaBasis: AreaBasis;
+  /** Null while no rate is approved: rows without a basis stay pending verification. */
+  readonly defaultAreaBasis: AreaBasis | null;
   readonly flats: { readonly new: number; readonly updated: number; readonly unchanged: number };
   readonly accounts: { readonly created: number; readonly linked: number };
   readonly errors: ReadonlyArray<{ line: number; flatNo?: string; message: string }>;

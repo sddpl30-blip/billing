@@ -72,7 +72,8 @@ export interface ImportReport {
   readonly rows: number;
   readonly columns: readonly string[];
   readonly ignoredColumns: readonly string[];
-  readonly defaultAreaBasis: AreaBasisValue;
+  /** Null while no rate is approved: rows without a basis then stay pending verification. */
+  readonly defaultAreaBasis: AreaBasisValue | null;
   readonly flats: { readonly new: number; readonly updated: number; readonly unchanged: number };
   readonly accounts: { readonly created: number; readonly linked: number };
   readonly errors: readonly ImportProblem[];
@@ -93,7 +94,8 @@ interface ParsedRow {
   readonly wing: string | null;
   readonly floor: number | null;
   readonly area: number;
-  readonly basis: AreaBasisValue;
+  /** Null is pending verification: the flat is kept, and billing skips it until a basis is recorded. */
+  readonly basis: AreaBasisValue | null;
   readonly owner: Person;
   readonly coOwner: Person | null;
 }
@@ -135,7 +137,7 @@ function parseArea(raw: string): number | null {
 
 /** Validates one row. Returns the problems found, or the parsed row. */
 function parseRow(
-  line: number, values: Readonly<Record<string, string>>, defaultBasis: AreaBasisValue,
+  line: number, values: Readonly<Record<string, string>>, defaultBasis: AreaBasisValue | null,
 ): { row: ParsedRow } | { problems: string[] } {
   const problems: string[] = [];
   const get = (key: string): string => values[key] ?? '';
@@ -195,7 +197,7 @@ function parseRow(
   return {
     row: {
       line, flatNo, wing: wing === '' ? null : wing, floor: floor as number | null,
-      area: area as number, basis: basis as AreaBasisValue, owner, coOwner,
+      area: area as number, basis, owner, coOwner,
     },
   };
 }
@@ -211,16 +213,19 @@ interface ExistingUser { email: string; society_id: string; owner_email: string 
 /**
  * The basis a row without one is given: the basis of the society's current
  * approved rate, since a flat measured on any other basis would be refused at
- * billing, or super built-up where no rate has been approved yet.
+ * billing. With no approved rate there is no basis to give: the committee has
+ * not said whether areas are carpet, built-up or super built-up, and guessing
+ * would put a wrong figure on every bill. Such rows are kept with the basis
+ * pending verification, and the billing run skips them, saying why.
  */
-async function societyDefaultBasis(tx: Queryable, societyId: string, on: string): Promise<AreaBasisValue> {
+async function societyDefaultBasis(tx: Queryable, societyId: string, on: string): Promise<AreaBasisValue | null> {
   const rate = await tx.query<{ area_basis: AreaBasisValue }>(
     `SELECT area_basis FROM maintenance_rates
       WHERE society_id = $1 AND approved_by IS NOT NULL AND effective_from <= $2::date
       ORDER BY effective_from DESC LIMIT 1`,
     [societyId, on],
   );
-  return rate.rows[0]?.area_basis ?? 'super-built-up';
+  return rate.rows[0]?.area_basis ?? null;
 }
 
 /**

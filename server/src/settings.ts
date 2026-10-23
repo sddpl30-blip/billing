@@ -227,6 +227,32 @@ export async function sinkingFundPercent(tx: Queryable, societyId: string): Prom
   return typeof value === 'number' && value >= 0 && value <= 100 ? value : 0;
 }
 
+/** The payment terms a production society must have entered and approved before it bills. */
+export const BILLING_TERMS = [
+  { key: SETTING_KEYS.DUE_DAYS, label: 'Days to pay (billing.dueDays)' },
+  { key: SETTING_KEYS.SINKING_PERCENT, label: 'Sinking fund share (billing.sinkingFundPercent)' },
+] as const;
+
+/**
+ * Which payment terms are still pending verification: never entered, or
+ * entered and not yet approved by someone other than the person who entered
+ * them. Empty means billing may use them.
+ *
+ * Only a production society is held to this. A demo society keeps the
+ * defaults it was seeded with, so the demo and the test suites bill as before.
+ */
+export async function pendingBillingTerms(tx: Queryable, societyId: string): Promise<string[]> {
+  const mode = await tx.query<{ mode: string }>('SELECT mode FROM societies WHERE id = $1', [societyId]);
+  if (mode.rows[0]?.mode !== 'production') return [];
+  const pending: string[] = [];
+  for (const term of BILLING_TERMS) {
+    const row = await readOne(tx, societyId, term.key);
+    if (row === null || row.value === null) pending.push(`${term.label}: not entered`);
+    else if (!row.approved) pending.push(`${term.label}: entered, awaiting approval`);
+  }
+  return pending;
+}
+
 export interface RateInForce extends MaintenanceRate {
   readonly id: string;
 }

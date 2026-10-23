@@ -16,7 +16,7 @@
 import type { Queryable } from './pg';
 import { badRequest } from './http';
 import { computeBillTax, computeMaintenance, type BillLine } from './posting';
-import { dueDays, gstTreatment, sinkingFundPercent } from './settings';
+import { dueDays, gstTreatment, pendingBillingTerms, sinkingFundPercent } from './settings';
 import { rateOnDate } from './settings';
 import { percentOf } from '../../src/accounting/money';
 import { allocateNumber } from './series';
@@ -120,6 +120,14 @@ export async function runBilling(
     throw badRequest(
       `The rate effective ${rate.effectiveFrom} (${rate.authority}) has not been approved, ` +
       `so it cannot be billed from. Approve it first.`,
+    );
+  }
+
+  const pendingTerms = await pendingBillingTerms(tx, input.societyId);
+  if (pendingTerms.length > 0) {
+    throw badRequest(
+      `The payment terms are pending verification, so ${period} cannot be billed: ` +
+      `${pendingTerms.join('; ')}. Enter the figures the committee fixed and have them approved.`,
     );
   }
 

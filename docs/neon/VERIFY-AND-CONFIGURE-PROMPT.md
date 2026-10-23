@@ -66,7 +66,10 @@ SELECT u.email, u.is_active, (u.password_hash IS NOT NULL) AS has_password,
  GROUP BY u.email, u.is_active, u.password_hash;
 
 -- 3. The structure setup creates (expect accounts > 20, receipt heads > 3,
---    ticket categories 6, settings 5)
+--    ticket categories 6, settings 3: GST, invoice prefix, billing day.
+--    Days to pay and the sinking fund share are deliberately not written:
+--    they stay pending verification until the committee's figures are
+--    entered and approved, and billing refuses until then)
 SELECT (SELECT count(*) FROM accounts a WHERE a.society_id = s.id)          AS accounts,
        (SELECT count(*) FROM receipt_heads h WHERE h.society_id = s.id)     AS receipt_heads,
        (SELECT count(*) FROM ticket_categories t WHERE t.society_id = s.id) AS ticket_categories,
@@ -74,7 +77,8 @@ SELECT (SELECT count(*) FROM accounts a WHERE a.society_id = s.id)          AS a
        (SELECT count(*) FROM bank_accounts b WHERE b.society_id = s.id)     AS bank_accounts
   FROM societies s WHERE s.mode = 'production';
 
--- 4. GST starts off and unapproved (approved_by should be null)
+-- 4. GST starts off and unapproved (approved_by should be null); no
+--    billing.dueDays or billing.sinkingFundPercent rows
 SELECT key, value, approved_by, approved_on
   FROM society_settings x JOIN societies s ON s.id = x.society_id AND s.mode = 'production'
  ORDER BY key;
