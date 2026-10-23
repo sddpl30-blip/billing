@@ -523,7 +523,7 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem(SESSION_EMAIL_KEY);
-    void booksSource.signOut();
+    booksSource.signOut().catch((err: unknown) => toastError(err, 'Signing out on the server failed.'));
     setSessionEmail(null);
     setIsAuthenticated(false);
     setCurrentRole('Resident');

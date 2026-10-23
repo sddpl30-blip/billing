@@ -98,6 +98,11 @@ export async function probe(client: ApiClient, timeoutMs = 4000): Promise<Reacha
       }>('/api/health'),
       timeoutMs,
     );
+    if (typeof health?.database?.reachable !== 'boolean') {
+      // Something answered at that address — a static host's fallback page,
+      // a proxy — but not the SocietyBooks API.
+      throw new Error('the address answered, but not as a SocietyBooks API');
+    }
     return {
       reachable: true,
       schemaVersion: health.schemaVersion,
