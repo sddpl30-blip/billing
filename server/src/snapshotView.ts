@@ -56,6 +56,12 @@ export interface EngineEntry {
 }
 
 export interface EngineDocument {
+  /**
+   * The server's id for the document. The engine does not need it and keeps
+   * it untouched; the browser needs it to name the document in a write
+   * (approve, release, convert, cancel, a receipt, the PDF).
+   */
+  readonly id: string;
   readonly proformaNo: string;
   readonly taxInvoiceNo?: string;
   readonly flatNo: string;
@@ -279,14 +285,14 @@ export async function buildSnapshot(
   }
 
   const documentRows = await tx.query<{
-    proforma_no: string; tax_invoice_no: string | null; flat_no: string; period: string;
+    id: string; proforma_no: string; tax_invoice_no: string | null; flat_no: string; period: string;
     estimated_tax: string; gross: string; issued_on: string; due_on: string; state: string;
     approved_by: string | null; approved_on: string | null; converted_on: string | null;
     converted_because: string | null; posted_entry_id: string | null;
     cancelled_by: string | null; cancelled_reason: string | null;
     lines: string; dispatch: string;
   }>(
-    `SELECT d.proforma_no, d.tax_invoice_no, f.flat_no, d.period, d.estimated_tax::text,
+    `SELECT d.id, d.proforma_no, d.tax_invoice_no, f.flat_no, d.period, d.estimated_tax::text,
             d.gross::text, d.issued_on::text, d.due_on::text, d.state,
             approver.email AS approved_by, d.approved_on::text, d.converted_on::text,
             d.converted_because, d.posted_entry_id,
@@ -316,6 +322,7 @@ export async function buildSnapshot(
   );
 
   const documents: EngineDocument[] = documentRows.rows.map(r => ({
+    id: r.id,
     proformaNo: r.proforma_no,
     ...(r.tax_invoice_no === null ? {} : { taxInvoiceNo: r.tax_invoice_no }),
     flatNo: r.flat_no,
