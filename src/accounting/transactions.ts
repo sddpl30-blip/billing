@@ -45,6 +45,59 @@ export interface MaintenanceBill {
    * posted instead. Leave unset for new billing, where the engine computes it.
    */
   readonly statedTax?: Paise;
+  /**
+   * The billing document this posts, where there is one. When set, the
+   * posting's idempotency key is the document's, so cancelling an invoice and
+   * raising a replacement for the same flat and month can post again — the
+   * cancelled entry is reversed, but its key is never released. Unset, the key
+   * is the flat and period, which is the guard a caller billing directly (an
+   * import, a script) has no other way to get.
+   */
+  readonly documentRef?: string;
+}
+
+/**
+ * GST on one member's bill for one month, the rule both engines share.
+ *
+ * Two things here were wrong before, and both were wrong the same way on the
+ * server and in the browser:
+ *
+ *  · The per-member exemption was configured and never applied. A housing
+ *    association's supply to a member is exempt while the member's monthly
+ *    contribution is at most the threshold (₹7,500 when this was written);
+ *    once it is above, GST is due on the WHOLE amount, not on the excess. The
+ *    contribution compared is the taxable value of the bill — the lines that
+ *    are a supply of service. A corpus collection such as the sinking fund is
+ *    not taxable here, so it is not counted towards the threshold either.
+ *    Whether that is the right reading for this association is a CA question;
+ *    the threshold itself is a setting, not a literal.
+ *  · CGST and SGST were one rounded tax split in two, so on an odd total one
+ *    half was a paisa more than the other while the invoice printed both at
+ *    9%. Each half is now 9% of the taxable value, rounded on its own, which
+ *    is what the invoice says; the total is their sum.
+ *
+ * `thresholdPaise` of 0 means every taxable rupee is taxed.
+ */
+export function gstOnContribution(
+  taxableValue: Paise,
+  opts: { ratePercent: number; thresholdPaise: Paise },
+): { taxableValue: Paise; cgst: Paise; sgst: Paise; total: Paise } {
+  if (taxableValue <= 0 || opts.ratePercent <= 0) {
+    return { taxableValue: 0, cgst: 0, sgst: 0, total: 0 };
+  }
+  if (taxableValue <= opts.thresholdPaise) {
+    // Exempt, so there is no taxable value to report either: an exempt supply
+    // is not a zero-rated one, and a GST register row of "₹5,000 at 18%,
+    // tax 0" would misstate a return.
+    return { taxableValue: 0, cgst: 0, sgst: 0, total: 0 };
+  }
+  const half = percentOf(taxableValue, opts.ratePercent / 2);
+  return { taxableValue, cgst: half, sgst: half, total: half * 2 };
+}
+
+/** The per-member threshold from the config, in paise. */
+export function memberThresholdPaise(config: AccountingConfig): Paise {
+  return Math.round(config.gstMemberThresholdRupees * 100);
 }
 
 export interface BillResult {
@@ -59,9 +112,10 @@ export interface BillResult {
  * Raises a maintenance bill: debit the member's receivable with the gross,
  * credit each head's income and the two GST accounts.
  *
- * GST is computed once over the taxable lines and split by `allocate`, so CGST
- * plus SGST always equals the total tax exactly rather than drifting by a
- * paisa when the tax is odd.
+ * GST follows `gstOnContribution`: nothing while the member's taxable
+ * contribution is within the per-member threshold, the whole amount above it,
+ * and each of CGST and SGST computed at half the rate so the two halves are
+ * always equal and the total is exactly their sum.
  */
 export function billMaintenance(
   ledger: Ledger,
@@ -76,13 +130,29 @@ export function billMaintenance(
     assertPositive(line.amount, `line for ${line.head}`);
   }
 
-  const taxableValue = config.gstOnMaintenance
+  const taxableLines = config.gstOnMaintenance
     ? sum(bill.lines.filter(l => l.taxable).map(l => l.amount))
     : 0;
-  const tax = bill.statedTax !== undefined
-    ? bill.statedTax
-    : taxableValue === 0 ? 0 : percentOf(taxableValue, config.gst.rate);
-  const [cgst, sgst] = tax === 0 ? [0, 0] : allocate(tax, [1, 1]);
+  let taxableValue: Paise;
+  let tax: Paise;
+  let cgst: Paise;
+  let sgst: Paise;
+  if (bill.statedTax !== undefined) {
+    // An imported invoice keeps the tax it was issued with, split as one
+    // amount because there is no rate to compute each half from.
+    taxableValue = taxableLines;
+    tax = bill.statedTax;
+    [cgst, sgst] = tax === 0 ? [0, 0] : allocate(tax, [1, 1]);
+  } else {
+    const gst = gstOnContribution(taxableLines, {
+      ratePercent: config.gst.rate,
+      thresholdPaise: memberThresholdPaise(config),
+    });
+    taxableValue = gst.taxableValue;
+    tax = gst.total;
+    cgst = gst.cgst;
+    sgst = gst.sgst;
+  }
   const gross = sum(bill.lines.map(l => l.amount)) + tax;
 
   requireIsoDate(bill.date, `billing date for ${bill.invoiceNo}`);
@@ -111,7 +181,9 @@ export function billMaintenance(
     narration: `Maintenance bill ${bill.invoiceNo} — flat ${bill.flatNo}, ${bill.period}`,
     source: { kind: 'maintenance-billing', ref: bill.invoiceNo },
     postings,
-    idempotencyKey: `bill:${bill.flatNo}:${bill.period}`,
+    idempotencyKey: bill.documentRef !== undefined
+      ? `bill:doc:${bill.documentRef}`
+      : `bill:${bill.flatNo}:${bill.period}`,
     postedBy: actor.postedBy,
   });
 
@@ -328,13 +400,25 @@ export function bookVendorBill(
     : input.tdsSection === '194J' ? config.tds.professional194J.rate
     : config.tds.rent194I.rate;
 
-  const tdsAmount = rate === 0 ? 0 : percentOf(input.gross, rate);
+  const inputGst = input.inputGst ?? 0;
+  if (inputGst > input.gross) {
+    throw new PostingError(
+      `Input GST ${inputGst} exceeds the bill gross ${input.gross} for ${input.billNo}`,
+    );
+  }
+  // Withholding is on the value of the service, not on the GST charged on it
+  // (CBDT circular 23/2017, where the GST is shown separately on the bill),
+  // so the base is the gross less the GST. It was the whole gross, which
+  // over-deducted from every vendor who charged GST and over-stated the
+  // vendor's TDS credit. Rounded half-up to the paisa by `percentOf`, the
+  // same rule the server uses, so the two engines withhold the same amount.
+  const tdsBase = input.gross - inputGst;
+  const tdsAmount = rate === 0 || tdsBase === 0 ? 0 : percentOf(tdsBase, rate);
   if (tdsAmount > input.gross) {
     throw new PostingError(
       `TDS ${tdsAmount} exceeds the bill gross ${input.gross} for ${input.billNo}`,
     );
   }
-  const inputGst = input.inputGst ?? 0;
   const netPayable = input.gross - tdsAmount;
 
   requireIsoDate(input.date, `vendor bill date for ${input.billNo}`);

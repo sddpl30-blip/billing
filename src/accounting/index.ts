@@ -43,8 +43,8 @@ export type {
   ReceiptResult, TdsSection, VendorBillInput, VendorBillResult,
 } from './transactions';
 export {
-  accrueFdInterest, applyAdvance, billMaintenance, bookVendorBill, memberPosition,
-  payVendorBill, placeFixedDeposit, postOpeningBalances, receiveFromMember,
+  accrueFdInterest, applyAdvance, billMaintenance, bookVendorBill, gstOnContribution,
+  memberPosition, memberThresholdPaise, payVendorBill, placeFixedDeposit, postOpeningBalances, receiveFromMember,
   remitGst, remitTds, transferToSinkingFundBank, vendorPosition,
 } from './transactions';
 
@@ -64,8 +64,8 @@ export {
 
 export type { Clock } from './clock';
 export {
-  DateError, addDays, addMonths, dayMonthYearToIso, daysBetween, endOfMonth,
-  fixedClock, isValidIsoDate, isoToDayMonthYear, periodLabel, periodToIso,
+  DateError, addDays, addMonths, canonicalPeriod, dayMonthYearToIso, daysBetween, endOfMonth,
+  fixedClock, isValidIsoDate, isoDateInIndia, isoToDayMonthYear, periodLabel, periodToIso,
   requireIsoDate, startOfMonth, systemClock,
 } from './clock';
 

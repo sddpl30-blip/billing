@@ -37,6 +37,7 @@ import type { PgPool } from './pg';
 import type { Config } from './config';
 import type { Logger } from './logger';
 import type { EmailProvider } from './providers/email';
+import { isoDateInIndia } from '../../src/accounting/clock';
 
 export interface CronDependencies {
   readonly pool: PgPool;
@@ -137,7 +138,8 @@ export function createCronRoutes(deps: CronDependencies): RouteDefinition[] {
         break;
       }
       const summary = await runDueJobs(
-        { pool, log, email, now: () => new Date().toISOString().slice(0, 10) },
+        // India's date, as the standalone scheduler uses; see clock.ts.
+        { pool, log, email, now: () => isoDateInIndia() },
         { worker, limit: 5 },
       );
       passes += 1;

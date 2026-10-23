@@ -31,6 +31,8 @@
  * entry takes two locks, and every caller must take them in the same order —
  * the document series first, then the entry reference — or two of them can
  * deadlock. `postEntry` takes the entry-reference lock last for that reason.
+ * A flat's balance lock (`lockFlatBalance`), where one is needed, comes before
+ * all of them.
  */
 
 import type { Queryable } from './pg';
@@ -43,7 +45,8 @@ export type SeriesKind =
   | 'receipt'
   | 'note'
   | 'ticket'
-  | 'vendor-payment';
+  | 'vendor-payment'
+  | 'flat-balance';
 
 /**
  * Takes the lock for one series until the transaction ends.
@@ -64,6 +67,26 @@ export async function lockSeries(
   // hashtext gives an int4; two different series keys that happen to collide
   // only cost each other a little waiting, never correctness.
   await tx.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [key]);
+}
+
+/**
+ * Serialises everything that reads a flat's open balances and then writes
+ * against them: receipts, credit notes, cancellations.
+ *
+ * The receipt-number lock did not do this. It is scoped to the month of the
+ * receipt, so two receipts for the same flat dated in different months took
+ * different locks, both read the same outstanding invoice, and both allocated
+ * against it — leaving the receivable credit-side by the amount allocated
+ * twice. This lock is scoped to the flat, whatever the date.
+ *
+ * Taken FIRST, before any series lock, by every caller; see the ordering note
+ * at the top of this file.
+ */
+export async function lockFlatBalance(
+  tx: Queryable,
+  input: { societyId: string; flatId: string },
+): Promise<void> {
+  await lockSeries(tx, { societyId: input.societyId, kind: 'flat-balance', scope: input.flatId });
 }
 
 /**

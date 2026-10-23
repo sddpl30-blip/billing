@@ -33,12 +33,14 @@ import {
 } from './rbac';
 import { audit, readAudit } from './audit';
 import {
-  A, accountBalance, bookVendorBill, convertToTaxInvoice, outstandingDocuments, payVendor,
-  recordReceipt, remitTds, reverseEntry, tdsQuarter,
+  A, accountBalance, bookVendorBill, convertToTaxInvoice, financialYearStart, outstandingDocuments,
+  payVendor, recordReceipt, remitTds, reverseEntry, tdsQuarter,
 } from './posting';
+import { percentOf } from '../../src/accounting/money';
 import { listDocuments, runBilling } from './billing';
 import { cancellationCreditNote } from './documents';
-import { allocateNumber } from './series';
+import { allocateNumber, lockFlatBalance } from './series';
+import { isoDateInIndia } from '../../src/accounting/clock';
 import {
   ageing, balanceSheet, collectionSummary, gstSummary, incomeAndExpenditure, memberStatement,
   tdsSummary, trialBalance,
@@ -95,7 +97,7 @@ function idempotencyKey(ctx: RequestContext): string {
   return value.trim();
 }
 
-const today = (): string => new Date().toISOString().slice(0, 10);
+const today = (): string => isoDateInIndia(); // India's date, not UTC's: see clock.ts
 
 /** `asAt` from the query string, defaulting to today. */
 function asAtOf(ctx: RequestContext): string {
@@ -107,7 +109,7 @@ function asAtOf(ctx: RequestContext): string {
 
 function dateRange(ctx: RequestContext): { from: string; to: string } {
   const to = ctx.query.get('to') ?? today();
-  const from = ctx.query.get('from') ?? `${to.slice(0, 4)}-04-01`;
+  const from = ctx.query.get('from') ?? `${financialYearStart(to)}-04-01`; // the FY `to` is in
   for (const [name, value] of [['from', from], ['to', to]] as const) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw badRequest(`${name} must be a date as YYYY-MM-DD.`);
   }
@@ -808,8 +810,12 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     if (input.reason.trim() === '') throw badRequest('A cancellation needs a reason.');
 
     const result = await pool.transaction(async (tx) => {
-      const found = await tx.query<{ state: string; proforma_no: string; posted_entry_id: string | null }>(
-        `SELECT state, proforma_no, posted_entry_id FROM billing_documents
+      const found = await tx.query<{
+        state: string; proforma_no: string; posted_entry_id: string | null;
+        flat_id: string; tax_invoice_no: string | null; gross: string;
+      }>(
+        `SELECT state, proforma_no, posted_entry_id, flat_id, tax_invoice_no, gross::text
+           FROM billing_documents
           WHERE id = $1 AND society_id = $2`,
         [ctx.params.id, principal.societyId],
       );
@@ -820,6 +826,35 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
       let reversalId: string | null = null;
       let creditNoteNo: string | null = null;
       if (doc.posted_entry_id !== null) {
+        // Nothing may be settled against it. The reversal takes the whole
+        // gross back out of the receivable; if a receipt (or a note) has
+        // already taken some of it, what is left is a receivable below zero —
+        // the society owing the member money that no account records as an
+        // advance. The browser's register refuses this, and so does this now:
+        // the receipt is reversed or the note undone first, deliberately.
+        //
+        // Read under the flat's lock, so a receipt cannot land between this
+        // check and the reversal.
+        await lockFlatBalance(tx, { societyId: principal.societyId, flatId: doc.flat_id });
+        const outstanding = await accountBalance(tx, {
+          societyId: principal.societyId,
+          code: A.MAINTENANCE_RECEIVABLE,
+          docRef: doc.tax_invoice_no as string,
+        });
+        const gross = Number(doc.gross);
+        if (outstanding !== gross) {
+          const settled = gross - outstanding;
+          throw conflict(
+            settled > 0
+              ? `${doc.tax_invoice_no} has ${settled} paise received or credited against it. ` +
+                `Reverse that receipt or note first; cancelling now would reverse the whole ` +
+                `${gross} paise and leave the member's account below zero.`
+              : `${doc.tax_invoice_no} carries ${-settled} paise of debit notes beyond the ` +
+                `invoice. Reverse those first; cancelling now would leave them standing ` +
+                `against a cancelled invoice.`,
+          );
+        }
+
         // A posted invoice is not unposted. It is reversed, and both entries
         // stay in the ledger.
         reversalId = await reverseEntry(tx, {
@@ -897,6 +932,12 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
       );
       if (flat.rows[0] === undefined) throw notFound('That flat');
 
+      // The flat's balance lock first, before the receipt series. The receipt
+      // series is per month, so it did not serialise two receipts for one
+      // flat dated in different months: both read the same open invoice and
+      // both allocated against it. See lockFlatBalance.
+      await lockFlatBalance(tx, { societyId: principal.societyId, flatId: input.flatId });
+
       // A receipt number per month, with the series locked so two payments
       // taken at the same moment cannot be given the same number. Before the
       // lock, seven of eight concurrent payments were refused on the unique
@@ -931,6 +972,12 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
         ...(input.againstDocumentId !== undefined
           ? { againstDocumentId: input.againstDocumentId }
           : {}),
+        // A payment for a proforma converts it, as the browser's register
+        // does; see recordReceipt.
+        conversion: {
+          gst: await gstTreatment(tx, principal.societyId),
+          invoicePrefix: await invoicePrefix(tx, principal.societyId),
+        },
       });
 
       await audit(tx, {
@@ -945,6 +992,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
           amountPaise: input.amountPaise,
           appliedToDues: receipt.appliedToDues,
           heldAsAdvance: receipt.heldAsAdvance,
+          converted: receipt.converted.map(c => c.taxInvoiceNo),
         },
         requestId: ctx.requestId,
       });
@@ -1216,9 +1264,19 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
           `Correct the vendor's TDS section first.`,
         );
       }
-      // Withholding is on the gross, and the paise are integers throughout, so
-      // this is a truncating division rather than a rounded float.
-      const tds = Math.floor((input.grossPaise * rateBps) / 10000);
+      // Withholding is on the value of the service, not on the GST charged on
+      // it: CBDT circular 23/2017 excludes GST shown separately on the bill.
+      // It was on the whole gross, so every vendor charging GST had 18% more
+      // withheld than the law asks, and the TDS register over-stated their
+      // credit. Rounded half-up to the paisa by the engine's `percentOf` —
+      // this was a truncating Math.floor, so the server and the browser
+      // withheld a paisa apart on the same bill.
+      const inputGst = input.inputGstPaise ?? 0;
+      if (inputGst > input.grossPaise) {
+        throw badRequest('The input GST on a bill cannot be more than its gross.');
+      }
+      const tdsBase = input.grossPaise - inputGst;
+      const tds = rateBps === 0 || tdsBase === 0 ? 0 : percentOf(tdsBase, rateBps / 100);
       const net = input.grossPaise - tds;
 
       const inserted = await tx.query<{ id: string }>(

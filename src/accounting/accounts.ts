@@ -172,11 +172,29 @@ export const RECEIPT_HEADS: readonly ReceiptHeadSpec[] = [
   { key: 'other', label: 'Other receipts', income: A.INC_OTHER_RECEIPTS },
 ];
 
-/** Keys of the six heads, as a union so a typo will not typecheck. */
+/**
+ * Late-payment interest and penalties, as a bill line.
+ *
+ * Not one of the six collection heads above — those are what the association
+ * reports collections under and what the server's receipt_heads table mirrors —
+ * but a line a bill can carry. It credits 4060, which the chart always had and
+ * nothing used: the import booked penalties to "Other receipts" instead, so
+ * the income statement showed no penalty income at all and an "other" figure
+ * nobody could explain.
+ */
+export const LATE_INTEREST_HEAD: ReceiptHeadSpec = {
+  key: 'late-interest',
+  label: 'Late payment interest',
+  income: A.INC_LATE_INTEREST,
+};
+
+/** Keys of the bill-line heads, as a union so a typo will not typecheck. */
 export type ReceiptHead =
-  | 'maintenance' | 'sinking' | 'festival' | 'rental' | 'reimbursement' | 'other';
+  | 'maintenance' | 'sinking' | 'festival' | 'rental' | 'reimbursement' | 'other'
+  | 'late-interest';
 
 export function receiptHead(key: ReceiptHead): ReceiptHeadSpec {
+  if (key === LATE_INTEREST_HEAD.key) return LATE_INTEREST_HEAD;
   const found = RECEIPT_HEADS.find(h => h.key === key);
   if (!found) throw new Error(`Unknown receipt head "${key}"`);
   return found;

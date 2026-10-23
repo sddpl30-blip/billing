@@ -47,8 +47,23 @@ export interface Clock {
   readonly now: () => string;
 }
 
+/**
+ * The calendar date in India at an instant, as YYYY-MM-DD.
+ *
+ * Not `toISOString().slice(0, 10)`, which is the date in UTC: from midnight to
+ * 05:30 IST that is still yesterday, so a payment recorded at 01:00 on the 1st
+ * was dated the last day of the previous month — the wrong period, and on the
+ * 1st of April the wrong financial year. India keeps one zone with no daylight
+ * saving, so a fixed +05:30 offset is exact and needs no time-zone database
+ * (which a trimmed-down runtime may not ship).
+ */
+export function isoDateInIndia(at: Date = new Date()): string {
+  const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+  return new Date(at.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
 export const systemClock: Clock = {
-  today: () => new Date().toISOString().slice(0, 10),
+  today: () => isoDateInIndia(),
   now: () => new Date().toISOString(),
 };
 
@@ -107,13 +122,42 @@ export function periodLabel(iso: string): string {
   return `${MONTH_NAMES[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
 }
 
-/** "Jul 2026" -> "2026-07-01". Null when the label names no month. */
+const FULL_MONTH_NAMES = [
+  'january', 'february', 'march', 'april', 'may', 'june',
+  'july', 'august', 'september', 'october', 'november', 'december',
+];
+
+/**
+ * "Jul 2026" -> "2026-07-01". Null when the label names no month.
+ *
+ * Lenient about how a person types a month — "jul 2026", "July 2026",
+ * "Sept 2026", extra spaces — and strict about what it is: "Julyy 2026" names
+ * no month and is refused rather than read as July because it starts "Jul".
+ */
 export function periodToIso(label: string): string | null {
-  const m = /^([A-Za-z]{3})[a-z]*\s+(\d{4})$/.exec(label.trim());
+  const m = /^([A-Za-z]{3,9})\s+(\d{4})$/.exec(label.trim());
   if (!m) return null;
-  const index = MONTH_NAMES.findIndex(n => n.toLowerCase() === m[1].toLowerCase());
+  const word = m[1].toLowerCase();
+  const index = FULL_MONTH_NAMES.findIndex(full =>
+    word === full.slice(0, 3) || word === full || (full === 'september' && word === 'sept'));
   if (index < 0) return null;
   return `${m[2]}-${(index + 1).toString().padStart(2, '0')}-01`;
+}
+
+/**
+ * The one spelling of a period: "jul  2026", "July 2026" and "Jul 2026" are
+ * all "Jul 2026". Null when the label names no month.
+ *
+ * Every duplicate check in both engines compares periods as text — the
+ * register's flat-and-period key here, the unique index on the server — so a
+ * period has to be put in this form before it is stored or compared. Before
+ * this, "Jul 2026" and "Jul  2026" were two different months to the duplicate
+ * check and the same month to everything else, so a flat could be billed for
+ * July twice.
+ */
+export function canonicalPeriod(label: string): string | null {
+  const iso = periodToIso(label);
+  return iso === null ? null : periodLabel(iso);
 }
 
 /** "10 Jun 2026" -> "2026-06-10". Null when it is not a day, month and year. */

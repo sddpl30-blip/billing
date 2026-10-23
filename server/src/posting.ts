@@ -8,17 +8,19 @@
  * ledger — and where outstanding balances are read from, which has to be SQL
  * because the engine's `Ledger` holds everything in memory and a server cannot.
  *
- * What that reuse buys, concretely: `allocate` guarantees CGST plus SGST adds
- * back to the tax exactly; `percentOf` rounds half-up to the paisa; `areaCharge`
- * refuses an unapproved rate and a basis mismatch. None of that is rewritten
- * below, and the 224 checks covering it still apply.
+ * What that reuse buys, concretely: `gstOnContribution` applies the per-member
+ * threshold and computes CGST and SGST as equal halves; `percentOf` rounds
+ * half-up to the paisa; `areaCharge` refuses an unapproved rate and a basis
+ * mismatch. None of that is rewritten below, and the checks covering it in
+ * the engine's suites still apply.
  */
 
-import { allocate, percentOf } from '../../src/accounting/money';
 import { areaCharge, type AreaBasis, type MaintenanceRate } from '../../src/accounting/rates';
+import { gstOnContribution } from '../../src/accounting/transactions';
 import type { Queryable } from './pg';
 import { allocateNumber } from './series';
 import { HttpError, badRequest, conflict } from './http';
+import { fundTreatment } from './settings';
 
 /** Account codes, matching the engine's chart. */
 export const A = {
@@ -35,6 +37,7 @@ export const A = {
   FESTIVAL_FUND: '3010',
   GENERAL_RESERVE: '3020',
   INC_MAINTENANCE: '4000',
+  INC_SINKING_CONTRIBUTION: '4010',
   INC_FESTIVAL: '4020',
   INC_RENTAL: '4030',
   INC_REIMBURSEMENT: '4040',
@@ -316,39 +319,68 @@ export interface BillLine {
   readonly taxable: boolean;
 }
 
-const INCOME_FOR_HEAD: Record<BillLine['head'], string> = {
-  maintenance: A.INC_MAINTENANCE,
-  sinking: A.SINKING_FUND,       // credited to the fund directly, per config
-  festival: A.INC_FESTIVAL,
-  rental: A.INC_RENTAL,
-  reimbursement: A.INC_REIMBURSEMENT,
-  other: A.INC_OTHER,
-};
+/**
+ * The account a bill line is credited to.
+ *
+ * The two fund heads follow the society's treatment, exactly as the engine's
+ * `billMaintenance` follows `sinkingFundThroughIncome`: credited to the fund
+ * directly (3000, 3010) by default, or to income (4010, 4020) to be
+ * appropriated later when the society has chosen that. The server used to
+ * hard-code the sinking fund to the fund and festival collections to income
+ * — the one combination the engine never produces — so the same bill gave a
+ * different surplus depending on which side of the application posted it.
+ */
+export function creditAccountForHead(head: BillLine['head'], throughIncome: boolean): string {
+  switch (head) {
+    case 'maintenance': return A.INC_MAINTENANCE;
+    case 'sinking': return throughIncome ? A.INC_SINKING_CONTRIBUTION : A.SINKING_FUND;
+    case 'festival': return throughIncome ? A.INC_FESTIVAL : A.FESTIVAL_FUND;
+    case 'rental': return A.INC_RENTAL;
+    case 'reimbursement': return A.INC_REIMBURSEMENT;
+    case 'other': return A.INC_OTHER;
+  }
+}
 
 export interface GstTreatment {
   readonly chargeGst: boolean;
   readonly ratePercent: number;
   /** Whether a CA has signed the treatment off. Unapproved refuses to post. */
   readonly approved: boolean;
+  /**
+   * The per-member monthly exemption, in paise: a member whose taxable
+   * contribution for the month is at or below it is not charged GST at all.
+   */
+  readonly memberThresholdPaise: number;
 }
 
 /**
- * Computes a bill's tax using the engine's own functions.
+ * Computes a bill's tax using the engine's own rule.
  *
- * `percentOf` rounds half-up to the paisa and `allocate` splits the result so
- * CGST plus SGST equals the tax exactly — the two guarantees that stop a
- * rounding difference appearing on an invoice.
+ * `gstOnContribution` is the one place both engines apply the per-member
+ * threshold — nothing at or below it, the whole taxable value above it — and
+ * compute CGST and SGST as equal halves at half the rate each, so an invoice
+ * printing "CGST @ 9%" and "SGST @ 9%" never shows two amounts a paisa apart.
  */
 export function computeBillTax(
   lines: readonly BillLine[],
   gst: GstTreatment,
 ): { taxableValue: number; cgst: number; sgst: number; total: number } {
   if (!gst.chargeGst) return { taxableValue: 0, cgst: 0, sgst: 0, total: 0 };
-  const taxableValue = lines.filter(l => l.taxable).reduce((sum, l) => sum + l.amount, 0);
-  if (taxableValue === 0) return { taxableValue: 0, cgst: 0, sgst: 0, total: 0 };
-  const total = percentOf(taxableValue, gst.ratePercent);
-  const [cgst, sgst] = allocate(total, [1, 1]);
-  return { taxableValue, cgst, sgst, total };
+  const taxable = lines.filter(l => l.taxable).reduce((sum, l) => sum + l.amount, 0);
+  return gstOnContribution(taxable, {
+    ratePercent: gst.ratePercent,
+    thresholdPaise: gst.memberThresholdPaise,
+  });
+}
+
+/**
+ * The year a date's Indian financial year starts in: 2026 for any date from
+ * 1 April 2026 to 31 March 2027.
+ */
+export function financialYearStart(isoDate: string): number {
+  const year = Number(isoDate.slice(0, 4));
+  const month = Number(isoDate.slice(5, 7));
+  return month >= 4 ? year : year - 1;
 }
 
 /** The maintenance charge for a flat, from the engine's `areaCharge`. */
@@ -429,11 +461,18 @@ export async function convertToTaxInvoice(
   const tax = computeBillTax(lines, input.gst);
   const net = lines.reduce((sum, l) => sum + l.amount, 0);
   const gross = net + tax.total;
+  const throughIncome = await fundTreatment(tx, input.societyId);
 
   // The series is per financial year and allocated inside the transaction, so
   // two concurrent conversions cannot take the same number: the unique index
   // on (society, tax_invoice_no) is the backstop.
-  const year = input.on.slice(0, 4);
+  //
+  // The FINANCIAL year — April to March — named by the year it starts in.
+  // This was the calendar year of the invoice date, so the series restarted at
+  // 00001 every 1 January, three months into the year a return covers, and an
+  // invoice dated February 2027 sat in a "2027" series alongside nothing else
+  // from its own financial year.
+  const year = String(financialYearStart(input.on));
   // Locked for this society and year, so two conversions cannot take the same
   // number. Gapless numbering is the requirement — a tax invoice series with
   // 00007 missing is a question from an auditor — so this serialises rather
@@ -466,7 +505,7 @@ export async function convertToTaxInvoice(
   ];
   for (const line of lines) {
     legs.push({
-      accountCode: INCOME_FOR_HEAD[line.head],
+      accountCode: creditAccountForHead(line.head, throughIncome),
       debit: 0,
       credit: line.amount,
       docRef: taxInvoiceNo,
@@ -482,13 +521,20 @@ export async function convertToTaxInvoice(
     narration: `Tax invoice ${taxInvoiceNo} — flat ${doc.flat_no}, ${doc.period}`,
     sourceKind: 'maintenance-billing',
     sourceRef: taxInvoiceNo,
-    idempotencyKey: `bill:${doc.flat_id}:${doc.period}`,
+    // Keyed on the document, not on the flat and period. A cancelled
+    // invoice's entry is reversed but its idempotency key stays used for
+    // ever, so a flat-and-period key meant a cancelled July invoice could
+    // never be replaced: the new document's conversion was refused as a
+    // duplicate of the one that had been reversed. One live document per flat
+    // and period is the unique index's job, and it frees the slot on
+    // cancellation; this key only has to stop one document posting twice.
+    idempotencyKey: `bill:doc:${doc.id}`,
     postedBy: input.postedBy,
     postedByLabel: input.postedByLabel,
     legs,
   });
   if (entryId === null) {
-    throw conflict(`A billing entry already exists for flat ${doc.flat_no} in ${doc.period}.`);
+    throw conflict(`A billing entry already exists for ${doc.proforma_no} (flat ${doc.flat_no}, ${doc.period}).`);
   }
 
   await tx.query(
@@ -525,6 +571,8 @@ export interface ReceiptResult {
   readonly appliedToDues: number;
   readonly heldAsAdvance: number;
   readonly allocations: ReadonlyArray<{ documentId: string; taxInvoiceNo: string; amount: number }>;
+  /** Proformas this payment turned into tax invoices before it was allocated. */
+  readonly converted: ReadonlyArray<{ documentId: string; taxInvoiceNo: string; gross: number }>;
 }
 
 /**
@@ -534,6 +582,21 @@ export interface ReceiptResult {
  * than left to push the receivable credit-side. The allocation rows and the
  * journal entry go in together, and a deferred trigger checks at COMMIT that
  * the allocations add up to the payment.
+ *
+ * A payment for a bill still at proforma stage converts that proforma first,
+ * as the browser's register does: the member has paid for the supply, so the
+ * tax invoice is due (GST's time of supply is the earlier of payment and the
+ * due date), and only a tax invoice carries a receivable to allocate against.
+ * Before this, the whole payment went to advances and stayed there — the
+ * proforma later converted on its due date and read as unpaid and overdue
+ * while the member's money sat beside it. With `againstDocumentId` that one
+ * document is converted (and refused clearly if it is not approved); without
+ * it, approved proformas issued on or before the receipt are converted
+ * oldest first, for as long as the payment exceeds what is already due.
+ *
+ * The caller must hold the flat's balance lock (`lockFlatBalance`) before
+ * calling: the allocation is computed from balances read here, and two
+ * receipts for one flat reading them at once both spend the same dues.
  */
 export async function recordReceipt(
   tx: Queryable,
@@ -544,6 +607,11 @@ export async function recordReceipt(
     postedBy: string | null; postedByLabel: string;
     /** Settle one named invoice rather than the oldest open ones. */
     againstDocumentId?: string;
+    /**
+     * What converting a proforma needs. Absent, nothing is converted and the
+     * receipt is allocated against tax invoices only.
+     */
+    conversion?: { gst: GstTreatment; invoicePrefix: string };
   },
 ): Promise<ReceiptResult> {
   const already = await tx.query<{ id: string; receipt_no: string }>(
@@ -555,6 +623,48 @@ export async function recordReceipt(
       `That payment was already recorded as receipt ${already.rows[0].receipt_no}. ` +
       `Re-sending the same Idempotency-Key does not take the money twice.`,
     );
+  }
+
+  const converted: Array<{ documentId: string; taxInvoiceNo: string; gross: number }> = [];
+  if (input.conversion !== undefined) {
+    const due = (await outstandingDocuments(tx, {
+      societyId: input.societyId, flatId: input.flatId, asAt: input.receivedOn,
+    })).reduce((sum, d) => sum + d.outstanding, 0);
+    let spare = input.amount - due;
+
+    const candidates = await tx.query<{ id: string; state: string; issued_on: string }>(
+      `SELECT id, state, issued_on::text FROM billing_documents
+        WHERE society_id = $1 AND flat_id = $2
+          AND state IN ('draft', 'approved', 'released')
+          AND ($3::uuid IS NULL OR id = $3::uuid)
+        ORDER BY issued_on, proforma_no`,
+      [input.societyId, input.flatId, input.againstDocumentId ?? null],
+    );
+    for (const candidate of candidates.rows) {
+      if (input.againstDocumentId === undefined) {
+        if (spare <= 0) break;
+        // Unprompted, only what could be converted anyway: an approved
+        // proforma already issued. A draft stays a draft and the money waits
+        // as an advance, which is visible, rather than a tax invoice being
+        // issued from a bill nobody has approved.
+        if (candidate.state === 'draft' || candidate.issued_on > input.receivedOn) continue;
+      }
+      // Named explicitly, a draft or a future-dated proforma is refused here
+      // by convertToTaxInvoice with its own reason, which is the answer the
+      // person recording the payment needs.
+      const result = await convertToTaxInvoice(tx, {
+        societyId: input.societyId,
+        documentId: candidate.id,
+        on: input.receivedOn,
+        because: 'payment-received',
+        postedBy: input.postedBy,
+        postedByLabel: input.postedByLabel,
+        gst: input.conversion.gst,
+        invoicePrefix: input.conversion.invoicePrefix,
+      });
+      converted.push({ documentId: candidate.id, taxInvoiceNo: result.taxInvoiceNo, gross: result.gross });
+      spare -= result.gross;
+    }
   }
 
   let open = await outstandingDocuments(tx, {
@@ -656,7 +766,10 @@ export async function recordReceipt(
     );
   }
 
-  return { paymentId, receiptNo: input.receiptNo, entryId, appliedToDues, heldAsAdvance, allocations };
+  return {
+    paymentId, receiptNo: input.receiptNo, entryId, appliedToDues, heldAsAdvance, allocations,
+    converted,
+  };
 }
 
 const TDS_ACCOUNT: Record<string, string> = {
@@ -761,8 +874,12 @@ export async function bookVendorBill(
         // The rate the bill was raised at, not a ratio recomputed from the
         // amounts: deriving it back out of tds/gross produces a fractional
         // basis-point figure whenever the deduction was rounded.
+        //
+        // The amount the deduction was made on, which is the bill less its
+        // GST — what Form 26Q reports as paid or credited, and what tds/rate
+        // has to agree with.
         input.societyId, input.billId, bill.vendor_id, bill.tds_section, quarter,
-        input.on, gross, Number(bill.tds_rate_bps), tds,
+        input.on, gross - inputGst, Number(bill.tds_rate_bps), tds,
       ],
     );
   }

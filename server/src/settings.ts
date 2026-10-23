@@ -13,7 +13,7 @@
  */
 
 import type { Queryable } from './pg';
-import { badRequest } from './http';
+import { badRequest, conflict } from './http';
 import type { GstTreatment } from './posting';
 import type { AreaBasis, MaintenanceRate } from '../../src/accounting/rates';
 
@@ -101,7 +101,15 @@ export const SETTING_KEYS = {
   DUE_DAYS: 'billing.dueDays',
   SINKING_PERCENT: 'billing.sinkingFundPercent',
   BILLING_DAY: 'billing.dayOfMonth',
+  FUNDS_THROUGH_INCOME: 'accounting.sinkingFundThroughIncome',
 } as const;
+
+/**
+ * The per-member GST exemption when the setting does not name one: ₹7,500 a
+ * month, the figure the engine's config carries. Statutory rather than a
+ * choice, which is why it has a default where the treatment itself does not.
+ */
+export const DEFAULT_GST_MEMBER_THRESHOLD_RUPEES = 7500;
 
 /**
  * The GST treatment.
@@ -114,8 +122,11 @@ export const SETTING_KEYS = {
  */
 export async function gstTreatment(tx: Queryable, societyId: string): Promise<GstTreatment> {
   const row = await readOne(tx, societyId, SETTING_KEYS.GST);
-  if (row === null) return { chargeGst: false, ratePercent: 0, approved: false };
-  const value = row.value as { chargeGst?: unknown; ratePercent?: unknown };
+  const defaultThreshold = DEFAULT_GST_MEMBER_THRESHOLD_RUPEES * 100;
+  if (row === null) {
+    return { chargeGst: false, ratePercent: 0, approved: false, memberThresholdPaise: defaultThreshold };
+  }
+  const value = row.value as { chargeGst?: unknown; ratePercent?: unknown; memberThresholdRupees?: unknown };
   const chargeGst = value.chargeGst === true;
   const ratePercent = typeof value.ratePercent === 'number' ? value.ratePercent : 0;
   if (chargeGst && !(ratePercent > 0 && ratePercent <= 100)) {
@@ -124,7 +135,46 @@ export async function gstTreatment(tx: Queryable, societyId: string): Promise<Gs
       `usable rate. Correct the ${SETTING_KEYS.GST} setting.`,
     );
   }
-  return { chargeGst, ratePercent, approved: row.approved };
+  // The per-member threshold is part of the treatment, so it is signed off
+  // with the rate: changing it drops the approval like any other change to
+  // the value. Absent, the statutory figure applies — never "no threshold",
+  // which would charge members the law exempts.
+  const threshold = value.memberThresholdRupees;
+  if (threshold !== undefined &&
+      !(typeof threshold === 'number' && Number.isFinite(threshold) && threshold >= 0 && threshold <= 10_000_000)) {
+    throw badRequest(
+      `The stored GST treatment gives a per-member threshold of ${String(threshold)}, which is ` +
+      `not an amount in rupees. Correct the ${SETTING_KEYS.GST} setting.`,
+    );
+  }
+  const memberThresholdPaise = typeof threshold === 'number'
+    ? Math.round(threshold * 100)
+    : defaultThreshold;
+  return { chargeGst, ratePercent, approved: row.approved, memberThresholdPaise };
+}
+
+/**
+ * Whether fund contributions — the sinking fund and festival collections —
+ * are credited to income and appropriated later, rather than to the fund
+ * directly. The server's name for the engine's `sinkingFundThroughIncome`.
+ *
+ * False when there is no row: crediting the fund directly is what the server
+ * has always done with the sinking fund, and it keeps a contribution out of
+ * the surplus a committee might read as spendable. A row saying true changes
+ * the surplus and the balance sheet, so it is honoured only once signed off;
+ * until then posting is refused rather than either treatment being guessed.
+ */
+export async function fundTreatment(tx: Queryable, societyId: string): Promise<boolean> {
+  const row = await readOne(tx, societyId, SETTING_KEYS.FUNDS_THROUGH_INCOME);
+  if (row === null || row.value !== true) return false;
+  if (!row.approved) {
+    throw conflict(
+      `The ${SETTING_KEYS.FUNDS_THROUGH_INCOME} setting routes fund contributions through ` +
+      `income but has not been signed off, so nothing that credits a fund can be posted. ` +
+      `Record the sign-off, or set it back to false.`,
+    );
+  }
+  return true;
 }
 
 export async function invoicePrefix(tx: Queryable, societyId: string): Promise<string> {

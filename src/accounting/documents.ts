@@ -16,9 +16,12 @@
 
 import { Paise, formatRupees, sum } from './money';
 import { Ledger, JournalEntry } from './journal';
-import { AccountingConfig } from './config';
-import { Clock, addDays, periodToIso, requireIsoDate } from './clock';
-import { BillLine, MaintenanceBill, billMaintenance, receiveFromMember } from './transactions';
+import { AccountingConfig, financialYearOf } from './config';
+import { Clock, addDays, canonicalPeriod, periodToIso, requireIsoDate } from './clock';
+import {
+  BillLine, MaintenanceBill, billMaintenance, gstOnContribution, memberThresholdPaise,
+  receiveFromMember,
+} from './transactions';
 import { DerivedStatus, deriveStatus } from './allocation';
 import { A } from './accounts';
 
@@ -97,8 +100,16 @@ export class BillingRegister {
     private readonly clock: Clock,
   ) {}
 
+  /**
+   * The flat-and-period slot, keyed on the period's canonical spelling.
+   *
+   * Keyed on the raw label, "Jul 2026", "jul 2026" and "July 2026" were three
+   * different slots, so the duplicate check let the same month be billed three
+   * times while `periodToIso` read all three as July. A label that names no
+   * month keeps its raw form; `issueProforma` refuses it before it gets here.
+   */
   private key(flatNo: string, period: string): string {
-    return `${flatNo}::${period}`;
+    return `${flatNo}::${canonicalPeriod(period) ?? period}`;
   }
 
   private mustGet(proformaNo: string): BillingDocument {
@@ -123,27 +134,32 @@ export class BillingRegister {
     dueOn?: string;
     proformaNo?: string;
   }): BillingDocument {
-    const existingNo = this.byFlatPeriod.get(this.key(input.flatNo, input.period));
+    // The period in its one spelling before anything compares or stores it,
+    // so the document, the duplicate check and the posting all say "Jul 2026"
+    // whatever the screen sent.
+    const period = canonicalPeriod(input.period);
+    if (period === null) {
+      throw new DocumentError(
+        `"${input.period}" is not a month and year, so no billing date can be derived from it.`,
+      );
+    }
+
+    const existingNo = this.byFlatPeriod.get(this.key(input.flatNo, period));
     if (existingNo !== undefined) {
       const existing = this.mustGet(existingNo);
       if (existing.state !== 'cancelled') {
         throw new DocumentError(
-          `Flat ${input.flatNo} already has ${existingNo} for ${input.period} ` +
+          `Flat ${input.flatNo} already has ${existingNo} for ${period} ` +
           `(${existing.state}). Cancel it before raising another.`,
         );
       }
     }
 
     if (input.lines.length === 0) {
-      throw new DocumentError(`A document for ${input.flatNo} ${input.period} has no lines`);
+      throw new DocumentError(`A document for ${input.flatNo} ${period} has no lines`);
     }
 
-    const periodStart = periodToIso(input.period);
-    if (periodStart === null) {
-      throw new DocumentError(
-        `"${input.period}" is not a month and year, so no billing date can be derived from it.`,
-      );
-    }
+    const periodStart = periodToIso(period) as string;
     const issuedOn = requireIsoDate(input.issuedOn ?? periodStart, 'issue date');
     const dueOn = requireIsoDate(
       input.dueOn ?? addDays(issuedOn, this.config.billing.dueAfterDays),
@@ -157,11 +173,15 @@ export class BillingRegister {
     const taxable = this.config.gstOnMaintenance
       ? sum(input.lines.filter(l => l.taxable).map(l => l.amount))
       : 0;
-    const estimatedTax = taxable === 0
-      ? 0
-      : Math.round((taxable * Math.round(this.config.gst.rate * 10000)) / 1000000);
+    // The same rule the posting will apply at conversion — threshold and
+    // equal halves included — so the estimate a member sees on the proforma
+    // is the figure the tax invoice will carry for the same lines.
+    const estimatedTax = gstOnContribution(taxable, {
+      ratePercent: this.config.gst.rate,
+      thresholdPaise: memberThresholdPaise(this.config),
+    }).total;
 
-    const proformaNo = input.proformaNo ?? this.nextProformaNo(input.flatNo, input.period);
+    const proformaNo = input.proformaNo ?? this.nextProformaNo(input.flatNo, period);
     if (this.docs.has(proformaNo)) {
       throw new DocumentError(`Document number ${proformaNo} is already in use.`);
     }
@@ -169,7 +189,7 @@ export class BillingRegister {
     const doc: BillingDocument = {
       proformaNo,
       flatNo: input.flatNo,
-      period: input.period,
+      period,
       lines: input.lines.map(l => ({ ...l })),
       estimatedTax,
       gross: net + estimatedTax,
@@ -178,13 +198,27 @@ export class BillingRegister {
       state: 'draft',
     };
     this.docs.set(proformaNo, doc);
-    this.byFlatPeriod.set(this.key(input.flatNo, input.period), proformaNo);
+    this.byFlatPeriod.set(this.key(input.flatNo, period), proformaNo);
     return doc;
   }
 
+  /**
+   * The proforma number for a flat and period: PI-2026-07-A101, then
+   * PI-2026-07-A101-R2, -R3 for replacements.
+   *
+   * A replacement needs its own number. The number is the document's identity
+   * — the register is keyed on it, and the posting's idempotency key is built
+   * from it — so re-raising a cancelled July bill under the cancelled one's
+   * number was refused as "already in use" and the flat could not be billed
+   * for July again at all.
+   */
   private nextProformaNo(flatNo: string, period: string): string {
     const iso = periodToIso(period) ?? this.clock.today();
-    return `PI-${iso.slice(0, 7)}-${flatNo.replace(/[^A-Za-z0-9]/g, '')}`;
+    const base = `PI-${iso.slice(0, 7)}-${flatNo.replace(/[^A-Za-z0-9]/g, '')}`;
+    if (!this.docs.has(base)) return base;
+    let revision = 2;
+    while (this.docs.has(`${base}-R${revision}`)) revision += 1;
+    return `${base}-R${revision}`;
   }
 
   /**
@@ -293,7 +327,11 @@ export class BillingRegister {
     }
 
     this.taxInvoiceSequence += 1;
-    const fyLabel = on.slice(0, 4);
+    // Named by the year the financial year starts in, as the server's series
+    // is: an invoice dated February 2027 belongs to FY 2026-27 and says 2026.
+    // This was the calendar year, so the label changed every January, three
+    // months into the year a GST return covers.
+    const fyLabel = financialYearOf(on, this.config).from.slice(0, 4);
     const taxInvoiceNo =
       `${this.config.billing.taxInvoicePrefix}/${fyLabel}/` +
       `${this.taxInvoiceSequence.toString().padStart(5, '0')}`;
@@ -304,6 +342,12 @@ export class BillingRegister {
       date: on,
       invoiceNo: taxInvoiceNo,
       lines: doc.lines,
+      // The posting is keyed on this document, not on the flat and period:
+      // a cancelled invoice's entry is reversed but its key stays used, and a
+      // flat-and-period key would refuse the replacement document forever.
+      // The register's own flat-and-period check is what stops a second live
+      // document; this only stops one document posting twice.
+      documentRef: doc.proformaNo,
     };
     const posted = billMaintenance(this.ledger, bill, this.config, { postedBy: opts.by });
 
@@ -532,6 +576,9 @@ export class BillingRegister {
       if (this.docs.has(doc.proformaNo)) {
         throw new DocumentError(`Snapshot has two documents numbered ${doc.proformaNo}.`);
       }
+      // Keyed canonically, so a snapshot written before periods were
+      // canonicalised cannot restore two live documents for one month under
+      // two spellings.
       const key = this.key(doc.flatNo, doc.period);
       const existing = this.byFlatPeriod.get(key);
       if (existing !== undefined && this.mustGet(existing).state !== 'cancelled' && doc.state !== 'cancelled') {

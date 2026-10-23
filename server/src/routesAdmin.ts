@@ -26,10 +26,11 @@ import {
 import { audit } from './audit';
 import { buildSnapshot } from './snapshotView';
 import { generateDocument } from './documents';
-import { A, postEntry, type Leg } from './posting';
-import { allocateNumber } from './series';
+import { A, accountBalance, postEntry, type Leg } from './posting';
+import { allocateNumber, lockFlatBalance } from './series';
 import { gstTreatment } from './settings';
-import { percentOf, allocate } from '../../src/accounting/money';
+import { percentOf } from '../../src/accounting/money';
+import { isoDateInIndia } from '../../src/accounting/clock';
 
 export interface AdminRouteDependencies {
   readonly pool: PgPool;
@@ -40,7 +41,7 @@ export interface AdminRouteDependencies {
 
 const ok = (body: unknown): Reply => ({ status: 200, body });
 const created = (body: unknown): Reply => ({ status: 201, body });
-const today = (): string => new Date().toISOString().slice(0, 10);
+const today = (): string => isoDateInIndia(); // India's date, not UTC's: see clock.ts
 
 function who(ctx: RequestContext): Principal {
   if (ctx.principal === null) {
@@ -180,10 +181,10 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
 
     const result = await pool.transaction(async (tx) => {
       const found = await tx.query<{
-        flat_no: string; tax_invoice_no: string | null; state: string; gross: string;
+        flat_id: string; flat_no: string; tax_invoice_no: string | null; state: string; gross: string;
         issued_on: string;
       }>(
-        `SELECT f.flat_no, d.tax_invoice_no, d.state, d.gross::text, d.issued_on::text
+        `SELECT d.flat_id, f.flat_no, d.tax_invoice_no, d.state, d.gross::text, d.issued_on::text
            FROM billing_documents d JOIN flats f ON f.id = d.flat_id
           WHERE d.id = $1 AND d.society_id = $2`,
         [ctx.params.id, principal.societyId],
@@ -200,31 +201,89 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         throw badRequest(`A note cannot be dated before the invoice's ${document.issued_on}.`);
       }
 
+      // The flat's balance lock before the note series, as for a receipt: the
+      // cap below is computed from the invoice's balance, and a receipt
+      // landing between that read and this note's posting would spend the
+      // same balance twice.
+      await lockFlatBalance(tx, { societyId: principal.societyId, flatId: document.flat_id });
+
       const gst = await gstTreatment(tx, principal.societyId);
-      const tax = input.withTax && gst.chargeGst
-        ? percentOf(input.amountPaise, gst.ratePercent)
-        : 0;
       if (input.withTax && gst.chargeGst && !gst.approved) {
         throw conflict(
           'The GST treatment has not been confirmed, so a note cannot carry tax. Record the ' +
           'sign-off, or raise the note without tax.',
         );
       }
-      const [cgst, sgst] = tax > 0 ? allocate(tax, [1, 1]) : [0, 0];
+      // Each half at half the rate, as on the invoice itself, so a note's
+      // CGST and SGST are equal and match the "@ 9%" it prints.
+      const half = input.withTax && gst.chargeGst ? percentOf(input.amountPaise, gst.ratePercent / 2) : 0;
+      const cgst = half;
+      const sgst = half;
+      const tax = cgst + sgst;
       const total = input.amountPaise + tax;
 
       // A credit note reduces what the member owes, so it credits the
       // receivable and takes the income back out. A debit note is the mirror.
       const credit = input.kind === 'credit';
-      const legs: Leg[] = [
-        {
+
+      // A credit note is capped. It was not, so a credit larger than what was
+      // still owed on the invoice drove that invoice's receivable below zero
+      // — money the society owes the member, recorded nowhere as owed.
+      //
+      // Two limits. It cannot credit more than the invoice ever charged
+      // (gross, plus debit notes, less earlier credit notes): that is not an
+      // adjustment of this invoice. Within that, whatever exceeds what is
+      // still outstanding — because the member has already paid — goes to the
+      // member's advance, where the next bill or a refund can take it, which
+      // is what a receipt does with an overpayment.
+      let toReceivable = total;
+      let toAdvance = 0;
+      if (credit) {
+        const adjustments = await tx.query<{ net: string }>(
+          `SELECT COALESCE(SUM(CASE WHEN kind = 'debit' THEN amount + tax_amount
+                                    ELSE -(amount + tax_amount) END), 0)::text AS net
+             FROM invoice_adjustments WHERE document_id = $1`,
+          [ctx.params.id],
+        );
+        const creditable = Number(document.gross) + Number(adjustments.rows[0]?.net ?? '0');
+        if (total > creditable) {
+          throw badRequest(
+            `A credit note of ${total} paise is more than the ${creditable} paise ` +
+            `${document.tax_invoice_no} has charged, after earlier notes. A credit beyond that ` +
+            `is not an adjustment of this invoice.`,
+          );
+        }
+        const outstanding = await accountBalance(tx, {
+          societyId: principal.societyId,
+          code: A.MAINTENANCE_RECEIVABLE,
+          docRef: document.tax_invoice_no,
+        });
+        toReceivable = Math.max(0, Math.min(total, outstanding));
+        toAdvance = total - toReceivable;
+      }
+
+      const legs: Leg[] = [];
+      if (toReceivable > 0) {
+        legs.push({
           accountCode: A.MAINTENANCE_RECEIVABLE,
-          debit: credit ? 0 : total,
-          credit: credit ? total : 0,
+          debit: credit ? 0 : toReceivable,
+          credit: credit ? toReceivable : 0,
           party: document.flat_no,
           docRef: document.tax_invoice_no,
           memo: `${input.kind} note on ${document.tax_invoice_no}`,
-        },
+        });
+      }
+      if (toAdvance > 0) {
+        legs.push({
+          accountCode: A.MEMBER_ADVANCE,
+          debit: 0,
+          credit: toAdvance,
+          party: document.flat_no,
+          docRef: document.tax_invoice_no,
+          memo: `credit note on ${document.tax_invoice_no} beyond what was outstanding`,
+        });
+      }
+      legs.push(
         {
           accountCode: A.INC_MAINTENANCE,
           debit: credit ? input.amountPaise : 0,
@@ -232,7 +291,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
           docRef: document.tax_invoice_no,
           memo: input.reason.slice(0, 120),
         },
-      ];
+      );
       if (cgst > 0) {
         legs.push({
           accountCode: A.CGST_OUTPUT, debit: credit ? cgst : 0, credit: credit ? 0 : cgst,
@@ -317,7 +376,10 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         requestId: ctx.requestId,
       });
 
-      return { id: inserted.rows[0].id, noteNo, entryId, taxPaise: tax, totalPaise: total };
+      return {
+        id: inserted.rows[0].id, noteNo, entryId, taxPaise: tax, totalPaise: total,
+        appliedToInvoicePaise: toReceivable, heldAsAdvancePaise: toAdvance,
+      };
     });
 
     return created({ ...result, posted: true });

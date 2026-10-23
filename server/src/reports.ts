@@ -211,8 +211,18 @@ export interface AgeingRow {
   readonly buckets: readonly AgeingBucket[];
 }
 
-const BUCKETS: ReadonlyArray<{ label: string; from: number; to: number | null }> = [
-  { label: 'current', from: 0, to: 30 },
+/**
+ * The ageing buckets, by days past the due date.
+ *
+ * "Not yet due" is its own bucket, as it is in the engine's `ageing`. It used
+ * to share a "current" bucket with invoices up to 30 days overdue, so a bill
+ * issued yesterday and one a month late were the same figure — and the one
+ * figure a committee chasing arrears most needs, what is overdue at all, could
+ * not be read off the report.
+ */
+const BUCKETS: ReadonlyArray<{ label: string; from: number | null; to: number | null }> = [
+  { label: 'not-due', from: null, to: 0 },
+  { label: '1-30', from: 1, to: 30 },
   { label: '31-60', from: 31, to: 60 },
   { label: '61-90', from: 61, to: 90 },
   { label: '90+', from: 91, to: null },
@@ -271,8 +281,8 @@ export async function ageing(
     const outstanding = Number(row.outstanding);
     if (outstanding <= 0) continue;
     const days = Number(row.days);
-    const bucket = BUCKETS.find(b => days >= b.from && (b.to === null || days <= b.to))
-      ?? BUCKETS[0];
+    const bucket = BUCKETS.find(b =>
+      (b.from === null || days >= b.from) && (b.to === null || days <= b.to)) ?? BUCKETS[0];
 
     const flat = perFlat.get(row.flat_id) ?? { flatNo: row.flat_no, amounts: new Map() };
     const slot = flat.amounts.get(bucket.label) ?? { amount: 0, count: 0 };
