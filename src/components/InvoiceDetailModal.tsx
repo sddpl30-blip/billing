@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { X, FileText, Send, Download, CheckCircle, Clock } from 'lucide-react';
 import { Invoice } from '../types';
 import { formatRupee } from '../utils';
+import { Dialog } from './Dialog';
+import { downloadInvoice } from '../invoiceExport';
 
 interface InvoiceDetailModalProps {
   invoice: Invoice | null;
@@ -35,7 +37,6 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
   const [downloadError, setDownloadError] = useState<string | null>(null);
   if (!invoice) return null;
 
-  const subtotal = invoice.maintenance + invoice.sinkingFund + invoice.waterCharges + invoice.parkingCharges + invoice.nonOccupancyCharges;
   const cgst = invoice.gst / 2;
   const sgst = invoice.gst / 2;
 
@@ -64,79 +65,36 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
     }
   };
 
-  const save = (blob: Blob, filename: string): void => {
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
   const handleDownload = () => {
-    // The real document, from the server, where there is one.
-    if (onDownloadPdf) {
-      setDownloading(true);
-      setDownloadError(null);
-      void onDownloadPdf(invoice)
-        .then(blob => save(blob, `${invoice.invoiceNo.replace(/[^A-Za-z0-9.-]/g, '-')}.pdf`))
-        .catch((err: unknown) => {
-          setDownloadError(err instanceof Error ? err.message : 'The document could not be fetched.');
-        })
-        .finally(() => setDownloading(false));
-      return;
-    }
-
-    // No server: a text summary of what is on screen. It carries no GSTIN —
-    // there was a hardcoded one here, and a tax registration number on a
-    // document is a legal assertion, not a formatting detail. It also says
-    // what it is, so nobody files it as an invoice.
-    const fileContent = `
-============================================================
-       DEMONSTRATION SUMMARY - NOT A TAX INVOICE
-       No GSTIN, because this is not a real document.
-============================================================
-INVOICE NO: ${invoice.invoiceNo}
-BILLING CYCLE: ${invoice.period}
-FLAT: ${invoice.flatNo} | OWNER: ${invoice.name}
-DUEDATE: ${invoice.dueDate}
-============================================================
-PARTICULARS                           AMOUNT (INR)
-------------------------------------------------------------
-1. Maintenance Charges                 ${invoice.maintenance.toFixed(2)}
-2. Sinking Fund Contributions          ${invoice.sinkingFund.toFixed(2)}
-3. Bulk Water Utility Allocation       ${invoice.waterCharges.toFixed(2)}
-4. Covered/Open Car Parking            ${invoice.parkingCharges.toFixed(2)}
-5. Non-Occupancy Surcharges           ${invoice.nonOccupancyCharges.toFixed(2)}
-------------------------------------------------------------
-SUBTOTAL                               ${subtotal.toFixed(2)}
-CGST (9.0%)                            ${cgst.toFixed(2)}
-SGST (9.0%)                            ${sgst.toFixed(2)}
-LATE PAYMENT INTEREST / PENALTY        ${invoice.latePenalty.toFixed(2)}
-------------------------------------------------------------
-TOTAL ACCOUNTABLE DUE                  ${invoice.total.toFixed(2)}
-============================================================
-STATUS: ${invoice.status.toUpperCase()}
-============================================================
-Generated from demonstration data held in this browser.
-    `;
-    save(new Blob([fileContent], { type: 'text/plain' }), `Summary_${invoice.invoiceNo}.txt`);
+    // The real document from the server where there is one; the
+    // demonstration's labelled summary where there is not.
+    setDownloading(true);
+    setDownloadError(null);
+    downloadInvoice(invoice, onDownloadPdf)
+      .catch((err: unknown) => {
+        setDownloadError(err instanceof Error ? err.message : 'The document could not be fetched.');
+      })
+      .finally(() => setDownloading(false));
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-      <div className="bg-white w-full max-w-[380px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] animate-fade-in animate-scale-up flex flex-col max-h-[90vh]">
+    <Dialog
+      labelledBy="invoice-modal-title"
+      onClose={onClose}
+      className="bg-white w-full max-w-[380px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] animate-fade-in animate-scale-up flex flex-col max-h-[90vh] outline-none"
+    >
         {/* Header */}
         <div className="p-4 flex items-center justify-between border-b border-[var(--mv-border)] bg-white">
           <div className="flex items-center gap-2">
-            <FileText className="w-4 h-4 text-[var(--mv-accent)]" />
-            <span className="font-bold text-xs text-[var(--mv-ink)] tracking-tight uppercase">Tax Invoice Breakdown</span>
+            <FileText className="w-4 h-4 text-[var(--mv-accent)]" aria-hidden="true" />
+            <h2 id="invoice-modal-title" className="font-bold text-xs text-[var(--mv-ink)] tracking-tight uppercase">Invoice {invoice.invoiceNo}</h2>
           </div>
-          <button 
+          <button
             onClick={onClose}
+            aria-label="Close invoice"
             className="p-1.5 hover:bg-gray-100 rounded-full transition-colors text-[#6B7280]"
           >
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
 
@@ -178,7 +136,7 @@ Generated from demonstration data held in this browser.
           {/* Breakdown List */}
           <div className="space-y-2 text-left">
             <h5 className="text-[10px] font-bold text-[var(--mv-ink)] tracking-wider uppercase mb-1">Billing Head Allocations</h5>
-            
+
             <div className="flex justify-between items-center text-xs py-1">
               <span className="text-[#6B7280] font-medium">1. Society Maintenance</span>
               <span className="font-bold text-[var(--mv-ink)] font-mono">{formatRupee(invoice.maintenance)}</span>
@@ -208,11 +166,11 @@ Generated from demonstration data held in this browser.
               <>
                 <hr className="border-[var(--mv-border)] my-1" />
                 <div className="flex justify-between items-center text-xs py-0.5 text-[#6B7280]">
-                  <span>9% CGST Payable</span>
+                  <span>CGST</span>
                   <span className="font-mono font-medium">{formatRupee(cgst)}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs py-0.5 text-[#6B7280]">
-                  <span>9% SGST Payable</span>
+                  <span>SGST</span>
                   <span className="font-mono font-medium">{formatRupee(sgst)}</span>
                 </div>
               </>
@@ -283,7 +241,6 @@ Generated from demonstration data held in this browser.
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 };

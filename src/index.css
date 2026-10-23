@@ -26,26 +26,45 @@
 }
 
 
-/* Mani Vista RWA visual identity — directly sampled from the supplied emblem. */
+/* Mani Vista RWA visual identity — directly sampled from the supplied emblem.
+ *
+ * --mv-accent is the emblem's gold darkened until white text on it, and the
+ * gold as text on --mv-accent-soft, both reach 4.5:1 (the sampled #b78b2e gave
+ * 3.1:1). --mv-gold keeps the sampled metallic tone for decoration only, and
+ * --mv-accent-on-dark is the gold that reads on the dark ink bars.
+ * --mv-surface and --mv-muted replace the hard-coded white cards and grey
+ * text, so a theme reaches every screen. */
+:root {
+  /* Height of the demonstration banner, set from App.tsx. 0 when there is none. */
+  --mv-banner-h: 0px;
+}
 :root, :root[data-mv-theme="emerald"] {
   --mv-ink: #073b2e;
-  --mv-accent: #b78b2e;
+  --mv-accent: #86661c;
+  --mv-gold: #b78b2e;
+  --mv-accent-on-dark: #e2c27a;
   --mv-accent-soft: #faf0d7;
   --mv-accent-border: #e7d1a0;
   --mv-dark-border: #275749;
   --mv-page: #f9f8f3;
   --mv-soft: #f0eee6;
   --mv-border: #e7e2d5;
+  --mv-surface: #ffffff;
+  --mv-muted: #5b6560;
 }
 :root[data-mv-theme="ivory"] {
   --mv-ink: #255041;
-  --mv-accent: #9e7825;
+  --mv-accent: #7f601a;
+  --mv-gold: #9e7825;
+  --mv-accent-on-dark: #ead29a;
   --mv-accent-soft: #fff4de;
   --mv-accent-border: #e1bf7b;
   --mv-dark-border: #386456;
   --mv-page: #fffdf6;
   --mv-soft: #f7f1e4;
   --mv-border: #e9dfcc;
+  --mv-surface: #fffcf5;
+  --mv-muted: #665e50;
 }
 body { background: var(--mv-page); }
 ::selection { background: #d3b566; color: #073b2e; }
@@ -57,12 +76,16 @@ body { background: var(--mv-page); }
 }
 .mv-logo-tile img { width: 100%; height: 100%; object-fit: contain; }
 .mv-theme-switcher { display: inline-flex; gap: 3px; background: rgba(255,255,255,.12); padding: 3px; border: 1px solid rgba(183,139,46,.35); border-radius: 10px; }
-.mv-theme-switcher button { color: #d6bf86; font-size: 10px; font-weight: 800; border-radius: 7px; padding: 6px 9px; cursor: pointer; transition: all .15s ease; }
+.mv-theme-switcher button { color: var(--mv-accent); font-size: 10px; font-weight: 800; border-radius: 7px; padding: 6px 9px; cursor: pointer; transition: all .15s ease; }
 .mv-theme-switcher button.selected { background: #f3e4ba; color: #073b2e; }
+/* On the dark sidebar the unselected option is the light gold that reads there. */
+aside .mv-theme-switcher button:not(.selected) { color: var(--mv-accent-on-dark); }
 :root[data-mv-theme="ivory"] .mv-theme-switcher { background: #f7f1e4; }
 :root[data-mv-theme="ivory"] .mv-theme-switcher button { color: #7c622e; }
 :root[data-mv-theme="ivory"] .mv-theme-switcher button.selected { background: #255041; color: #fff; }
-/* Gold action elements: dark ink text ensures the gold buttons remain accessible. */
+:root[data-mv-theme="ivory"] aside .mv-theme-switcher { background: rgba(255,255,255,.12); }
+:root[data-mv-theme="ivory"] aside .mv-theme-switcher button.selected { background: #f3e4ba; color: #073b2e; }
+/* Gold action elements: white text, at 4.5:1 or better on the darkened gold above. */
 .bg-\[var\(--mv-accent\)\] { color: #fff; }
 @media (max-width: 500px) {
   #phone-frame-container header .mv-theme-switcher {

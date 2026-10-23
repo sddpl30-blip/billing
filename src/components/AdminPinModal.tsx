@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Lock, X, ChevronLeft } from 'lucide-react';
+import { Dialog } from './Dialog';
 
 interface AdminPinModalProps {
   isOpen: boolean;
@@ -49,28 +50,32 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-      <div className="bg-white w-full max-w-[340px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] animate-fade-in animate-scale-up">
+    <Dialog
+      labelledBy="admin-pin-title"
+      onClose={onClose}
+      className="bg-white w-full max-w-[340px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] animate-fade-in animate-scale-up outline-none"
+    >
         {/* Header */}
         <div className="p-4 flex items-center justify-between border-b border-[var(--mv-border)]">
           <div className="flex items-center gap-2">
             <div className="p-1.5 bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] rounded-lg">
-              <Lock className="w-4 h-4" />
+              <Lock className="w-4 h-4" aria-hidden="true" />
             </div>
-            <span className="font-semibold text-xs text-gray-900 tracking-tight uppercase">Admin Verification</span>
+            <span className="font-semibold text-xs text-[var(--mv-ink)] tracking-tight uppercase">Admin Verification</span>
           </div>
-          <button 
+          <button
             onClick={onClose}
-            className="p-1.5 hover:bg-gray-100 rounded-full transition-colors text-gray-400"
+            aria-label="Close"
+            className="p-1.5 hover:bg-gray-100 rounded-full transition-colors text-[var(--mv-muted)]"
           >
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
 
         {/* Content */}
         <div className="p-5 text-center">
           <p className="text-xs text-gray-500 font-medium tracking-tight mb-1">PROMPT REQUIRED FOR ACCESS</p>
-          <h3 className="font-bold text-[var(--mv-ink)] text-sm mb-1 leading-snug">
+          <h3 id="admin-pin-title" className="font-bold text-[var(--mv-ink)] text-sm mb-1 leading-snug">
             Enter {targetRole} PIN
           </h3>
           <p className="text-[10px] text-gray-400 mb-2 bg-gray-50 py-1 px-2 rounded-lg inline-block">
@@ -82,7 +87,7 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
           </p>
 
           {/* Dots Indicator */}
-          <div className="flex justify-center gap-3 my-4">
+          <div className="flex justify-center gap-3 my-4" role="status" aria-label={`${pin.length} of 4 digits entered`}>
             {[0, 1, 2, 3].map((index) => (
               <div
                 key={index}
@@ -96,7 +101,7 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
           </div>
 
           {error && (
-            <p className="text-[11px] text-black bg-black/5 py-1 px-2.5 rounded-lg inline-block font-semibold mt-1">
+            <p role="alert" className="text-[11px] text-black bg-black/5 py-1 px-2.5 rounded-lg inline-block font-semibold mt-1">
               {error}
             </p>
           )}
@@ -124,12 +129,12 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
           </button>
           <button
             onClick={handleBackspace}
-            className="py-3 font-semibold text-sm text-gray-900 bg-white border border-[var(--mv-border)] rounded-2xl active:bg-gray-100 active:scale-95 transition-all shadow-xs flex items-center justify-center"
+            aria-label="Delete last digit"
+            className="py-3 font-semibold text-sm text-[var(--mv-ink)] bg-white border border-[var(--mv-border)] rounded-2xl active:bg-gray-100 active:scale-95 transition-all shadow-xs flex items-center justify-center"
           >
-            <ChevronLeft className="w-5 h-5" />
+            <ChevronLeft className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 };

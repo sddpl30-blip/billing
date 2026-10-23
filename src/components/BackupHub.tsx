@@ -1,16 +1,27 @@
 import React, { useState } from 'react';
-import { Database, FileSpreadsheet, RefreshCw, CheckCircle, Download, ExternalLink, HelpCircle } from 'lucide-react';
+import { Database, FileSpreadsheet, RefreshCw, Download } from 'lucide-react';
+import { saveBlob } from '../invoiceExport';
 
 interface BackupHubProps {
   backupHistory: any[];
   onTriggerBackup: (spreadsheetId: string) => void;
   onResetData: () => void;
+  /**
+   * True when the books are on the server. The Sheets demo, the local backup
+   * log and the sandbox reset are demonstration features and are not shown;
+   * the export is, because a copy of the books is a read.
+   */
+  onServer: boolean;
+  /** The books as JSON, from the store — the same records the screens show. */
+  exportJson: () => string;
 }
 
 export const BackupHub: React.FC<BackupHubProps> = ({
   backupHistory,
   onTriggerBackup,
-  onResetData
+  onResetData,
+  onServer,
+  exportJson,
 }) => {
   const [spreadsheetId, setSpreadsheetId] = useState('1p4GmeAdowSMBilLiNgAcCoUntS88');
   const [syncing, setSyncing] = useState(false);
@@ -32,27 +43,55 @@ export const BackupHub: React.FC<BackupHubProps> = ({
     }, 2000);
   };
 
-  const handleExportCSV = () => {
-    // Collect local database states
-    const rawData = {
-      members: localStorage.getItem('gm_rwa_members') || '[]',
-      invoices: localStorage.getItem('gm_rwa_invoices') || '[]',
-      tickets: localStorage.getItem('gm_rwa_tickets') || '[]',
-      vendors: localStorage.getItem('gm_rwa_vendors') || '[]',
-      journal: localStorage.getItem('gm_rwa_journal') || '[]'
-    };
-    
-    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(rawData, null, 2))}`;
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute('href', jsonString);
-    downloadAnchor.setAttribute('download', 'Green_Meadows_SecurityBackup_Full.json');
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
-
-    setToastMsg('Database backup JSON exported successfully!');
+  const handleExport = () => {
+    // The books from the store: the ledger and the documents, which is what
+    // every figure on screen is derived from. This used to read the old demo
+    // keys out of localStorage — empty on the server — under another
+    // society's name.
+    let json: string;
+    try {
+      json = exportJson();
+    } catch (err) {
+      setToastMsg(err instanceof Error ? err.message : 'The books could not be exported.');
+      setTimeout(() => setToastMsg(''), 4000);
+      return;
+    }
+    const stamp = new Date().toISOString().slice(0, 10);
+    saveBlob(
+      new Blob([json], { type: 'application/json;charset=utf-8' }),
+      `ManiVista_books_${onServer ? 'server' : 'demo'}_${stamp}.json`,
+    );
+    setToastMsg(onServer
+      ? 'The books as the server sent them, saved as JSON.'
+      : 'The demonstration books, saved as JSON.');
     setTimeout(() => setToastMsg(''), 3000);
   };
+
+  if (onServer) {
+    return (
+      <div className="space-y-3 text-left">
+        <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-sm">
+          <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">Export</span>
+          <p className="text-[11px] text-[#6B7280] leading-snug">
+            A copy of the ledger and the billing documents, as this account can see them. The
+            database itself is backed up on the server; nothing here changes it.
+          </p>
+          <button
+            onClick={handleExport}
+            className="w-full p-3 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl text-left text-xs flex items-center gap-2 hover:bg-[var(--mv-soft)] transition-all cursor-pointer"
+          >
+            <Download className="w-4 h-4 text-[var(--mv-ink)]" aria-hidden="true" />
+            <span className="font-bold text-[var(--mv-ink)] text-[11px]">Download the books (JSON)</span>
+          </button>
+        </div>
+        {toastMsg && (
+          <div role="status" className="p-3 bg-[var(--mv-ink)] text-white text-xs font-bold rounded-xl text-center shadow-md">
+            {toastMsg}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4 text-left">
@@ -89,16 +128,17 @@ export const BackupHub: React.FC<BackupHubProps> = ({
         {connected ? (
           <div className="space-y-3.5 pt-1">
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">Backup Account Coordinator</label>
+              <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">Backup Account Coordinator</span>
               <div className="bg-[var(--mv-page)] p-2.5 rounded-xl text-xs font-bold text-[var(--mv-ink)] flex justify-between items-center border border-[var(--mv-border)]">
-                <span>accounts@greenmeadows.example</span>
+                <span>accounts@example.invalid</span>
                 <span className="text-[10px] font-bold text-[#6B7280] bg-[var(--mv-soft)] px-2 py-0.5 rounded-md uppercase">Placeholder</span>
               </div>
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">Google Sheets Spreadsheet ID</label>
+              <label htmlFor="backup-sheet-id" className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">Google Sheets Spreadsheet ID</label>
               <input
+                id="backup-sheet-id"
                 type="text"
                 value={spreadsheetId}
                 onChange={(e) => setSpreadsheetId(e.target.value)}
@@ -135,16 +175,16 @@ export const BackupHub: React.FC<BackupHubProps> = ({
       {/* Database Utilities */}
       <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-sm">
         <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block mb-1">Local Database Utilities</span>
-        
+
         <div className="grid grid-cols-2 gap-3">
           <button
-            onClick={handleExportCSV}
+            onClick={handleExport}
             className="p-3 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl text-left text-xs space-y-1.5 hover:bg-gray-100 flex flex-col justify-between transition-all active:scale-95 cursor-pointer"
           >
             <Download className="w-4 h-4 text-[var(--mv-ink)]" />
             <div>
               <p className="font-bold text-[var(--mv-ink)] text-[11px]">Database Export</p>
-              <p className="text-[9px] text-[#6B7280] leading-tight font-medium mt-0.5">Download Complete System JSON</p>
+              <p className="text-[9px] text-[#6B7280] leading-tight font-medium mt-0.5">The ledger and documents, as JSON</p>
             </div>
           </button>
 
@@ -164,7 +204,7 @@ export const BackupHub: React.FC<BackupHubProps> = ({
       {/* Cloud Sync History Logs */}
       <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-3.5 shadow-sm">
         <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block border-b border-[var(--mv-border)] pb-2">Backup History Log</span>
-        
+
         <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1 hide-scrollbar">
           {backupHistory.map((item) => (
             <div key={item.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
@@ -188,7 +228,7 @@ export const BackupHub: React.FC<BackupHubProps> = ({
 
       {/* Feedback Toast */}
       {toastMsg && (
-        <div className="p-3 bg-[var(--mv-ink)] text-white text-xs font-bold rounded-xl text-center shadow-md animate-bounce">
+        <div role="status" className="p-3 bg-[var(--mv-ink)] text-white text-xs font-bold rounded-xl text-center shadow-md">
           {toastMsg}
         </div>
       )}

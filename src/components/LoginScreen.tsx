@@ -147,10 +147,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 <span className="font-bold text-[var(--mv-ink)]">{email}</span>
               </p>
 
-              <label className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Password</label>
+              <label htmlFor="login-password" className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Password</label>
               <div className="mt-1.5 flex items-center gap-2 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl px-3 focus-within:border-[var(--mv-accent)] transition-colors">
                 <Lock className="w-4 h-4 text-gray-400 shrink-0" />
                 <input
+                  id="login-password"
                   type="password"
                   autoFocus
                   value={password}
@@ -179,10 +180,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 Enter your registered email to receive a one-time password.
               </p>
 
-              <label className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Email Address</label>
+              <label htmlFor="login-email" className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Email Address</label>
               <div className="mt-1.5 flex items-center gap-2 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl px-3 focus-within:border-[var(--mv-accent)] transition-colors">
                 <Mail className="w-4 h-4 text-gray-400 shrink-0" />
                 <input
+                  id="login-email"
                   type="email"
                   autoFocus
                   value={email}
@@ -234,7 +236,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                    generated in this browser and shown here. A real sign-in
                    never shows the code to the page asking for it. */
                 <p className="text-[10px] text-gray-500 mt-3 mb-4 bg-[var(--mv-accent-soft)] border border-[var(--mv-accent-border)] py-1.5 px-2.5 rounded-lg inline-block">
-                  Demonstration mode \u2014 no server, so the code is generated here:{' '}
+                  Demonstration mode {'\u2014'} no server, so the code is generated here:{' '}
                   <strong className="text-[var(--mv-accent)] tracking-widest">{sentOtp}</strong>
                 </p>
               ) : (
@@ -243,8 +245,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 </p>
               )}
 
-              <label className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">One-Time Password</label>
+              <label htmlFor="login-otp" className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">One-Time Password</label>
               <input
+                id="login-otp"
                 type="text"
                 inputMode="numeric"
                 autoFocus
