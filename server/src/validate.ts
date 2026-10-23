@@ -13,6 +13,8 @@
  * arithmetic.
  */
 
+import { canonicalPeriod } from '../../src/accounting/clock';
+
 export class ValidationError extends Error {
   constructor(readonly issues: ReadonlyArray<{ path: string; message: string }>) {
     super(
@@ -200,15 +202,25 @@ export const v = {
     });
   },
 
-  /** A month-and-year period label such as "Jul 2026". */
+  /**
+   * A month-and-year period label such as "Jul 2026", returned in its one
+   * canonical spelling.
+   *
+   * Canonicalised rather than merely checked. The period is stored as text
+   * and the duplicate-billing guard — the unique index on billing documents —
+   * compares it as text, so "Jul  2026" (two spaces) passed this check, was
+   * stored as written, and billed the flat for July a second time. "jul 2026"
+   * and "July 2026" name the same month and become "Jul 2026" here, at the
+   * boundary, by the engine's own rule so the two sides cannot disagree.
+   */
   period() {
     return makeSchema<string>((input, ctx, issues) => {
-      if (typeof input !== 'string' ||
-          !/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}$/.test(input.trim())) {
+      const canonical = typeof input === 'string' ? canonicalPeriod(input) : null;
+      if (canonical === null) {
         fail(issues, ctx, 'must be a month and year such as "Jul 2026"');
         return '';
       }
-      return input.trim();
+      return canonical;
     });
   },
 

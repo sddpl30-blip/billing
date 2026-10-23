@@ -22,24 +22,34 @@ import { percentOf } from '../../src/accounting/money';
 import { allocateNumber } from './series';
 import { RateError } from '../../src/accounting/rates';
 import type { AreaBasis } from '../../src/accounting/rates';
+import { canonicalPeriod, periodToIso } from '../../src/accounting/clock';
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/** 'Jul 2026' to the first and last day of that month. */
-export function periodBounds(period: string): { startsOn: string; endsOn: string; label: string } {
-  const match = /^([A-Za-z]{3})\s+(\d{4})$/.exec(period.trim());
-  if (match === null) throw badRequest(`"${period}" is not a period such as "Jul 2026".`);
-  const monthIndex = MONTHS.indexOf(match[1]);
-  if (monthIndex < 0) throw badRequest(`"${match[1]}" is not a month.`);
-  const year = Number(match[2]);
+/**
+ * 'Jul 2026' to the first and last day of that month, and to the period's one
+ * canonical spelling.
+ *
+ * `period` is what a caller must store and compare: the duplicate guard is a
+ * unique index over the text, so "Jul  2026" and "jul 2026" have to become
+ * "Jul 2026" before they reach it. The rule is the engine's `canonicalPeriod`,
+ * so the server and the browser register agree on what one month is called.
+ */
+export function periodBounds(period: string): {
+  startsOn: string; endsOn: string; label: string; period: string;
+} {
+  const canonical = canonicalPeriod(period);
+  if (canonical === null) throw badRequest(`"${period}" is not a period such as "Jul 2026".`);
+  const startsOn = periodToIso(canonical) as string;
+  const year = Number(startsOn.slice(0, 4));
+  const monthIndex = Number(startsOn.slice(5, 7)) - 1;
   const month = String(monthIndex + 1).padStart(2, '0');
   // Day 0 of the next month is the last day of this one, which avoids a leap
   // year table.
   const last = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
   return {
-    startsOn: `${year}-${month}-01`,
+    startsOn,
     endsOn: `${year}-${month}-${String(last).padStart(2, '0')}`,
     label: `${year}-${month}`,
+    period: canonical,
   };
 }
 
@@ -88,6 +98,10 @@ export async function runBilling(
   input: BillingRunInput,
 ): Promise<BillingRunResult> {
   const bounds = periodBounds(input.period);
+  // From here on the canonical spelling, never the caller's. The scheduled
+  // job hands its payload's period straight to this function without going
+  // through the request validator, so this is the line that has to hold.
+  const period = bounds.period;
 
   // The rate in force during the month being billed, not the rate in force on
   // the day the run happens. They are the same for a run made in its own
@@ -98,7 +112,7 @@ export async function runBilling(
   if (rate === null) {
     throw badRequest(
       `No maintenance rate is on record as effective on or before ${bounds.startsOn}, the ` +
-      `start of ${input.period}. Record the rate the committee approved before running a ` +
+      `start of ${period}. Record the rate the committee approved before running a ` +
       `billing cycle.`,
     );
   }
@@ -123,30 +137,17 @@ export async function runBilling(
     }).join(',')})`;
   }
 
-  const flats = await tx.query<{
-    id: string; flat_no: string; billing_area_sqft: string | null; area_basis: string | null;
-    live_document: string | null;
-  }>(
-    `SELECT f.id, f.flat_no, f.billing_area_sqft::text, f.area_basis,
-            (SELECT d.proforma_no FROM billing_documents d
-              WHERE d.society_id = f.society_id AND d.flat_id = f.id
-                AND d.period = $${params.length + 1} AND d.state <> 'cancelled'
-              LIMIT 1) AS live_document
-       FROM flats f
-      WHERE f.society_id = $1${flatFilter}
-      ORDER BY f.flat_no`,
-    [...params, input.period],
-  );
-
-  const issued: Array<{
-    documentId: string; proformaNo: string; flatNo: string; net: number;
-    estimatedTax: number; gross: number;
-  }> = [];
-  const skipped: Array<{ flatNo: string; why: string }> = [];
-
   // The proforma series, with the series locked for this society and period so
   // two runs cannot take the same number. Scoped to the period, so billing
   // July does not wait behind billing August.
+  //
+  // Taken BEFORE the query below that looks for an existing live document,
+  // not after it. With the lock second, two concurrent runs for one period
+  // both read "nothing billed yet", the second then waited on the lock, and
+  // on waking inserted a duplicate that the unique index refused — as a raw
+  // "the database refused this change" rather than the "already billed" the
+  // flat deserved. Locked first, the second run reads the first run's
+  // committed documents and skips those flats, saying why.
   const firstNumber = await allocateNumber(
     tx,
     { societyId: input.societyId, kind: 'proforma', scope: bounds.label },
@@ -162,11 +163,32 @@ export async function runBilling(
   );
   let sequence = Number(firstNumber);
 
+  const flats = await tx.query<{
+    id: string; flat_no: string; billing_area_sqft: string | null; area_basis: string | null;
+    live_document: string | null;
+  }>(
+    `SELECT f.id, f.flat_no, f.billing_area_sqft::text, f.area_basis,
+            (SELECT d.proforma_no FROM billing_documents d
+              WHERE d.society_id = f.society_id AND d.flat_id = f.id
+                AND d.period = $${params.length + 1} AND d.state <> 'cancelled'
+              LIMIT 1) AS live_document
+       FROM flats f
+      WHERE f.society_id = $1${flatFilter}
+      ORDER BY f.flat_no`,
+    [...params, period],
+  );
+
+  const issued: Array<{
+    documentId: string; proformaNo: string; flatNo: string; net: number;
+    estimatedTax: number; gross: number;
+  }> = [];
+  const skipped: Array<{ flatNo: string; why: string }> = [];
+
   for (const flat of flats.rows) {
     if (flat.live_document !== null) {
       skipped.push({
         flatNo: flat.flat_no,
-        why: `already billed for ${input.period} as ${flat.live_document}`,
+        why: `already billed for ${period} as ${flat.live_document}`,
       });
       continue;
     }
@@ -221,7 +243,7 @@ export async function runBilling(
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft')
        RETURNING id`,
       [
-        input.societyId, proformaNo, flat.id, input.period, estimatedTax,
+        input.societyId, proformaNo, flat.id, period, estimatedTax,
         net + estimatedTax, input.issuedOn, dueOn,
       ],
     );
@@ -256,7 +278,7 @@ export async function runBilling(
   }
 
   return {
-    period: input.period,
+    period,
     issuedOn: input.issuedOn,
     dueOn,
     rate: {
@@ -323,7 +345,9 @@ export async function listDocuments(
   const conditions = ['d.society_id = $1'];
 
   if (input.period !== undefined) {
-    params.push(input.period);
+    // Read with the same spelling it was stored with, so "?period=jul 2026"
+    // finds July rather than nothing.
+    params.push(canonicalPeriod(input.period) ?? input.period);
     conditions.push(`d.period = $${params.length}`);
   }
   if (input.state !== undefined) {
