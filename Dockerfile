@@ -1,7 +1,6 @@
 # The backend image.
 #
-# CI builds this on every push (.github/workflows/ci.yml, the docker job);
-# no local build has been run, so that job is the proof that it builds.
+# Built by CI on every push (.github/workflows/ci.yml, the docker job).
 
 FROM node:22-bookworm-slim AS build
 WORKDIR /app

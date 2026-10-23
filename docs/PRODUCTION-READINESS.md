@@ -2,7 +2,7 @@
 
 > **Superseded in part by [`AUDIT-2026-10.md`](AUDIT-2026-10.md)** — the frontend
 > build and the Vercel function have since been fixed and verified, the Docker
-> images fixed (CI builds them), and CI now runs every suite. Read that first.
+> images build in CI, and CI now runs every suite. Read that first.
 
 
 What is built, what has been executed, and what is genuinely blocked. Written

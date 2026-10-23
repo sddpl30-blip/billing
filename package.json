@@ -39,8 +39,8 @@
     "test:connection": "node server/connection.test.mjs",
     "db:baseline": "node scripts/build-prisma-baseline.mjs",
     "db:verify-backup": "node scripts/verify-backup.mjs",
-    "db:migrate:node": "node server/migrate-node.mjs",
-    "db:status:node": "node server/migrate-node.mjs status",
+    "db:migrate:node": "node scripts/server.mjs build && node server/migrate-node.mjs",
+    "db:status:node": "node scripts/server.mjs build && node server/migrate-node.mjs status",
     "test:serverless": "node scripts/server.mjs build && node server/serverless.test.mjs",
     "test:server:serverless": "node scripts/server.mjs build && SB_TEST_TRANSPORT=serverless node server/api.test.mjs",
     "test:deploy": "node scripts/server.mjs build && node server/deploy.test.mjs"
