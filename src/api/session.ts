@@ -113,12 +113,17 @@ export async function probe(client: ApiClient, timeoutMs = 4000): Promise<Reacha
         : { why: 'the API is up but cannot reach its database' }),
     };
   } catch (err) {
+    // A server that refused to start sends which setting is missing in
+    // `detail` (a variable name, never a value). Showing it turns "the log
+    // names the variable" into the variable itself, on the screen the person
+    // deploying is already looking at.
+    const detail = err instanceof ApiError && typeof err.detail === 'string' ? ` ${err.detail}` : '';
     return {
       reachable: false,
       schemaVersion: null,
       databaseReachable: false,
       emailDelivers: false,
-      why: err instanceof Error ? err.message : 'the API did not answer',
+      why: (err instanceof Error ? err.message : 'the API did not answer') + detail,
     };
   }
 }
