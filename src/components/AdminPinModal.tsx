@@ -53,7 +53,7 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
     <Dialog
       labelledBy="admin-pin-title"
       onClose={onClose}
-      className="bg-white w-full max-w-[340px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] animate-fade-in animate-scale-up outline-none"
+      className="bg-[var(--mv-surface)] w-full max-w-[340px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] animate-fade-in animate-scale-up outline-none"
     >
         {/* Header */}
         <div className="p-4 flex items-center justify-between border-b border-[var(--mv-border)]">
@@ -66,7 +66,7 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
           <button
             onClick={onClose}
             aria-label="Close"
-            className="p-1.5 hover:bg-gray-100 rounded-full transition-colors text-[var(--mv-muted)]"
+            className="p-1.5 hover:bg-[var(--mv-soft)] rounded-full transition-colors text-[var(--mv-muted)]"
           >
             <X className="w-4 h-4" aria-hidden="true" />
           </button>
@@ -74,11 +74,11 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
 
         {/* Content */}
         <div className="p-5 text-center">
-          <p className="text-xs text-gray-500 font-medium tracking-tight mb-1">PROMPT REQUIRED FOR ACCESS</p>
+          <p className="text-xs text-[var(--mv-muted)] font-medium tracking-tight mb-1">PROMPT REQUIRED FOR ACCESS</p>
           <h3 id="admin-pin-title" className="font-bold text-[var(--mv-ink)] text-sm mb-1 leading-snug">
             Enter {targetRole} PIN
           </h3>
-          <p className="text-[10px] text-gray-400 mb-2 bg-gray-50 py-1 px-2 rounded-lg inline-block">
+          <p className="text-[10px] text-[var(--mv-muted)] mb-2 bg-[var(--mv-page)] py-1 px-2 rounded-lg inline-block">
             Suggestion: Use PIN <strong className="text-[var(--mv-accent)]">{correctPin}</strong> for testing
           </p>
 
@@ -94,43 +94,43 @@ export const AdminPinModal: React.FC<AdminPinModalProps> = ({
                 className={`w-3.5 h-3.5 rounded-full border transition-all duration-150 ${
                   index < pin.length
                     ? 'bg-[var(--mv-accent)] border-[var(--mv-accent)] scale-110 shadow-xs'
-                    : 'bg-white border-gray-300'
+                    : 'bg-[var(--mv-surface)] border-[var(--mv-border)]'
                 }`}
               />
             ))}
           </div>
 
           {error && (
-            <p role="alert" className="text-[11px] text-black bg-black/5 py-1 px-2.5 rounded-lg inline-block font-semibold mt-1">
+            <p role="alert" className="text-[11px] text-[var(--mv-ink)] bg-black/5 py-1 px-2.5 rounded-lg inline-block font-semibold mt-1">
               {error}
             </p>
           )}
         </div>
 
         {/* Numeric PIN Pad */}
-        <div className="bg-gray-50/70 p-4 border-t border-[var(--mv-border)] grid grid-cols-3 gap-3">
+        <div className="bg-[var(--mv-page)] p-4 border-t border-[var(--mv-border)] grid grid-cols-3 gap-3">
           {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((num) => (
             <button
               key={num}
               onClick={() => handleKeyPress(num)}
-              className="py-3 font-semibold text-base text-[var(--mv-ink)] bg-white border border-[var(--mv-border)] rounded-2xl active:bg-gray-100 active:scale-95 transition-all shadow-xs flex items-center justify-center"
+              className="py-3 font-semibold text-base text-[var(--mv-ink)] bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl active:bg-[var(--mv-soft)] active:scale-95 transition-all shadow-xs flex items-center justify-center"
             >
               {num}
             </button>
           ))}
           <div className="flex items-center justify-center">
-            <span className="text-[10px] font-semibold text-gray-400 tracking-tight uppercase">SECURE</span>
+            <span className="text-[10px] font-semibold text-[var(--mv-muted)] tracking-tight uppercase">SECURE</span>
           </div>
           <button
             onClick={() => handleKeyPress('0')}
-            className="py-3 font-semibold text-base text-[var(--mv-ink)] bg-white border border-[var(--mv-border)] rounded-2xl active:bg-gray-100 active:scale-95 transition-all shadow-xs flex items-center justify-center"
+            className="py-3 font-semibold text-base text-[var(--mv-ink)] bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl active:bg-[var(--mv-soft)] active:scale-95 transition-all shadow-xs flex items-center justify-center"
           >
             0
           </button>
           <button
             onClick={handleBackspace}
             aria-label="Delete last digit"
-            className="py-3 font-semibold text-sm text-[var(--mv-ink)] bg-white border border-[var(--mv-border)] rounded-2xl active:bg-gray-100 active:scale-95 transition-all shadow-xs flex items-center justify-center"
+            className="py-3 font-semibold text-sm text-[var(--mv-ink)] bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl active:bg-[var(--mv-soft)] active:scale-95 transition-all shadow-xs flex items-center justify-center"
           >
             <ChevronLeft className="w-5 h-5" aria-hidden="true" />
           </button>

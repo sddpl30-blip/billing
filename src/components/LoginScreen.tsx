@@ -118,14 +118,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-[var(--mv-soft)] font-sans text-[var(--mv-ink)]">
-      <div className="w-full max-w-[400px] bg-white rounded-3xl shadow-2xl border border-[var(--mv-border)] overflow-hidden">
+      <div className="w-full max-w-[400px] bg-[var(--mv-surface)] rounded-3xl shadow-2xl border border-[var(--mv-border)] overflow-hidden">
         {/* Brand header */}
         <div className="bg-[var(--mv-ink)] px-6 py-7 text-white">
           <div className="flex items-center gap-2.5">
             <div className="mv-logo-tile"><img src="/branding/mani-vista-logo.png" alt="Mani Vista Residents Association" /></div>
             <div className="text-left">
               <h2 className="text-white font-bold leading-none tracking-tight text-sm">MANI VISTA</h2>
-              <span className="text-[9px] text-gray-400 font-bold block mt-1 uppercase tracking-wider">RESIDENTS ASSOCIATION</span>
+              <span className="text-[9px] text-white/70 font-bold block mt-1 uppercase tracking-wider">RESIDENTS ASSOCIATION</span>
             </div>
           </div>
         </div>
@@ -137,19 +137,19 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
               <button
                 type="button"
                 onClick={() => { setStep('email'); setError(''); }}
-                className="flex items-center gap-1 text-[11px] font-bold text-gray-500 hover:text-[var(--mv-accent)] transition-colors mb-3"
+                className="flex items-center gap-1 text-[11px] font-bold text-[var(--mv-muted)] hover:text-[var(--mv-accent)] transition-colors mb-3"
               >
                 <ChevronLeft className="w-3.5 h-3.5" /> Back
               </button>
 
               <h1 className="text-lg font-extrabold text-[var(--mv-ink)]">Sign in</h1>
-              <p className="text-xs text-gray-500 mt-1 mb-5">
+              <p className="text-xs text-[var(--mv-muted)] mt-1 mb-5">
                 <span className="font-bold text-[var(--mv-ink)]">{email}</span>
               </p>
 
-              <label htmlFor="login-password" className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Password</label>
+              <label htmlFor="login-password" className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Password</label>
               <div className="mt-1.5 flex items-center gap-2 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl px-3 focus-within:border-[var(--mv-accent)] transition-colors">
-                <Lock className="w-4 h-4 text-gray-400 shrink-0" />
+                <Lock className="w-4 h-4 text-[var(--mv-muted)] shrink-0" />
                 <input
                   id="login-password"
                   type="password"
@@ -157,7 +157,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                   value={password}
                   onChange={(e) => { setPassword(e.target.value); setError(''); }}
                   placeholder="Your password"
-                  className="w-full py-3 bg-transparent outline-none text-sm font-semibold text-[var(--mv-ink)] placeholder:text-gray-400 placeholder:font-normal"
+                  className="w-full py-3 bg-transparent outline-none text-sm font-semibold text-[var(--mv-ink)] placeholder:text-[var(--mv-muted)] placeholder:font-normal"
                 />
               </div>
 
@@ -176,13 +176,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
           ) : step === 'email' ? (
             <form onSubmit={handleSendOtp}>
               <h1 className="text-lg font-extrabold text-[var(--mv-ink)]">Member Login</h1>
-              <p className="text-xs text-gray-500 mt-1 mb-5">
+              <p className="text-xs text-[var(--mv-muted)] mt-1 mb-5">
                 Enter your registered email to receive a one-time password.
               </p>
 
-              <label htmlFor="login-email" className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Email Address</label>
+              <label htmlFor="login-email" className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Email Address</label>
               <div className="mt-1.5 flex items-center gap-2 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl px-3 focus-within:border-[var(--mv-accent)] transition-colors">
-                <Mail className="w-4 h-4 text-gray-400 shrink-0" />
+                <Mail className="w-4 h-4 text-[var(--mv-muted)] shrink-0" />
                 <input
                   id="login-email"
                   type="email"
@@ -190,7 +190,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@example.com"
-                  className="w-full py-3 bg-transparent outline-none text-sm font-semibold text-[var(--mv-ink)] placeholder:text-gray-400 placeholder:font-normal"
+                  className="w-full py-3 bg-transparent outline-none text-sm font-semibold text-[var(--mv-ink)] placeholder:text-[var(--mv-muted)] placeholder:font-normal"
                 />
               </div>
 
@@ -210,7 +210,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 <button
                   type="button"
                   onClick={() => { setError(''); setStep('password'); }}
-                  className="mt-3 w-full text-[11px] font-bold text-gray-500 hover:text-[var(--mv-accent)] flex items-center justify-center gap-1 transition-colors"
+                  className="mt-3 w-full text-[11px] font-bold text-[var(--mv-muted)] hover:text-[var(--mv-accent)] flex items-center justify-center gap-1 transition-colors"
                 >
                   <Lock className="w-3 h-3" /> Use a password instead
                 </button>
@@ -221,13 +221,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
               <button
                 type="button"
                 onClick={() => { setStep('email'); setError(''); }}
-                className="flex items-center gap-1 text-[11px] font-bold text-gray-500 hover:text-[var(--mv-accent)] transition-colors mb-3"
+                className="flex items-center gap-1 text-[11px] font-bold text-[var(--mv-muted)] hover:text-[var(--mv-accent)] transition-colors mb-3"
               >
                 <ChevronLeft className="w-3.5 h-3.5" /> Change email
               </button>
 
               <h1 className="text-lg font-extrabold text-[var(--mv-ink)]">Enter OTP</h1>
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="text-xs text-[var(--mv-muted)] mt-1">
                 We sent a 6-digit code to <span className="font-bold text-[var(--mv-ink)]">{email}</span>
               </p>
 
@@ -235,17 +235,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 /* DEMONSTRATION ONLY: there is no server, so the code is
                    generated in this browser and shown here. A real sign-in
                    never shows the code to the page asking for it. */
-                <p className="text-[10px] text-gray-500 mt-3 mb-4 bg-[var(--mv-accent-soft)] border border-[var(--mv-accent-border)] py-1.5 px-2.5 rounded-lg inline-block">
+                <p className="text-[10px] text-[var(--mv-muted)] mt-3 mb-4 bg-[var(--mv-accent-soft)] border border-[var(--mv-accent-border)] py-1.5 px-2.5 rounded-lg inline-block">
                   Demonstration mode {'\u2014'} no server, so the code is generated here:{' '}
                   <strong className="text-[var(--mv-accent)] tracking-widest">{sentOtp}</strong>
                 </p>
               ) : (
-                <p className="text-[10px] text-gray-600 mt-3 mb-4 bg-[var(--mv-page)] border border-[var(--mv-border)] py-1.5 px-2.5 rounded-lg">
+                <p className="text-[10px] text-[var(--mv-muted)] mt-3 mb-4 bg-[var(--mv-page)] border border-[var(--mv-border)] py-1.5 px-2.5 rounded-lg">
                   {serverNote}
                 </p>
               )}
 
-              <label htmlFor="login-otp" className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">One-Time Password</label>
+              <label htmlFor="login-otp" className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">One-Time Password</label>
               <input
                 id="login-otp"
                 type="text"
@@ -255,7 +255,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 value={otp}
                 onChange={(e) => { setOtp(e.target.value.replace(/\D/g, '')); setError(''); }}
                 placeholder="------"
-                className="mt-1.5 w-full py-3 px-4 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl outline-none focus:border-[var(--mv-accent)] transition-colors text-center text-2xl font-extrabold tracking-[0.5em] text-[var(--mv-ink)] placeholder:tracking-[0.3em] placeholder:text-gray-300"
+                className="mt-1.5 w-full py-3 px-4 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl outline-none focus:border-[var(--mv-accent)] transition-colors text-center text-2xl font-extrabold tracking-[0.5em] text-[var(--mv-ink)] placeholder:tracking-[0.3em] placeholder:text-[var(--mv-muted)]"
               />
 
               {error && (
@@ -273,7 +273,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
               <button
                 type="button"
                 onClick={() => handleSendOtp()}
-                className="mt-3 w-full text-[11px] font-bold text-gray-500 hover:text-[var(--mv-accent)] flex items-center justify-center gap-1 transition-colors"
+                className="mt-3 w-full text-[11px] font-bold text-[var(--mv-muted)] hover:text-[var(--mv-accent)] flex items-center justify-center gap-1 transition-colors"
               >
                 <RefreshCw className="w-3 h-3" /> Resend OTP
               </button>

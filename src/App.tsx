@@ -559,7 +559,11 @@ export default function App() {
   const rohanDueInvoice = rohanInvoices
     .filter(inv => inv.status !== 'Paid')
     .sort((a, b) => dueIso(a).localeCompare(dueIso(b)))[0];
-  const rohanTotalDueNum = rohanInvoices.filter(inv => inv.status !== 'Paid').reduce((acc, current) => acc + current.total, 0);
+  // What the flat owes per the ledger — so a part payment shows as part paid —
+  // falling back to the unpaid invoices' totals before the books are open.
+  const rohanTotalDueNum = books !== null && residentFlatNo !== ''
+    ? toRupees(books.positionOf(residentFlatNo).totalDues)
+    : rohanInvoices.filter(inv => inv.status !== 'Paid').reduce((acc, current) => acc + current.total, 0);
   const rohanTotalPaidNum = rohanInvoices.filter(inv => inv.status === 'Paid').reduce((acc, current) => acc + current.total, 0);
   const rohanOpenTicketsNum = tickets.filter(t => t.flatNo === residentFlatNo && t.status === 'Open').length;
 
@@ -1491,8 +1495,8 @@ export default function App() {
    */
   const renderWizardFields = (compact: boolean) => {
     const key = compact ? 'm' : 'd';
-    const label = `text-[10px] text-[#6B7280] font-bold block mb-1 uppercase tracking-wider`;
-    const input = `w-full ${compact ? 'bg-white p-2' : 'bg-[var(--mv-page)] p-2.5'} rounded-xl border border-[var(--mv-border)] font-bold text-xs text-[var(--mv-ink)] outline-none`;
+    const label = `text-[10px] text-[var(--mv-muted)] font-bold block mb-1 uppercase tracking-wider`;
+    const input = `w-full ${compact ? 'bg-[var(--mv-surface)] p-2' : 'bg-[var(--mv-page)] p-2.5'} rounded-xl border border-[var(--mv-border)] font-bold text-xs text-[var(--mv-ink)] outline-none`;
     return (
       <>
         <div className="grid grid-cols-2 gap-3">
@@ -1512,7 +1516,7 @@ export default function App() {
             <div className="p-2.5 bg-[var(--mv-soft)] rounded-xl text-center font-bold text-[var(--mv-ink)] leading-none">{gstLabel}</div>
           </div>
         </div>
-        <p className="text-[10px] text-[#6B7280] leading-snug">
+        <p className="text-[10px] text-[var(--mv-muted)] leading-snug">
           <span className="font-bold text-[var(--mv-ink)]">Maintenance:</span> {rateLabel}
           {onServer && (
             <> · Sinking fund {booksSource.server?.context()?.settings.sinkingFundPercent ?? 0}% of maintenance, as set on the server.</>
@@ -1649,7 +1653,7 @@ export default function App() {
               <div className="mv-logo-tile"><img src="/branding/mani-vista-logo.png" alt="Mani Vista Residents Association" /></div>
               <div className="text-left">
                 <h2 className="text-white font-bold leading-none tracking-tight text-xs">MANI VISTA</h2>
-                <span className="text-[9px] text-white/60 font-bold block mt-0.5 uppercase tracking-wider">RESIDENTS ASSOCIATION</span>
+                <span className="text-[9px] text-white/75 font-bold block mt-0.5 uppercase tracking-wider">RESIDENTS ASSOCIATION</span>
               </div>
             </div>
 
@@ -1706,12 +1710,12 @@ export default function App() {
                   <div className="relative">
                     <BookOpen className="w-4 h-4" />
                     {currentRole === 'Resident' && (
-                      <Lock className="w-2.5 h-2.5 text-[var(--mv-accent)] absolute -top-1 -right-1 bg-white rounded-full p-0.5" />
+                      <Lock className="w-2.5 h-2.5 text-[var(--mv-accent)] absolute -top-1 -right-1 bg-[var(--mv-surface)] rounded-full p-0.5" />
                     )}
                   </div>
                   <span>Books Ledger</span>
                 </div>
-                {currentRole === 'Resident' && <Lock className="w-3.5 h-3.5 text-white/60 ml-auto" aria-label="Locked" />}
+                {currentRole === 'Resident' && <Lock className="w-3.5 h-3.5 text-white/75 ml-auto" aria-label="Locked" />}
               </button>
 
               <button
@@ -1758,14 +1762,14 @@ export default function App() {
           {/* DESKTOP CONTENT WORKSPACE WRAPPER */}
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden h-full bg-[var(--mv-page)]">
             {/* STICKY TOP STRIP */}
-            <header className="h-16 border-b border-[var(--mv-border)] bg-white px-6 flex items-center justify-between shadow-xs shrink-0 select-none">
+            <header className="h-16 border-b border-[var(--mv-border)] bg-[var(--mv-surface)] px-6 flex items-center justify-between shadow-xs shrink-0 select-none">
               <div className="flex items-center gap-3">
                 <span className="font-extrabold text-[9px] text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-2.5 py-1 rounded uppercase tracking-wider">ROSTER ACTIVE</span>
                 <h1 className="text-sm font-semibold text-[var(--mv-ink)] tracking-tight">{onServer ? societyName : 'Mani Vista Residents Association'}</h1>
               </div>
 
               <div className="flex items-center gap-4">
-                <span className="text-[10px] text-gray-400 font-mono">GSTIN: {gstinLabel}</span>
+                <span className="text-[10px] text-[var(--mv-muted)] font-mono">GSTIN: {gstinLabel}</span>
 
                 <div aria-hidden="true" className="relative w-8 h-8 flex items-center justify-center bg-[var(--mv-soft)] rounded-full">
                   <Bell className="w-4 h-4 text-[var(--mv-ink)]" />
@@ -1804,7 +1808,7 @@ export default function App() {
                       {currentRole === 'Resident' ? (
                         <>
                           <h2 className="text-2xl font-bold text-[var(--mv-ink)]">{residentName}</h2>
-                          <p className="text-xs text-[#6B7280]">
+                          <p className="text-xs text-[var(--mv-muted)]">
                             {residentFlatNo === ''
                               ? 'No flat is linked to this account'
                               : `Flat ${residentFlatNo} · Allotment registry`}
@@ -1813,12 +1817,12 @@ export default function App() {
                       ) : (
                         <>
                           <h2 className="text-2xl font-bold text-[var(--mv-ink)]">{currentRole} Executive Suite</h2>
-                          <p className="text-xs text-[#6B7280]">Fully Authorized Administrative Operations Center</p>
+                          <p className="text-xs text-[var(--mv-muted)]">Fully Authorized Administrative Operations Center</p>
                         </>
                       )}
                     </div>
                     <div className="text-right text-xs font-mono">
-                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Ledger Synchronized</p>
+                      <p className="text-[10px] text-[var(--mv-muted)] font-bold uppercase tracking-wider">Ledger Synchronized</p>
                       <p className="text-[var(--mv-accent)] font-bold">STATE ONLINE · SECURE</p>
                     </div>
                   </div>
@@ -1828,18 +1832,18 @@ export default function App() {
                     <div className="grid grid-cols-4 gap-4">
                       {/* Current outstanding */}
                       <div className="bg-[var(--mv-ink)] text-white p-5 rounded-2xl flex flex-col justify-between shadow-md min-h-[120px]">
-                        <p className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Aggregate Outstanding</p>
+                        <p className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Aggregate Outstanding</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-white">{formatRupee(rohanTotalDueNum)}</p>
-                          <span className={`inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold rounded uppercase ${rohanTotalDueNum > 0 ? 'bg-red-650 text-white' : 'bg-[var(--mv-accent)] text-white'}`}>
+                          <span className={`inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold rounded uppercase ${rohanTotalDueNum > 0 ? 'bg-red-700 text-white' : 'bg-[var(--mv-accent)] text-white'}`}>
                             {rohanTotalDueNum > 0 ? 'ARREARS DUE' : 'ALL CLEAR'}
                           </span>
                         </div>
                       </div>
 
                       {/* Cumulative paid */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Deposit Paid This FY</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Deposit Paid This FY</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupee(rohanTotalPaidNum)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
@@ -1849,17 +1853,17 @@ export default function App() {
                       </div>
 
                       {/* Prepaid advance balance */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Prepaid Advances</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Prepaid Advances</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupees(residentAdvancePaise)}</p>
-                          <span className="text-[9px] text-[#6B7280] mt-2 block font-medium">Held on account, from the ledger</span>
+                          <span className="text-[9px] text-[var(--mv-muted)] mt-2 block font-medium">Held on account, from the ledger</span>
                         </div>
                       </div>
 
                       {/* Open complaints helpdesk */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Complaints Grievances</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Complaints Grievances</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{String(rohanOpenTicketsNum).padStart(2, '0')}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
@@ -1874,7 +1878,7 @@ export default function App() {
                     <div className="grid grid-cols-4 gap-4">
                       {/* Collected MTD */}
                       <div className="bg-[var(--mv-ink)] text-white p-5 rounded-2xl flex flex-col justify-between shadow-md min-h-[120px]">
-                        <p className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Collected MTD Accrual</p>
+                        <p className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Collected MTD Accrual</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-white">{formatRupee(mtdCollectedTotal)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-semibold bg-white/10 text-white rounded">
@@ -1884,8 +1888,8 @@ export default function App() {
                       </div>
 
                       {/* Outstanding Receivables */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Arrears Outstanding</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Arrears Outstanding</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupee(mtdOutstandingTotal)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
@@ -1895,8 +1899,8 @@ export default function App() {
                       </div>
 
                       {/* Overdue units */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Overdue Defaulters</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Overdue Defaulters</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{uniqueDefaultersCount} Flats</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-semibold bg-red-50 text-red-600 rounded">
@@ -1906,8 +1910,8 @@ export default function App() {
                       </div>
 
                       {/* Outgoing expenses MTD */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Approved Expenses MTD</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Approved Expenses MTD</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupee(totalMTDExpenses)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
@@ -1921,8 +1925,8 @@ export default function App() {
                   {currentRole === 'Committee' && (
                     <div className="grid grid-cols-4 gap-4">
                       {/* Corpus fund */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">General Reserve</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">General Reserve</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupees(reserveFundPaise)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
@@ -1932,8 +1936,8 @@ export default function App() {
                       </div>
 
                       {/* Sinking reserve */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Accumulated Sinking Contributions</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Accumulated Sinking Contributions</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupees(sinkingFundPaise)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-semibold bg-[var(--mv-soft)] text-[var(--mv-ink)] rounded">
@@ -1943,8 +1947,8 @@ export default function App() {
                       </div>
 
                       {/* Liquid cash reserves */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Liquid Operating Bank Balance</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Liquid Operating Bank Balance</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupees(operatingBankPaise)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
@@ -1955,7 +1959,7 @@ export default function App() {
 
                       {/* Outstanding bills proposals */}
                       <div className="bg-[var(--mv-ink)] text-white p-5 rounded-2xl flex flex-col justify-between shadow-md min-h-[120px]">
-                        <p className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Pending Bill Proposals</p>
+                        <p className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Pending Bill Proposals</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-white">{pendingApprovalsCount} Bills</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-white/10 text-white rounded uppercase">
@@ -1971,15 +1975,15 @@ export default function App() {
                     <div className="grid grid-cols-12 gap-6 pt-2">
                       <div className="col-span-8 flex flex-col">
                         {rohanDueInvoice ? (
-                          <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs flex-1 flex flex-col justify-between space-y-4">
+                          <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs flex-1 flex flex-col justify-between space-y-4">
                             <div>
-                              <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Unpaid active billing assessment due</span>
+                              <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Unpaid active billing assessment due</span>
                               <h3 className="font-extrabold text-lg text-[var(--mv-ink)] mt-1">Invoice Number: #{rohanDueInvoice.invoiceNo}</h3>
                             </div>
 
-                            <div className="border-y border-[var(--mv-soft)] py-5 flex justify-between items-center bg-gray-50/50 px-4 rounded-xl">
+                            <div className="border-y border-[var(--mv-soft)] py-5 flex justify-between items-center bg-[var(--mv-page)] px-4 rounded-xl">
                               <div>
-                                <p className="text-xs text-[#6B7280] font-medium">{rohanDueInvoice.period} General Maintenance Account</p>
+                                <p className="text-xs text-[var(--mv-muted)] font-medium">{rohanDueInvoice.period} General Maintenance Account</p>
                                 <p className="text-3xl font-extrabold text-[var(--mv-ink)] font-mono mt-1">{formatRupee(rohanDueInvoice.total)}</p>
                               </div>
                               {mayPayOnline && (
@@ -1992,23 +1996,23 @@ export default function App() {
                               )}
                             </div>
 
-                            <span className="text-[10px] text-[#6B7280] font-medium leading-relaxed block">
+                            <span className="text-[10px] text-[var(--mv-muted)] font-medium leading-relaxed block">
                               {onServer
                                 ? `• ${dueLabel(dueIso(rohanDueInvoice), today).toLowerCase()}. No payment gateway is connected: pay the association by UPI, NEFT or cheque and the manager records the receipt against your flat.`
                                 : '• Demo checkout. No payment gateway is connected — paying marks the invoice settled in this browser and posts the matching journal entry. A live version needs a Razorpay or PayU account and a server to verify the callback.'}
                             </span>
                           </div>
                         ) : (
-                          <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-10 shadow-xs flex-1 flex flex-col items-center justify-center text-center">
+                          <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-10 shadow-xs flex-1 flex flex-col items-center justify-center text-center">
                             <Check className="w-12 h-12 text-[var(--mv-accent)] mb-2" />
                             <h4 className="font-bold text-base text-[var(--mv-ink)]">No Active Invoices Pending</h4>
-                            <p className="text-xs text-gray-500 max-w-sm mt-1">Your resident core billing ledger has zero pending outstanding balances. Thank you for your proactive support!</p>
+                            <p className="text-xs text-[var(--mv-muted)] max-w-sm mt-1">Your resident core billing ledger has zero pending outstanding balances. Thank you for your proactive support!</p>
                           </div>
                         )}
                       </div>
 
                       {/* Mini ledger logs activity */}
-                      <div className="col-span-4 bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs flex flex-col justify-between">
+                      <div className="col-span-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs flex flex-col justify-between">
                         <div>
                           <div className="flex justify-between items-center mb-4 select-none">
                             <h3 className="font-bold text-xs uppercase tracking-tight text-[var(--mv-ink)]">Ledger accounts activity</h3>
@@ -2030,11 +2034,11 @@ export default function App() {
                                     setActiveTab('bills');
                                   }
                                 }}
-                                className="flex items-center justify-between p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] hover:bg-gray-100 transition-all cursor-pointer text-xs"
+                                className="flex items-center justify-between p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] hover:bg-[var(--mv-soft)] transition-all cursor-pointer text-xs"
                               >
                                 <div className="min-w-0 flex-1 pr-2">
                                   <p className="font-bold text-[var(--mv-ink)] truncate">{inv.period} Maintenance</p>
-                                  <p className="text-[9px] text-[#6B7280] uppercase mt-0.5 leading-none font-medium">{inv.paidDate || inv.dueDate || ''}</p>
+                                  <p className="text-[9px] text-[var(--mv-muted)] uppercase mt-0.5 leading-none font-medium">{inv.paidDate || inv.dueDate || ''}</p>
                                 </div>
                                 <div className="text-right shrink-0">
                                   <p className="font-bold text-[var(--mv-ink)] font-mono leading-none">{formatRupee(inv.total)}</p>
@@ -2054,18 +2058,18 @@ export default function App() {
                   {currentRole === 'Manager' && (
                     <div className="grid grid-cols-12 gap-6 pt-1">
                       {/* Scalable Chart */}
-                      <div className="col-span-8 bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs">
+                      <div className="col-span-8 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs">
                         <div className="flex justify-between items-center mb-4">
                           <div>
                             <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider">Collections by billing period</h4>
-                            <p className="text-[10px] text-[#6B7280]">Paid against still outstanding, for the last six periods billed</p>
+                            <p className="text-[10px] text-[var(--mv-muted)]">Paid against still outstanding, for the last six periods billed</p>
                           </div>
                           <TrendingUp className="w-4 h-4 text-[var(--mv-accent)]" />
                         </div>
 
                         <div className="h-80 w-full pt-1 select-none">
                           {collectionTrendsData.length === 0 ? (
-                            <p className="py-24 text-center text-xs text-[#6B7280]">No invoices yet, so there is nothing to chart.</p>
+                            <p className="py-24 text-center text-xs text-[var(--mv-muted)]">No invoices yet, so there is nothing to chart.</p>
                           ) : (
                             <Suspense fallback={<PanelLoading />}>
                               <CollectionChart data={collectionTrendsData} />
@@ -2075,10 +2079,10 @@ export default function App() {
                       </div>
 
                       {/* Operation launch pad */}
-                      <div className="col-span-4 bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs flex flex-col justify-between">
+                      <div className="col-span-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs flex flex-col justify-between">
                         <div>
                           <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider mb-4 border-b border-[var(--mv-border)] pb-2 text-left">Quick Admin Dispatch</h4>
-                          <p className="text-xs text-[#6B7280] leading-relaxed mb-6">Launch water supply assessments, common lift backups operations, parking space levies, and non-occupancy utility taxes across core residential registry ledgers.</p>
+                          <p className="text-xs text-[var(--mv-muted)] leading-relaxed mb-6">Launch water supply assessments, common lift backups operations, parking space levies, and non-occupancy utility taxes across core residential registry ledgers.</p>
                         </div>
                         <div className="space-y-3.5">
                           <button
@@ -2104,17 +2108,17 @@ export default function App() {
                   {currentRole === 'Committee' && (
                     <div className="grid grid-cols-12 gap-6 pt-1">
                       {/* Budget Chart */}
-                      <div className="col-span-7 bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs text-left">
+                      <div className="col-span-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs text-left">
                         <div className="flex justify-between items-center mb-4">
                           <div>
                             <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider">Approved FY Budget vs Realized Revenue Ledger</h4>
-                            <p className="text-[10px] text-[#6B7280]">{onServer ? 'Needs an approved budget' : 'Demonstration budget figures — not an approved budget'}</p>
+                            <p className="text-[10px] text-[var(--mv-muted)]">{onServer ? 'Needs an approved budget' : 'Demonstration budget figures — not an approved budget'}</p>
                           </div>
                         </div>
 
                         <div className="h-80 w-full pt-1 select-none">
                           {onServer ? (
-                            <p className="py-24 text-center text-xs text-[#6B7280] max-w-sm mx-auto">
+                            <p className="py-24 text-center text-xs text-[var(--mv-muted)] max-w-sm mx-auto">
                               No approved budget is on record on the server, so there is nothing to compare against yet.
                             </p>
                           ) : (
@@ -2126,13 +2130,13 @@ export default function App() {
                       </div>
 
                       {/* Required vendor approvals panel */}
-                      <div className="col-span-5 bg-white border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs text-left flex flex-col justify-between">
+                      <div className="col-span-5 bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs text-left flex flex-col justify-between">
                         <div>
-                          <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider mb-4 border-b border-gray-100 pb-2">Governing Vendor Approvals</h4>
+                          <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider mb-4 border-b border-[var(--mv-border)] pb-2">Governing Vendor Approvals</h4>
 
                           <div className="space-y-3 overflow-y-auto max-h-[260px] pr-1 hide-scrollbar">
                             {vendorInvoices.filter(vi => vi.status === 'Pending').length === 0 ? (
-                              <div className="py-12 text-center text-xs text-gray-400 font-semibold uppercase tracking-wider">
+                              <div className="py-12 text-center text-xs text-[var(--mv-muted)] font-semibold uppercase tracking-wider">
                                 RWA Balance Reconciled! No pending proposals.
                               </div>
                             ) : (
@@ -2145,9 +2149,9 @@ export default function App() {
                                       </span>
                                       <h5 className="font-bold text-[var(--mv-ink)] mt-1.5">{vi.vendorName}</h5>
                                     </div>
-                                    <span className="font-mono font-bold text-gray-900">{formatRupee(vi.amount)}</span>
+                                    <span className="font-mono font-bold text-[var(--mv-ink)]">{formatRupee(vi.amount)}</span>
                                   </div>
-                                  <div className="bg-white p-2 rounded border border-gray-100 text-[9px] text-gray-500 flex justify-between items-center leading-none">
+                                  <div className="bg-[var(--mv-surface)] p-2 rounded border border-[var(--mv-border)] text-[9px] text-[var(--mv-muted)] flex justify-between items-center leading-none">
                                     <span>TDS Withheld (194C): <strong className="font-mono text-[var(--mv-ink)]">{formatRupee(vi.tdsAmount)}</strong></span>
                                     <span>Net Payable: <strong className="font-mono text-[var(--mv-ink)]">{formatRupee(vi.netPayable)}</strong></span>
                                   </div>
@@ -2156,7 +2160,7 @@ export default function App() {
                                       <button
                                         onClick={() => handleVendorInvoiceStatus(vi.id, 'Rejected')}
                                         disabled={working}
-                                        className="py-1 px-3 border border-[var(--mv-border)] rounded text-[9px] font-bold text-[var(--mv-muted)] hover:bg-white active:scale-95 disabled:opacity-60"
+                                        className="py-1 px-3 border border-[var(--mv-border)] rounded text-[9px] font-bold text-[var(--mv-muted)] hover:bg-[var(--mv-surface)] active:scale-95 disabled:opacity-60"
                                       >
                                         Reject
                                       </button>
@@ -2194,7 +2198,7 @@ export default function App() {
                   <div className="flex justify-between items-end border-b border-[var(--mv-border)] pb-4">
                     <div>
                       <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Receivables Ledger Directory</h2>
-                      <p className="text-xs text-[#6B7280]">Fully compliant regulatory invoices generated for Mani Vista residents</p>
+                      <p className="text-xs text-[var(--mv-muted)]">Fully compliant regulatory invoices generated for Mani Vista residents</p>
                     </div>
                     {currentRole !== 'Resident' && (
                       <button
@@ -2209,7 +2213,7 @@ export default function App() {
 
                   {/* The document workflow: where a proforma is in its life. */}
                   {currentRole !== 'Resident' && (
-                    <div className="p-6 bg-white border border-[var(--mv-border)] rounded-2xl shadow-xs">
+                    <div className="p-6 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl shadow-xs">
                       <BillingWorkflow
                         documents={registerDocuments}
                         problems={books.snapshot().problems}
@@ -2223,7 +2227,7 @@ export default function App() {
 
                   {/* Wizard element positioned dynamically */}
                   {showBillingWizard && currentRole !== 'Resident' && (
-                    <div className="p-6 bg-white border border-[var(--mv-border)] rounded-2xl max-w-3xl animate-scale-up space-y-4">
+                    <div className="p-6 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl max-w-3xl animate-scale-up space-y-4">
                       <div className="flex justify-between items-center border-b border-[var(--mv-border)] pb-3">
                         <span className="font-bold text-xs uppercase tracking-wider text-[var(--mv-ink)]">Billing run</span>
                         <button onClick={() => setShowBillingWizard(false)} className="text-[var(--mv-accent)] hover:underline text-xs font-semibold">Dismiss</button>
@@ -2238,8 +2242,8 @@ export default function App() {
                   {/* MASTER DETAIL TWO-PANE GRID */}
                   <div className="grid grid-cols-12 gap-6 items-start">
                     {/* LEFT MASTER LIST */}
-                    <div className="col-span-5 bg-white border border-[var(--mv-border)] rounded-2xl shadow-xs overflow-hidden flex flex-col">
-                      <div className="p-4 border-b border-[var(--mv-border)] bg-gray-50/55 select-none font-bold text-[10px] uppercase tracking-wider text-gray-500">
+                    <div className="col-span-5 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl shadow-xs overflow-hidden flex flex-col">
+                      <div className="p-4 border-b border-[var(--mv-border)] bg-[var(--mv-page)] select-none font-bold text-[10px] uppercase tracking-wider text-[var(--mv-muted)]">
                         Select Invoice Receipts ({currentInvoices.length} Found)
                       </div>
 
@@ -2250,14 +2254,14 @@ export default function App() {
                             <div
                               key={inv.id}
                               onClick={() => setSelectedInvoice(inv)}
-                              className={`p-4 text-left cursor-pointer transition-all flex justify-between items-center ${isActive ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)]' : 'hover:bg-gray-50/50 bg-white'}`}
+                              className={`p-4 text-left cursor-pointer transition-all flex justify-between items-center ${isActive ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)]' : 'hover:bg-[var(--mv-soft)] bg-[var(--mv-surface)]'}`}
                             >
                               <div className="min-w-0 flex-1 pr-2">
-                                <span className="font-mono text-[9px] text-gray-400 font-bold tracking-tight block uppercase leading-none">Invoice No: {inv.invoiceNo}</span>
+                                <span className="font-mono text-[9px] text-[var(--mv-muted)] font-bold tracking-tight block uppercase leading-none">Invoice No: {inv.invoiceNo}</span>
                                 <h4 className="font-extrabold text-[var(--mv-ink)] mt-1.5 text-xs truncate">
                                   {inv.period} Maintenance {currentRole !== 'Resident' ? `(Flat ${inv.flatNo})` : ''}
                                 </h4>
-                                <p className="text-[9px] text-[#6B7280] font-bold mt-1 uppercase">Owner: {inv.name}</p>
+                                <p className="text-[9px] text-[var(--mv-muted)] font-bold mt-1 uppercase">Owner: {inv.name}</p>
                               </div>
                               <div className="text-right shrink-0">
                                 <p className="font-mono text-xs font-bold text-[var(--mv-ink)]">{formatRupee(inv.total)}</p>
@@ -2272,15 +2276,15 @@ export default function App() {
                     </div>
 
                     {/* RIGHT DETAIL PRESENTATION */}
-                    <div className="col-span-7 bg-white border border-[var(--mv-border)] rounded-2xl shadow-sm p-6 space-y-4 min-h-[540px] flex flex-col justify-between">
+                    <div className="col-span-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl shadow-sm p-6 space-y-4 min-h-[540px] flex flex-col justify-between">
                       {desktopActiveInvoice ? (
                         <>
                           <div className="space-y-4">
                             <div className="flex justify-between items-start">
                               <div>
-                                <span className="text-[9px] font-bold uppercase text-[#6B7280] tracking-widest leading-none">Registered Society CHS RWA</span>
+                                <span className="text-[9px] font-bold uppercase text-[var(--mv-muted)] tracking-widest leading-none">Registered Society CHS RWA</span>
                                 <h3 className="font-extrabold text-lg text-[var(--mv-ink)] mt-1.5">Mani Vista Residents Association</h3>
-                                <p className="text-[10px] text-gray-400 font-medium">{societyName} · GSTIN {gstinLabel}</p>
+                                <p className="text-[10px] text-[var(--mv-muted)] font-medium">{societyName} · GSTIN {gstinLabel}</p>
                               </div>
                               <div className="text-right">
                                 {desktopActiveInvoice.status === 'Paid' ? (
@@ -2288,7 +2292,7 @@ export default function App() {
                                     Paid reconciled
                                   </span>
                                 ) : (
-                                  <span className="px-3 py-1.5 text-[9px] font-bold rounded-lg bg-red-50 text-red-650 border border-red-200 uppercase select-none leading-none inline-block">
+                                  <span className="px-3 py-1.5 text-[9px] font-bold rounded-lg bg-red-50 text-red-700 border border-red-200 uppercase select-none leading-none inline-block">
                                     Overdue arrears
                                   </span>
                                 )}
@@ -2297,57 +2301,57 @@ export default function App() {
 
                             <hr className="border-[var(--mv-border)]" />
 
-                            <div className="grid grid-cols-4 gap-3 bg-gray-50/50 p-4 border border-[var(--mv-border)] rounded-2xl text-[10px] leading-relaxed">
+                            <div className="grid grid-cols-4 gap-3 bg-[var(--mv-page)] p-4 border border-[var(--mv-border)] rounded-2xl text-[10px] leading-relaxed">
                               <div>
-                                <p className="font-bold uppercase tracking-tight text-[#6B7280]">Tax Invoice ID</p>
+                                <p className="font-bold uppercase tracking-tight text-[var(--mv-muted)]">Tax Invoice ID</p>
                                 <p className="font-bold text-[var(--mv-ink)] font-mono mt-1">{desktopActiveInvoice.invoiceNo}</p>
                               </div>
                               <div>
-                                <p className="font-bold uppercase tracking-tight text-[#6B7280]">Cycle Period</p>
+                                <p className="font-bold uppercase tracking-tight text-[var(--mv-muted)]">Cycle Period</p>
                                 <p className="font-bold text-[var(--mv-ink)] font-mono mt-1">{desktopActiveInvoice.period}</p>
                               </div>
                               <div>
-                                <p className="font-bold uppercase tracking-tight text-[#6B7280]">Flat Reference</p>
+                                <p className="font-bold uppercase tracking-tight text-[var(--mv-muted)]">Flat Reference</p>
                                 <p className="font-bold text-[var(--mv-ink)] font-mono mt-1">{desktopActiveInvoice.flatNo}</p>
                               </div>
                               <div>
-                                <p className="font-bold uppercase tracking-tight text-[#6B7280]">Resident Owner</p>
+                                <p className="font-bold uppercase tracking-tight text-[var(--mv-muted)]">Resident Owner</p>
                                 <p className="font-bold text-[var(--mv-ink)] mt-1 truncate">{desktopActiveInvoice.name}</p>
                               </div>
                             </div>
 
                             <div className="space-y-2 pt-2 text-xs">
-                              <h5 className="font-extrabold text-[9px] uppercase tracking-wider text-gray-500 border-b border-[var(--mv-border)] pb-2">Billing Breakdown particulars</h5>
+                              <h5 className="font-extrabold text-[9px] uppercase tracking-wider text-[var(--mv-muted)] border-b border-[var(--mv-border)] pb-2">Billing Breakdown particulars</h5>
 
                               <div className="flex justify-between items-center py-1">
-                                <span className="text-gray-550 font-medium">Common Area General Maintenance</span>
+                                <span className="text-[var(--mv-muted)] font-medium">Common Area General Maintenance</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.maintenance)}</span>
                               </div>
                               <div className="flex justify-between items-center py-1">
-                                <span className="text-gray-550 font-medium font-sans">Sinking Surcharge contributions</span>
+                                <span className="text-[var(--mv-muted)] font-medium font-sans">Sinking Surcharge contributions</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.sinkingFund)}</span>
                               </div>
                               <div className="flex justify-between items-center py-1">
-                                <span className="text-gray-555 font-medium">Water Utility tank infrastructure levy</span>
+                                <span className="text-[var(--mv-muted)] font-medium">Water Utility tank infrastructure levy</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.waterCharges)}</span>
                               </div>
                               <div className="flex justify-between items-center py-1">
-                                <span className="text-gray-555 font-medium">Lock-up car parking reserve charges</span>
+                                <span className="text-[var(--mv-muted)] font-medium">Lock-up car parking reserve charges</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.parkingCharges)}</span>
                               </div>
                               <div className="flex justify-between items-center py-1">
-                                <span className="text-gray-555 font-medium">Non-Occupancy regulatory surcharge</span>
+                                <span className="text-[var(--mv-muted)] font-medium">Non-Occupancy regulatory surcharge</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.nonOccupancyCharges)}</span>
                               </div>
 
                               {desktopActiveInvoice.gst > 0 && (
                                 <>
                                   <hr className="border-[var(--mv-border)] my-2" />
-                                  <div className="flex justify-between items-center text-gray-400 py-0.5">
+                                  <div className="flex justify-between items-center text-[var(--mv-muted)] py-0.5">
                                     <span>CGST (half of the GST charged)</span>
                                     <span className="font-mono font-bold">{formatRupee(desktopActiveInvoice.gst / 2)}</span>
                                   </div>
-                                  <div className="flex justify-between items-center text-gray-400 py-0.5">
+                                  <div className="flex justify-between items-center text-[var(--mv-muted)] py-0.5">
                                     <span>SGST (half of the GST charged)</span>
                                     <span className="font-mono font-bold">{formatRupee(desktopActiveInvoice.gst / 2)}</span>
                                   </div>
@@ -2355,7 +2359,7 @@ export default function App() {
                               )}
 
                               {desktopActiveInvoice.latePenalty > 0 && (
-                                <div className="flex justify-between items-center py-2 bg-red-50/60 px-3.5 rounded-lg border border-red-100 mt-2 text-red-650">
+                                <div className="flex justify-between items-center py-2 bg-red-50/60 px-3.5 rounded-lg border border-red-100 mt-2 text-red-700">
                                   <span className="font-bold text-[10px]">Late-payment interest</span>
                                   <span className="font-mono font-bold text-xs">{formatRupee(desktopActiveInvoice.latePenalty)}</span>
                                 </div>
@@ -2374,9 +2378,9 @@ export default function App() {
                           <div className="pt-4 border-t border-[var(--mv-border)] flex justify-between items-center bg-[var(--mv-page)]/50 rounded-b-2xl p-4 -mx-6 -mb-6">
                             <button
                               onClick={() => handleDownloadInvoice(desktopActiveInvoice)}
-                              className="py-2.5 px-4 bg-white border border-[var(--mv-border)] rounded-xl text-xs font-semibold text-[var(--mv-ink)] hover:bg-gray-100 transition-all flex items-center justify-center gap-1 cursor-pointer active:scale-95 shadow-xs"
+                              className="py-2.5 px-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl text-xs font-semibold text-[var(--mv-ink)] hover:bg-[var(--mv-soft)] transition-all flex items-center justify-center gap-1 cursor-pointer active:scale-95 shadow-xs"
                             >
-                              <Download className="w-4 h-4 text-[#6B7280]" aria-hidden="true" /> {onServer ? 'Download PDF' : 'Export summary (demo)'}
+                              <Download className="w-4 h-4 text-[var(--mv-muted)]" aria-hidden="true" /> {onServer ? 'Download PDF' : 'Export summary (demo)'}
                             </button>
 
                             {desktopActiveInvoice.status !== 'Paid' && currentRole === 'Resident' && mayPayOnline && (
@@ -2405,10 +2409,10 @@ export default function App() {
                           </div>
                         </>
                       ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center text-center py-20 text-gray-400">
-                          <FileText className="w-12 h-12 text-gray-300 mb-2" />
+                        <div className="flex-1 flex flex-col items-center justify-center text-center py-20 text-[var(--mv-muted)]">
+                          <FileText className="w-12 h-12 text-[var(--mv-muted)] mb-2" />
                           <p className="text-xs font-bold uppercase tracking-wider">No active accounts selected</p>
-                          <p className="text-[11px] text-[#6B7280] max-w-sm mt-1">Select an active resident accounts tax invoice from the master index layout on the left to review allocations.</p>
+                          <p className="text-[11px] text-[var(--mv-muted)] max-w-sm mt-1">Select an active resident accounts tax invoice from the master index layout on the left to review allocations.</p>
                         </div>
                       )}
                     </div>
@@ -2423,14 +2427,14 @@ export default function App() {
                     <>
                       <div>
                         <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Reconcile Core Ledger Account</h2>
-                        <p className="text-xs text-[#6B7280]">Authorize water tankers infrastructure clearing, UPI transactions, and unearned advance predepositions</p>
+                        <p className="text-xs text-[var(--mv-muted)]">Authorize water tankers infrastructure clearing, UPI transactions, and unearned advance predepositions</p>
                       </div>
 
                       <div className="grid grid-cols-12 gap-6 items-start">
                         {payingInvoice ? (
-                          <div className="col-span-7 bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
+                          <div className="col-span-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
                             <div className="flex justify-between items-center border-b border-[var(--mv-border)] pb-2">
-                              <span className="font-extrabold text-[10px] uppercase text-[#6B7280] tracking-wider font-mono">Checkout — no gateway connected</span>
+                              <span className="font-extrabold text-[10px] uppercase text-[var(--mv-muted)] tracking-wider font-mono">Checkout — no gateway connected</span>
                               <button onClick={() => setPayingInvoice(null)} className="text-xs font-bold text-[var(--mv-accent)] hover:underline">Dismiss</button>
                             </div>
 
@@ -2444,7 +2448,7 @@ export default function App() {
                             </div>
 
                             <form onSubmit={handleExecutePayment} className="space-y-4 text-xs font-medium">
-                              <span className="text-[10px] uppercase font-bold text-gray-400" id="pmethod-desk-label">Payment method</span>
+                              <span className="text-[10px] uppercase font-bold text-[var(--mv-muted)]" id="pmethod-desk-label">Payment method</span>
 
                               <div className="grid grid-cols-4 gap-3" role="radiogroup" aria-labelledby="pmethod-desk-label">
                                 {[
@@ -2455,7 +2459,7 @@ export default function App() {
                                 ].map(item => (
                                   <label
                                     key={item.id}
-                                    className={`cursor-pointer p-3 border rounded-xl flex flex-col items-center justify-center text-center gap-2 transition-all ${paymentMethod === item.id ? 'border-[var(--mv-accent)] bg-[var(--mv-accent-soft)]/40 text-[var(--mv-accent)] font-bold' : 'border-[var(--mv-border)] bg-white hover:bg-gray-50 text-gray-500'}`}
+                                    className={`cursor-pointer p-3 border rounded-xl flex flex-col items-center justify-center text-center gap-2 transition-all ${paymentMethod === item.id ? 'border-[var(--mv-accent)] bg-[var(--mv-accent-soft)]/40 text-[var(--mv-accent)] font-bold' : 'border-[var(--mv-border)] bg-[var(--mv-surface)] hover:bg-[var(--mv-soft)] text-[var(--mv-muted)]'}`}
                                   >
                                     <input
                                       type="radio"
@@ -2470,7 +2474,7 @@ export default function App() {
                               </div>
 
                               <div className="space-y-1">
-                                <label htmlFor="pay-amount-desk" className="text-[10px] font-bold text-[#6B7280] block uppercase">Amount to pay (INR)</label>
+                                <label htmlFor="pay-amount-desk" className="text-[10px] font-bold text-[var(--mv-muted)] block uppercase">Amount to pay (INR)</label>
                                 <input
                                   id="pay-amount-desk"
                                   type="number"
@@ -2479,7 +2483,7 @@ export default function App() {
                                   placeholder={`e.g. ${payingInvoice.total}`}
                                   className="w-full bg-[var(--mv-page)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold font-mono outline-none"
                                 />
-                                <span className="text-[9px] text-[#6B7280] block font-medium">Leave completely blank to clear full aggregate assessment index of {formatRupee(payingInvoice.total)} instantly.</span>
+                                <span className="text-[9px] text-[var(--mv-muted)] block font-medium">Leave completely blank to clear full aggregate assessment index of {formatRupee(payingInvoice.total)} instantly.</span>
                               </div>
 
                               <button
@@ -2492,12 +2496,12 @@ export default function App() {
                             </form>
                           </div>
                         ) : (
-                          <div className="col-span-7 bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
-                            <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider block border-b border-[var(--mv-border)] pb-2">Overdue pending receivables assessments</span>
+                          <div className="col-span-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
+                            <span className="text-[10px] uppercase font-bold text-[var(--mv-muted)] tracking-wider block border-b border-[var(--mv-border)] pb-2">Overdue pending receivables assessments</span>
 
                             <div className="divide-y divide-[var(--mv-border)]">
                               {invoices.filter(inv => inv.flatNo === residentFlatNo && inv.status !== 'Paid').length === 0 ? (
-                                <p className="py-12 text-center text-xs font-semibold font-mono text-gray-400">Your accounts ledger has zero active arrears! Standard accounts in green state.</p>
+                                <p className="py-12 text-center text-xs font-semibold font-mono text-[var(--mv-muted)]">Your accounts ledger has zero active arrears! Standard accounts in green state.</p>
                               ) : (
                                 invoices
                                   .filter(inv => inv.flatNo === residentFlatNo && inv.status !== 'Paid')
@@ -2505,10 +2509,10 @@ export default function App() {
                                     <div key={inv.id} className="py-3 flex justify-between items-center text-xs font-medium">
                                       <div>
                                         <p className="font-extrabold text-[var(--mv-ink)]">{inv.period} Maintenance invoice assessment</p>
-                                        <p className="text-[9px] text-gray-400 font-bold uppercase mt-1">Invoice ID: {inv.invoiceNo}</p>
+                                        <p className="text-[9px] text-[var(--mv-muted)] font-bold uppercase mt-1">Invoice ID: {inv.invoiceNo}</p>
                                       </div>
                                       <div className="text-right flex items-center gap-3">
-                                        <span className="font-mono font-bold text-red-650">{formatRupee(inv.total)}</span>
+                                        <span className="font-mono font-bold text-red-700">{formatRupee(inv.total)}</span>
                                         {mayPayOnline && (
                                           <button
                                             onClick={() => handlePayClick(inv)}
@@ -2526,12 +2530,12 @@ export default function App() {
                         )}
 
                         {/* Predeposition advance right panel */}
-                        <div className="col-span-5 bg-white border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4 text-xs font-medium">
-                          <span className="text-[10px] uppercase font-bold text-[var(--mv-ink)] tracking-wider block border-b border-gray-105 pb-2">Prepay advances reserve</span>
-                          <p className="text-gray-500 leading-relaxed">Residents may predispatch lump-sum advances. Standard RWA double-entry protocols automatically offset incoming monthly assessments ledger from advance assets.</p>
+                        <div className="col-span-5 bg-[var(--mv-surface)] border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4 text-xs font-medium">
+                          <span className="text-[10px] uppercase font-bold text-[var(--mv-ink)] tracking-wider block border-b border-[var(--mv-border)] pb-2">Prepay advances reserve</span>
+                          <p className="text-[var(--mv-muted)] leading-relaxed">Residents may predispatch lump-sum advances. Standard RWA double-entry protocols automatically offset incoming monthly assessments ledger from advance assets.</p>
 
                           {!mayPayOnline ? (
-                            <p className="text-[11px] text-[#6B7280] leading-relaxed">
+                            <p className="text-[11px] text-[var(--mv-muted)] leading-relaxed">
                               No payment gateway is connected. Pay the association by UPI, NEFT or cheque and the
                               manager records it; anything beyond your dues is held here as an advance
                               ({formatRupees(residentAdvancePaise)} now).
@@ -2539,7 +2543,7 @@ export default function App() {
                           ) : (
                           <form onSubmit={handleExecuteAdvance} className="space-y-4 pt-1">
                             <div className="space-y-1">
-                              <label htmlFor="advance-desk" className="text-[10px] text-gray-500 uppercase block">Deposit Sum (INR)</label>
+                              <label htmlFor="advance-desk" className="text-[10px] text-[var(--mv-muted)] uppercase block">Deposit Sum (INR)</label>
                               <input
                                 id="advance-desk"
                                 type="number"
@@ -2561,22 +2565,22 @@ export default function App() {
                     <>
                       <div>
                         <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Receivables Ageing Room</h2>
-                        <p className="text-xs text-[#6B7280]">{onServer
+                        <p className="text-xs text-[var(--mv-muted)]">{onServer
                           ? 'Arrears by flat, and receipts for money that has reached the bank. Reminders are not sent from here yet.'
                           : 'Review arrears and log reminders against each flat. Sending them over SMS or WhatsApp needs a messaging account, so reminders are only recorded here.'}</p>
                       </div>
 
                       <div className="grid grid-cols-12 gap-6 items-start">
                         {/* Overdue table list */}
-                        <div className="col-span-7 bg-white border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs space-y-3">
+                        <div className="col-span-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs space-y-3">
                           <div className="flex justify-between items-center border-b border-[var(--mv-border)] pb-2">
-                            <span className="text-[10px] font-bold uppercase text-gray-500 tracking-wider">Flats with outstanding accounts ({overdueInvoices.length})</span>
+                            <span className="text-[10px] font-bold uppercase text-[var(--mv-muted)] tracking-wider">Flats with outstanding accounts ({overdueInvoices.length})</span>
                             <span className="text-[9px] font-bold text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded uppercase font-mono">AR OVERDUE</span>
                           </div>
 
                           <div className="space-y-2.5 overflow-y-auto max-h-[380px] pr-1 hide-scrollbar">
                             {overdueInvoices.length === 0 ? (
-                              <p className="py-12 text-center text-xs font-semibold text-gray-400">All member accounts fully clear! Active collections settled.</p>
+                              <p className="py-12 text-center text-xs font-semibold text-[var(--mv-muted)]">All member accounts fully clear! Active collections settled.</p>
                             ) : (
                               overdueInvoices.map(inv => (
                                 <div key={inv.id} className="p-3.5 bg-[var(--mv-page)] rounded-xl flex justify-between items-center text-xs border border-[var(--mv-border)]">
@@ -2585,10 +2589,10 @@ export default function App() {
                                       <span className="font-extrabold text-[var(--mv-ink)] text-sm">{inv.flatNo}</span>
                                       <span className="text-[10px] font-bold text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded-md truncate">{inv.name}</span>
                                     </div>
-                                    <span className="text-[10px] text-gray-405 block mt-1">Period Cycle: {inv.period} · Standard 30 days grace elapsed</span>
+                                    <span className="text-[10px] text-[var(--mv-muted)] block mt-1">Period Cycle: {inv.period} · Standard 30 days grace elapsed</span>
                                   </div>
                                   <div className="text-right flex items-center gap-3 shrink-0">
-                                    <span className="font-bold font-mono text-red-650 text-xs">{formatRupee(inv.total)}</span>
+                                    <span className="font-bold font-mono text-red-700 text-xs">{formatRupee(inv.total)}</span>
                                     {!onServer && (
                                       <button
                                         onClick={() => handleSendReminder(inv)}
@@ -2607,7 +2611,7 @@ export default function App() {
                         </div>
 
                         {/* Receipt entry: money already in the bank, against a flat. */}
-                        <div className="col-span-5 bg-white border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs">
+                        <div className="col-span-5 bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs">
                           {mayRecordReceipts ? (
                             <ReceiptEntryForm
                             flats={members.map(m => ({ flatNo: m.flatNo, name: m.name }))}
@@ -2624,7 +2628,7 @@ export default function App() {
                             
                           />
                           ) : (
-                            <p className="text-xs text-[#6B7280] leading-relaxed">
+                            <p className="text-xs text-[var(--mv-muted)] leading-relaxed">
                               Receipts are recorded by the manager. This account does not hold the
                               payment.record permission.
                             </p>
@@ -2641,32 +2645,32 @@ export default function App() {
                 <div className="space-y-6 max-w-7xl mx-auto animate-scale-up text-left">
                   <div>
                     <h2 className="text-2xl font-bold text-[var(--mv-ink)]">RWA Double-Entry Financial Books & Audits</h2>
-                    <p className="text-xs text-[#6B7280]">Fully compliant regulatory audits, comparative assets, and live double-entry general journal ledger balances</p>
+                    <p className="text-xs text-[var(--mv-muted)]">Fully compliant regulatory audits, comparative assets, and live double-entry general journal ledger balances</p>
                   </div>
 
                   {/* Books sub-navigation */}
                   <div className="grid grid-cols-4 gap-2 bg-[var(--mv-soft)] p-1.5 rounded-xl text-xs font-bold uppercase text-center max-w-xl select-none">
                     <button
                       onClick={() => setBooksSubTab('reports')}
-                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'reports' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[#6B7280] hover:text-[#0b0b0f]'}`}
+                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'reports' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[var(--mv-muted)] hover:text-[#0b0b0f]'}`}
                     >
                       Audit Reports
                     </button>
                     <button
                       onClick={() => setBooksSubTab('ledger')}
-                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'ledger' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[#6B7280] hover:text-[#0b0b0f]'}`}
+                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'ledger' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[var(--mv-muted)] hover:text-[#0b0b0f]'}`}
                     >
                       Journal Ledger
                     </button>
                     <button
                       onClick={() => setBooksSubTab('budget')}
-                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'budget' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[#6B7280] hover:text-[#0b0b0f]'}`}
+                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'budget' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[var(--mv-muted)] hover:text-[#0b0b0f]'}`}
                     >
                       Budget Variance
                     </button>
                     <button
                       onClick={() => setBooksSubTab('audit')}
-                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'audit' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[#6B7280] hover:text-[#0b0b0f]'}`}
+                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'audit' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[var(--mv-muted)] hover:text-[#0b0b0f]'}`}
                     >
                       Audit Trails
                     </button>
@@ -2676,45 +2680,45 @@ export default function App() {
                   {booksSubTab === 'reports' && (
                     <div className="grid grid-cols-12 gap-6 items-start">
                       {/* Substate categories sidebar */}
-                      <div className="col-span-4 bg-white border border-[var(--mv-border)] rounded-2xl shadow-xs overflow-hidden flex flex-col">
-                        <div className="p-4 border-b border-[var(--mv-border)] bg-gray-50/55 select-none font-bold text-[10px] uppercase tracking-wider text-gray-500">
+                      <div className="col-span-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl shadow-xs overflow-hidden flex flex-col">
+                        <div className="p-4 border-b border-[var(--mv-border)] bg-[var(--mv-page)] select-none font-bold text-[10px] uppercase tracking-wider text-[var(--mv-muted)]">
                           Statements Menu directory
                         </div>
 
                         <div className="divide-y divide-[var(--mv-border)] text-xs font-medium">
                           <div
                             onClick={() => setReportsSubState('ie')}
-                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'ie' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-gray-50 bg-white text-gray-650'}`}
+                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'ie' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-[var(--mv-soft)] bg-[var(--mv-surface)] text-[var(--mv-muted)]'}`}
                           >
                             <p className="font-bold">Income & Expenditure Statement</p>
-                            <span className="text-[10px] text-gray-400 block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Provisional surplus</span>
+                            <span className="text-[10px] text-[var(--mv-muted)] block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Provisional surplus</span>
                           </div>
                           <div
                             onClick={() => setReportsSubState('bs')}
-                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'bs' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-gray-50 bg-white text-gray-650'}`}
+                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'bs' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-[var(--mv-soft)] bg-[var(--mv-surface)] text-[var(--mv-muted)]'}`}
                           >
                             <p className="font-bold">Balance Sheet</p>
-                            <span className="text-[10px] text-gray-400 block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Assets, liabilities and funds</span>
+                            <span className="text-[10px] text-[var(--mv-muted)] block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Assets, liabilities and funds</span>
                           </div>
                           <div
                             onClick={() => setReportsSubState('rp')}
-                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'rp' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-gray-50 bg-white text-gray-650'}`}
+                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'rp' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-[var(--mv-soft)] bg-[var(--mv-surface)] text-[var(--mv-muted)]'}`}
                           >
                             <p className="font-bold">Receipts &amp; Payments</p>
-                            <span className="text-[10px] text-gray-400 block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Cash basis</span>
+                            <span className="text-[10px] text-[var(--mv-muted)] block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Cash basis</span>
                           </div>
                           <div
                             onClick={() => setReportsSubState('tb')}
-                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'tb' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-gray-50 bg-white text-gray-650'}`}
+                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'tb' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-[var(--mv-soft)] bg-[var(--mv-surface)] text-[var(--mv-muted)]'}`}
                           >
                             <p className="font-bold">Trial Balance</p>
-                            <span className="text-[10px] text-gray-400 block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Every account</span>
+                            <span className="text-[10px] text-[var(--mv-muted)] block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Every account</span>
                           </div>
                         </div>
                       </div>
 
                       {/* Detail report sheet */}
-                      <div className="col-span-8 bg-white border border-[var(--mv-border)] rounded-2xl shadow-sm p-6 space-y-4">
+                      <div className="col-span-8 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl shadow-sm p-6 space-y-4">
                         <Suspense fallback={<PanelLoading />}>
                           <FinancialStatements statements={statements} which={reportsSubState} />
                         </Suspense>
@@ -2724,7 +2728,7 @@ export default function App() {
 
                   {/* 2. GENERAL JOURNAL LEDGER */}
                   {booksSubTab === 'ledger' && (
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
                       <Suspense fallback={<PanelLoading />}>
                         <JournalLedger statements={statements} />
                       </Suspense>
@@ -2733,12 +2737,12 @@ export default function App() {
 
                   {/* 3. BUDGET VARIANCE */}
                   {booksSubTab === 'budget' && (
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs text-left space-y-3">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs text-left space-y-3">
                       <div className="border-b border-[var(--mv-border)] pb-2">
-                        <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider block">
+                        <span className="text-[10px] uppercase font-bold text-[var(--mv-muted)] tracking-wider block">
                           Budget against actuals
                         </span>
-                        <p className="text-[9px] text-gray-400 mt-0.5 leading-snug">
+                        <p className="text-[9px] text-[var(--mv-muted)] mt-0.5 leading-snug">
                           Budgeted figures are demo values standing in for an approved budget.
                           The realised column and the variance are computed from the ledger.
                         </p>
@@ -2756,7 +2760,7 @@ export default function App() {
                                 </span>
                               )}
                             </div>
-                            <div className="flex justify-between text-[10px] text-gray-500 font-mono">
+                            <div className="flex justify-between text-[10px] text-[var(--mv-muted)] font-mono">
                               <span>Budget {b.budgeted}</span>
                               <span className="font-bold text-[var(--mv-ink)]">Actual {b.actual}</span>
                             </div>
@@ -2775,16 +2779,16 @@ export default function App() {
                   {/* 4. COMPLIANCE AUDIT TRAILS */}
                   {booksSubTab === 'audit' && (
                     <div className="space-y-3 text-left animate-scale-up text-xs font-medium">
-                      <span className="text-[10px] font-bold uppercase text-gray-400 block border-b border-[var(--mv-border)] pb-2">Governing action audit ledger</span>
+                      <span className="text-[10px] font-bold uppercase text-[var(--mv-muted)] block border-b border-[var(--mv-border)] pb-2">Governing action audit ledger</span>
 
                       <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1 hide-scrollbar">
                         {auditLog.map(log => (
-                          <div key={log.id} className="p-4 bg-white rounded-xl border border-[var(--mv-border)] flex flex-col gap-1 shadow-xs">
-                            <div className="flex justify-between text-[9px] font-bold font-mono text-gray-400 uppercase">
+                          <div key={log.id} className="p-4 bg-[var(--mv-surface)] rounded-xl border border-[var(--mv-border)] flex flex-col gap-1 shadow-xs">
+                            <div className="flex justify-between text-[9px] font-bold font-mono text-[var(--mv-muted)] uppercase">
                               <span>🤖 AUTHOR: {log.user}</span>
                               <span className="font-mono font-medium">{log.timestamp}</span>
                             </div>
-                            <p className="font-bold text-[#000000] leading-snug mt-1 text-xs">{log.action}</p>
+                            <p className="font-bold text-[var(--mv-ink)] leading-snug mt-1 text-xs">{log.action}</p>
                           </div>
                         ))}
                       </div>
@@ -2798,18 +2802,18 @@ export default function App() {
                 <div className="space-y-6 max-w-7xl mx-auto animate-scale-up text-left">
                   <div>
                     <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Co-operative RWA Admin Panels</h2>
-                    <p className="text-xs text-[#6B7280]">Configure resident flat allocations, ticketing helpdesk, and backup parameters</p>
+                    <p className="text-xs text-[var(--mv-muted)]">Configure resident flat allocations, ticketing helpdesk, and backup parameters</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-6 items-start">
                     {/* HELP DESK UTILITY */}
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
                       <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider border-b border-[var(--mv-border)] pb-2">RWA Helpdesk Complaints Portal</h4>
 
                       {currentRole === 'Resident' ? (
                         <form onSubmit={handleRaiseComplaint} className="space-y-4 text-xs font-medium">
                           <div className="space-y-1">
-                            <label htmlFor="ticket-category-desk" className="text-[10px] text-gray-500 uppercase block">Utility Category</label>
+                            <label htmlFor="ticket-category-desk" className="text-[10px] text-[var(--mv-muted)] uppercase block">Utility Category</label>
                             <select
                               id="ticket-category-desk"
                               value={ticketCategory}
@@ -2825,7 +2829,7 @@ export default function App() {
                           </div>
 
                           <div className="space-y-1">
-                            <label htmlFor="ticket-description-desk" className="text-[10px] text-gray-500 uppercase block">Utility malfunction details</label>
+                            <label htmlFor="ticket-description-desk" className="text-[10px] text-[var(--mv-muted)] uppercase block">Utility malfunction details</label>
                             <textarea
                               id="ticket-description-desk"
                               rows={4}
@@ -2846,14 +2850,14 @@ export default function App() {
                         </form>
                       ) : (
                         <div className="space-y-3.5">
-                          <span className="text-[10px] font-bold text-gray-500 uppercase block font-mono">Active complaints ledger logs ({tickets.length} tickets)</span>
+                          <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase block font-mono">Active complaints ledger logs ({tickets.length} tickets)</span>
 
                           <div className="space-y-2.5 max-h-[220px] overflow-y-auto pr-1 hide-scrollbar">
                             {tickets.map(t => (
                               <div key={t.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                                 <div className="min-w-0 flex-1 pr-2 space-y-1">
                                   <span className="font-extrabold text-[var(--mv-ink)] block">Flat {t.flatNo} • {t.category}</span>
-                                  <p className="text-[10px] text-[#6B7280] leading-relaxed font-semibold">{t.description}</p>
+                                  <p className="text-[10px] text-[var(--mv-muted)] leading-relaxed font-semibold">{t.description}</p>
                                 </div>
                                 <div className="shrink-0 text-right">
                                   <span className={`px-2 py-0.5 text-[8px] font-bold rounded uppercase ${t.status === 'Open' ? 'bg-[var(--mv-accent-soft)] text-[var(--mv-accent)]' : 'bg-[var(--mv-accent)] text-white'}`}>
@@ -2869,9 +2873,9 @@ export default function App() {
 
                     {/* REGISTRY GRIDS */}
                     {currentRole === 'Manager' ? (
-                      <div className="bg-white border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4">
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4">
                         <div className="flex justify-between items-baseline border-b border-[var(--mv-border)] pb-2">
-                          <span className="text-[10px] font-bold uppercase text-gray-500 tracking-wider">Residents allotment registry</span>
+                          <span className="text-[10px] font-bold uppercase text-[var(--mv-muted)] tracking-wider">Residents allotment registry</span>
                           {!onServer && <button
                             onClick={() => {
                               setEditingMemberId(null);
@@ -2888,7 +2892,7 @@ export default function App() {
                         </div>
 
                         {onServer && (
-                          <p className="text-[10px] text-[#6B7280] leading-snug">
+                          <p className="text-[10px] text-[var(--mv-muted)] leading-snug">
                             The flats and owners on the server, read only here. Adding, editing or removing a
                             member is not available on this screen yet.
                           </p>
@@ -2898,7 +2902,7 @@ export default function App() {
                           <form onSubmit={handleSaveMember} className="space-y-3.5 text-xs bg-[var(--mv-page)] p-4 rounded-xl border border-[var(--mv-border)] animate-scale-up font-medium">
                             <div className="grid grid-cols-2 gap-3">
                               <div className="space-y-1">
-                                <label htmlFor="member-name-desk" className="text-[9px] font-bold text-gray-550 block">Resident Full Name</label>
+                                <label htmlFor="member-name-desk" className="text-[9px] font-bold text-[var(--mv-muted)] block">Resident Full Name</label>
                                 <input
                                   id="member-name-desk"
                                   type="text"
@@ -2906,11 +2910,11 @@ export default function App() {
                                   value={formName}
                                   onChange={(e) => setFormName(e.target.value)}
                                   placeholder="e.g. Ramesh Desai"
-                                  className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none"
+                                  className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none"
                                 />
                               </div>
                               <div className="space-y-1">
-                                <label htmlFor="member-flat-desk" className="text-[9px] font-bold text-gray-550 block">Flat Code</label>
+                                <label htmlFor="member-flat-desk" className="text-[9px] font-bold text-[var(--mv-muted)] block">Flat Code</label>
                                 <input
                                   id="member-flat-desk"
                                   type="text"
@@ -2918,19 +2922,19 @@ export default function App() {
                                   value={formFlat}
                                   onChange={(e) => setFormFlat(e.target.value)}
                                   placeholder="e.g. C-303"
-                                  className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none"
+                                  className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none"
                                 />
                               </div>
                             </div>
 
                             <div className="grid grid-cols-2 gap-3">
                               <div className="space-y-1">
-                                  <label htmlFor="member-wing-desk" className="text-[9px] font-bold text-gray-555 block">Allotted Wing</label>
+                                  <label htmlFor="member-wing-desk" className="text-[9px] font-bold text-[var(--mv-muted)] block">Allotted Wing</label>
                                   <select
                                     id="member-wing-desk"
                                     value={formWing}
                                     onChange={(e) => setFormWing(e.target.value as any)}
-                                    className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none font-sans"
+                                    className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none font-sans"
                                   >
                                     <option value="A">Wing A</option>
                                     <option value="B">Wing B</option>
@@ -2939,14 +2943,14 @@ export default function App() {
                                   </select>
                               </div>
                               <div className="space-y-1">
-                                <label htmlFor="member-contact-desk" className="text-[9px] font-bold text-gray-555 block">Mobile Contact Line</label>
+                                <label htmlFor="member-contact-desk" className="text-[9px] font-bold text-[var(--mv-muted)] block">Mobile Contact Line</label>
                                 <input
                                   id="member-contact-desk"
                                   type="text"
                                   value={formContact}
                                   onChange={(e) => setFormContact(e.target.value)}
                                   placeholder="e.g. +91 98"
-                                  className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-mono outline-none"
+                                  className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-mono outline-none"
                                 />
                               </div>
                             </div>
@@ -2962,7 +2966,7 @@ export default function App() {
                             <div key={m.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                               <div className="text-left">
                                 <span className="font-extrabold text-[var(--mv-ink)] block">Flat {m.flatNo} · {m.name}</span>
-                                <span className="text-[9px] text-[#6B7280] font-bold block font-mono">Wing {m.wing}{m.contact === '' ? '' : ` · Contact: ${m.contact}`}</span>
+                                <span className="text-[9px] text-[var(--mv-muted)] font-bold block font-mono">Wing {m.wing}{m.contact === '' ? '' : ` · Contact: ${m.contact}`}</span>
                               </div>
                               {!onServer && (
                                 <div className="flex gap-2">
@@ -2970,7 +2974,7 @@ export default function App() {
                                     onClick={() => handleEditMemberClick(m)}
                                     aria-label={`Edit ${m.name}, flat ${m.flatNo}`}
                                     title="Edit"
-                                    className="w-7 h-7 bg-white border border-[var(--mv-border)] hover:bg-gray-50 text-gray-400 hover:text-[var(--mv-ink)] rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
+                                    className="w-7 h-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] hover:bg-[var(--mv-soft)] text-[var(--mv-muted)] hover:text-[var(--mv-ink)] rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
                                   >
                                     <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
                                   </button>
@@ -2978,7 +2982,7 @@ export default function App() {
                                     onClick={() => handleDeleteMember(m.id, m.name)}
                                     aria-label={`Remove ${m.name}, flat ${m.flatNo}`}
                                     title="Remove"
-                                    className="w-7 h-7 bg-white border border-[var(--mv-border)] hover:bg-red-50 text-red-650 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
+                                    className="w-7 h-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] hover:bg-red-50 text-red-700 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                                   </button>
@@ -2989,10 +2993,10 @@ export default function App() {
                         </div>
                       </div>
                     ) : (
-                      <div className="bg-white border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4">
-                        <div className="flex justify-between items-center pb-2 border-b border-gray-125 select-none">
-                          <span className="text-[10px] font-bold uppercase text-gray-500 tracking-wider">Vendor Contracts registry</span>
-                          <span className="text-[8px] font-bold bg-gray-200 text-gray-700 px-2 py-0.5 rounded border border-gray-300 font-mono">194C AUDIT</span>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4">
+                        <div className="flex justify-between items-center pb-2 border-b border-[var(--mv-border)] select-none">
+                          <span className="text-[10px] font-bold uppercase text-[var(--mv-muted)] tracking-wider">Vendor Contracts registry</span>
+                          <span className="text-[8px] font-bold bg-[var(--mv-soft)] text-[var(--mv-muted)] px-2 py-0.5 rounded border border-[var(--mv-border)] font-mono">194C AUDIT</span>
                         </div>
 
                         <div className="space-y-2.5 max-h-[280px] overflow-y-auto pr-1 hide-scrollbar font-medium">
@@ -3000,12 +3004,12 @@ export default function App() {
                             <div key={v.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                               <div className="min-w-0 flex-1 pr-1 bg-transparent text-left space-y-0.5">
                                 <h5 className="font-extrabold text-[var(--mv-ink)] truncate">{v.name}</h5>
-                                <span className="text-[9px] font-bold text-gray-400 block uppercase tracking-wider leading-none">{v.category}</span>
-                                <span className="text-[9px] text-[var(--mv-accent)] font-bold block">Contract Renewal: <span className="font-semibold text-gray-500">{v.contractRenewal}</span></span>
+                                <span className="text-[9px] font-bold text-[var(--mv-muted)] block uppercase tracking-wider leading-none">{v.category}</span>
+                                <span className="text-[9px] text-[var(--mv-accent)] font-bold block">Contract Renewal: <span className="font-semibold text-[var(--mv-muted)]">{v.contractRenewal}</span></span>
                               </div>
                               <div className="text-right shrink-0">
                                 <span className="font-mono text-xs font-extrabold text-[var(--mv-ink)] block">{formatRupee(v.balance)}</span>
-                                <span className="text-[9px] text-[#6B7280] block uppercase leading-none font-bold">Unpaid total</span>
+                                <span className="text-[9px] text-[var(--mv-muted)] block uppercase leading-none font-bold">Unpaid total</span>
                               </div>
                             </div>
                           ))}
@@ -3016,7 +3020,7 @@ export default function App() {
 
                   {/* Spreadsheets block */}
                   {currentRole !== 'Resident' && (
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
                       <Suspense fallback={<PanelLoading />}>
                         <BackupHub
                           backupHistory={backupHistory}
@@ -3030,13 +3034,13 @@ export default function App() {
                   )}
 
                   {/* Code policy block disclosures */}
-                  <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs text-xs font-semibold space-y-2 relative leading-relaxed">
+                  <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs text-xs font-semibold space-y-2 relative leading-relaxed">
                     <span className="text-[9px] font-bold text-[var(--mv-accent)] uppercase tracking-wider bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded inline-block">Co-operative Regulatory Compliance code disclosures</span>
-                    <p className="text-[10px] text-[#6B7280] leading-relaxed pt-1">Association billing rules and statutory registrations must be verified against the approved Mani Vista bylaws and applicable West Bengal regulations before live use. GSTIN: {gstinLabel}.</p>
+                    <p className="text-[10px] text-[var(--mv-muted)] leading-relaxed pt-1">Association billing rules and statutory registrations must be verified against the approved Mani Vista bylaws and applicable West Bengal regulations before live use. GSTIN: {gstinLabel}.</p>
                     {!onServer && (
                       <button
                         onClick={handleReset}
-                        className="text-[10px] font-bold text-[var(--mv-accent)] block py-1.5 hover:underline cursor-pointer uppercase mt-2 border-t border-gray-100 pt-2 w-full text-center"
+                        className="text-[10px] font-bold text-[var(--mv-accent)] block py-1.5 hover:underline cursor-pointer uppercase mt-2 border-t border-[var(--mv-border)] pt-2 w-full text-center"
                       >
                         Reset sandbox database default seed data
                       </button>
@@ -3055,10 +3059,10 @@ export default function App() {
         <div id="phone-frame-container" className="w-full max-w-[480px] bg-[var(--mv-surface)] overflow-hidden flex flex-col relative" style={{ height: 'calc(100dvh - var(--mv-banner-h))', marginTop: 'var(--mv-banner-h)' }}>
 
         {/* --- STICKY SOCIETY TOP HEADER (White styled, high density) --- */}
-        <header className="sticky top-0 bg-white border-b border-[var(--mv-border)] pt-6 pb-2 px-4 flex items-center justify-between gap-3 z-30">
-          <img src="/branding/mani-vista-logo.png" alt="Mani Vista" className="h-11 w-11 object-contain bg-white rounded-lg border border-[var(--mv-accent-border)] shrink-0" />
+        <header className="sticky top-0 bg-[var(--mv-surface)] border-b border-[var(--mv-border)] pt-6 pb-2 px-4 flex items-center justify-between gap-3 z-30">
+          <img src="/branding/mani-vista-logo.png" alt="Mani Vista" className="h-11 w-11 object-contain bg-[var(--mv-surface)] rounded-lg border border-[var(--mv-accent-border)] shrink-0" />
           <div className="flex flex-col flex-1 min-w-0 text-left">
-            <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Residents Association</p>
+            <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Residents Association</p>
             <h1 className="text-sm font-bold truncate text-[var(--mv-ink)]" title="Mani Vista Residents Association">
               Mani Vista Residents Association
             </h1>
@@ -3110,7 +3114,7 @@ export default function App() {
         )}
 
         {/* --- MAIN SCROLL CONTENT SCREEN --- */}
-        <main className="flex-1 overflow-y-auto px-4 py-4 bg-white pb-24 hide-scrollbar">
+        <main className="flex-1 overflow-y-auto px-4 py-4 bg-[var(--mv-surface)] pb-24 hide-scrollbar">
 
           {/* =========================================
               VIEW: TAB 'HOME' DESIRED CONTROLLERS
@@ -3123,14 +3127,14 @@ export default function App() {
                   <div className="flex items-baseline justify-between transition-all">
                     <div>
                       <h2 className="text-xl font-bold text-[var(--mv-ink)]">Hi, {residentName}</h2>
-                      <p className="text-sm text-[#6B7280]">
+                      <p className="text-sm text-[var(--mv-muted)]">
                         {residentFlatNo === ''
                           ? 'No flat is linked to this account yet'
                           : `Flat ${residentFlatNo}`}
                       </p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">{onServer ? 'Last Sync' : 'Kept in'}</p>
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">{onServer ? 'Last Sync' : 'Kept in'}</p>
                       <p className="text-[10px] text-[var(--mv-accent)] font-bold">{onServer ? syncedLabel(booksLoadedAt) : 'THIS BROWSER'}</p>
                     </div>
                   </div>
@@ -3138,7 +3142,7 @@ export default function App() {
                   {/* 2x2 Metric tile blocks */}
                   <div className="grid grid-cols-2 grid-rows-2 gap-3 transition-all">
                     <div className="aspect-square bg-[var(--mv-ink)] p-4 rounded-2xl flex flex-col justify-between shadow-lg ring-4 ring-black/5">
-                      <p className="text-[10px] font-bold text-white/60 uppercase tracking-wider">Current Due</p>
+                      <p className="text-[10px] font-bold text-white/75 uppercase tracking-wider">Current Due</p>
                       <div className="space-y-1">
                         <p className="text-2xl font-bold text-white font-mono">{formatRupee(rohanTotalDueNum)}</p>
                         {rohanTotalDueNum > 0 ? (
@@ -3149,8 +3153,8 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Paid This FY</p>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Paid This FY</p>
                       <div className="space-y-1">
                         <p className="text-2xl font-bold text-[var(--mv-ink)] font-mono">{formatRupee(rohanTotalPaidNum)}</p>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-[var(--mv-accent)] text-[9px] font-bold text-white">
@@ -3159,13 +3163,13 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Advance Bal</p>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Advance Bal</p>
                       <p className="text-2xl font-bold text-[var(--mv-ink)] font-mono">{formatRupees(residentAdvancePaise)}</p>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Open Tickets</p>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Open Tickets</p>
                       <div className="space-y-1">
                         <p className="text-2xl font-bold text-[var(--mv-ink)] font-mono">
                           {String(rohanOpenTicketsNum).padStart(2, '0')}
@@ -3179,10 +3183,10 @@ export default function App() {
 
                   {/* Latest outstanding invoice banner */}
                   {rohanDueInvoice && (
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 shadow-sm space-y-4 text-left transition-all">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 shadow-sm space-y-4 text-left transition-all">
                       <div className="flex justify-between items-start">
                         <div>
-                          <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Active Invoice</p>
+                          <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Active Invoice</p>
                           <h3 className="font-bold text-[var(--mv-ink)]">#{rohanDueInvoice.invoiceNo}</h3>
                         </div>
                         <div className="bg-[var(--mv-accent-soft)] px-2 py-1 rounded-full">
@@ -3191,7 +3195,7 @@ export default function App() {
                       </div>
                       <div className="flex items-center justify-between border-y border-[var(--mv-soft)] py-3">
                         <div className="space-y-1">
-                          <p className="text-xs text-[#6B7280]">{rohanDueInvoice.period} Maintenance + Sinking</p>
+                          <p className="text-xs text-[var(--mv-muted)]">{rohanDueInvoice.period} Maintenance + Sinking</p>
                           <p className="text-2xl font-bold text-[var(--mv-ink)] font-mono">{formatRupee(rohanDueInvoice.total)}</p>
                         </div>
                         {mayPayOnline && (
@@ -3203,7 +3207,7 @@ export default function App() {
                           </button>
                         )}
                       </div>
-                      <div className="flex items-center gap-2 text-[11px] text-[#6B7280]">
+                      <div className="flex items-center gap-2 text-[11px] text-[var(--mv-muted)]">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mt-0.5 shrink-0">
                           <circle cx="12" cy="12" r="10"></circle>
                           <line x1="12" y1="16" x2="12" y2="12"></line>
@@ -3243,10 +3247,10 @@ export default function App() {
                           className="flex items-center justify-between p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] hover:bg-[var(--mv-soft)] transition-all cursor-pointer"
                         >
                           <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-[var(--mv-border)] font-bold text-[var(--mv-accent)]">₹</div>
+                            <div className="w-10 h-10 bg-[var(--mv-surface)] rounded-lg flex items-center justify-center border border-[var(--mv-border)] font-bold text-[var(--mv-accent)]">₹</div>
                             <div className="text-left">
                               <p className="text-sm font-bold text-[var(--mv-ink)]">{inv.period} Maintenance</p>
-                              <p className="text-[10px] text-[#6B7280] uppercase">{inv.paidDate || inv.dueDate || ''}</p>
+                              <p className="text-[10px] text-[var(--mv-muted)] uppercase">{inv.paidDate || inv.dueDate || ''}</p>
                             </div>
                           </div>
                           <div className="text-right">
@@ -3270,10 +3274,10 @@ export default function App() {
                   <div className="flex items-baseline justify-between transition-all">
                     <div>
                       <h2 className="text-xl font-bold text-[var(--mv-ink)]">Manager Console</h2>
-                      <p className="text-sm text-[#6B7280]">Finance Superintendent · Active Session</p>
+                      <p className="text-sm text-[var(--mv-muted)]">Finance Superintendent · Active Session</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Books</p>
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Books</p>
                       <p className="text-[10px] text-[var(--mv-accent)] font-bold">{onServer ? `SYNCED ${syncedLabel(booksLoadedAt)}` : 'DEMONSTRATION'}</p>
                     </div>
                   </div>
@@ -3281,7 +3285,7 @@ export default function App() {
                   {/* 2x2 Metric tiles */}
                   <div className="grid grid-cols-2 grid-rows-2 gap-3 transition-all">
                     <div className="aspect-square bg-[var(--mv-ink)] p-4 rounded-2xl flex flex-col justify-between shadow-lg ring-4 ring-black/5">
-                      <span className="text-[10px] font-bold text-white/60 uppercase tracking-wider">Collected MTD</span>
+                      <span className="text-[10px] font-bold text-white/75 uppercase tracking-wider">Collected MTD</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-white font-mono block leading-none">{formatRupee(mtdCollectedTotal)}</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-white/10 text-[9px] font-semibold text-white">
@@ -3290,8 +3294,8 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Outstanding</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Outstanding</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{formatRupee(mtdOutstandingTotal)}</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-[var(--mv-accent-soft)] text-[9px] font-semibold text-[var(--mv-accent)]">
@@ -3300,8 +3304,8 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Defaulters</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Defaulters</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{uniqueDefaultersCount} Flats</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-red-50 text-[9px] font-bold text-red-600">
@@ -3310,8 +3314,8 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Expenses MTD</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Expenses MTD</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{formatRupee(totalMTDExpenses)}</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-[var(--mv-soft)] text-[9px] font-semibold text-[var(--mv-ink)]">
@@ -3322,18 +3326,18 @@ export default function App() {
                   </div>
 
                   {/* Trend charts area */}
-                  <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
+                  <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
                     <div className="flex justify-between items-center">
                       <div>
                         <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-tight">Collections</h4>
-                        <p className="text-[10px] text-gray-400 mt-0.5">Paid, by billing period</p>
+                        <p className="text-[10px] text-[var(--mv-muted)] mt-0.5">Paid, by billing period</p>
                       </div>
                       <TrendingUp className="w-4 h-4 text-[var(--mv-accent)]" />
                     </div>
 
                     <div className="h-[140px] w-full pt-2 flex items-center justify-center relative">
                       {collectionTrendsData.length === 0 ? (
-                        <p className="text-xs text-[#6B7280]">No invoices yet.</p>
+                        <p className="text-xs text-[var(--mv-muted)]">No invoices yet.</p>
                       ) : (
                         <Suspense fallback={<PanelLoading />}>
                           <CollectionChart data={collectionTrendsData} compact />
@@ -3368,18 +3372,18 @@ export default function App() {
                   <div className="flex items-baseline justify-between transition-all">
                     <div>
                       <h2 className="text-xl font-bold text-[var(--mv-ink)]">Treasurer Console</h2>
-                      <p className="text-sm text-[#6B7280]">Reserve Fund Operations · Cabinet</p>
+                      <p className="text-sm text-[var(--mv-muted)]">Reserve Fund Operations · Cabinet</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Books</p>
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Books</p>
                       <p className="text-[10px] text-[var(--mv-accent)] font-bold">{onServer ? `SYNCED ${syncedLabel(booksLoadedAt)}` : 'DEMONSTRATION'}</p>
                     </div>
                   </div>
 
                   {/* 2x2 Metric tiles */}
                   <div className="grid grid-cols-2 grid-rows-2 gap-3 transition-all">
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">General Reserve</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">General Reserve</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{formatRupees(reserveFundPaise)}</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-[var(--mv-accent-soft)] text-[9px] font-semibold text-[var(--mv-accent)]">
@@ -3388,8 +3392,8 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Sinking Fund</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Sinking Fund</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{formatRupees(sinkingFundPaise)}</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-[var(--mv-soft)] text-[9px] font-semibold text-[var(--mv-ink)]">
@@ -3398,8 +3402,8 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Operating Bal.</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Operating Bal.</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">
                           {formatRupees(operatingBankPaise)}
@@ -3411,7 +3415,7 @@ export default function App() {
                     </div>
 
                     <div className="aspect-square bg-[var(--mv-ink)] p-4 rounded-2xl flex flex-col justify-between shadow-lg ring-4 ring-black/5">
-                      <span className="text-[10px] font-bold text-white/60 uppercase tracking-wider">Pending Appr.</span>
+                      <span className="text-[10px] font-bold text-white/75 uppercase tracking-wider">Pending Appr.</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-white font-mono block leading-none">{pendingApprovalsCount} Bills</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-white/10 text-[9px] font-semibold text-white">
@@ -3422,17 +3426,17 @@ export default function App() {
                   </div>
 
                   {/* Budget Performance Chart (Budget vs Actual) */}
-                  <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
+                  <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
                     <div className="flex justify-between items-center">
                       <div>
                         <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-tight">Receipt Budget Performance</h4>
-                        <p className="text-[10px] text-gray-400 mt-0.5">{onServer ? 'Needs an approved budget' : 'Demonstration budget figures'}</p>
+                        <p className="text-[10px] text-[var(--mv-muted)] mt-0.5">{onServer ? 'Needs an approved budget' : 'Demonstration budget figures'}</p>
                       </div>
                     </div>
 
                     <div className="h-[140px] w-full pt-2 flex items-center justify-center relative">
                       {onServer ? (
-                        <p className="text-xs text-[#6B7280] text-center">No approved budget is on record on the server.</p>
+                        <p className="text-xs text-[var(--mv-muted)] text-center">No approved budget is on record on the server.</p>
                       ) : (
                         <Suspense fallback={<PanelLoading />}>
                           <BudgetChart data={budgetPerformanceData} compact />
@@ -3446,13 +3450,13 @@ export default function App() {
                     <h4 className="font-extrabold text-xs text-[var(--mv-ink)] tracking-wider uppercase">Required Approvals</h4>
 
                     {vendorInvoices.filter(vi => vi.status === 'Pending').length === 0 ? (
-                      <div className="py-4 bg-gray-55 text-center text-xs text-gray-400 rounded-2xl">
+                      <div className="py-4 bg-[var(--mv-page)] text-center text-xs text-[var(--mv-muted)] rounded-2xl">
                         Clean desk! No outstanding vendor proposals on file.
                       </div>
                     ) : (
                       <div className="space-y-2.5">
                         {vendorInvoices.filter(vi => vi.status === 'Pending').map(vi => (
-                          <div key={vi.id} className="p-3 border border-[var(--mv-border)] rounded-3xl bg-white space-y-2">
+                          <div key={vi.id} className="p-3 border border-[var(--mv-border)] rounded-3xl bg-[var(--mv-surface)] space-y-2">
                             <div className="flex justify-between items-baseline">
                               <div>
                                 <span className="text-[8px] font-extrabold text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-1.5 py-0.5 rounded uppercase tracking-wide">
@@ -3460,12 +3464,12 @@ export default function App() {
                                 </span>
                                 <h5 className="font-bold text-xs text-[var(--mv-ink)] mt-1">{vi.vendorName}</h5>
                               </div>
-                              <span className="font-mono text-xs font-bold text-gray-900">{formatRupee(vi.amount)}</span>
+                              <span className="font-mono text-xs font-bold text-[var(--mv-ink)]">{formatRupee(vi.amount)}</span>
                             </div>
 
-                            <div className="bg-gray-50 p-2 rounded-xl text-[10px] text-gray-550 border border-gray-100 flex justify-between items-center leading-snug">
-                              <span>Withholding TDS 2% (u/s 194C): <strong className="font-mono text-gray-900">{formatRupee(vi.tdsAmount)}</strong></span>
-                              <span>Net: <strong className="font-mono text-gray-900">{formatRupee(vi.netPayable)}</strong></span>
+                            <div className="bg-[var(--mv-page)] p-2 rounded-xl text-[10px] text-[var(--mv-muted)] border border-[var(--mv-border)] flex justify-between items-center leading-snug">
+                              <span>Withholding TDS 2% (u/s 194C): <strong className="font-mono text-[var(--mv-ink)]">{formatRupee(vi.tdsAmount)}</strong></span>
+                              <span>Net: <strong className="font-mono text-[var(--mv-ink)]">{formatRupee(vi.netPayable)}</strong></span>
                             </div>
 
                             <div className="flex gap-2 justify-end">
@@ -3473,7 +3477,7 @@ export default function App() {
                                 <button
                                   onClick={() => handleVendorInvoiceStatus(vi.id, 'Rejected')}
                                   disabled={working}
-                                  className="py-1 px-3 border border-gray-300 rounded-lg text-[10px] font-bold text-gray-600 hover:bg-gray-50 active:scale-95 disabled:opacity-60"
+                                  className="py-1 px-3 border border-[var(--mv-border)] rounded-lg text-[10px] font-bold text-[var(--mv-muted)] hover:bg-[var(--mv-soft)] active:scale-95 disabled:opacity-60"
                                 >
                                   Reject
                                 </button>
@@ -3514,7 +3518,7 @@ export default function App() {
               <div className="flex justify-between items-baseline">
                 <div>
                   <h2 className="text-xl font-bold text-[var(--mv-ink)]">Ledger Invoices</h2>
-                  <p className="text-xs text-[#6B7280]">Historical and active transactions</p>
+                  <p className="text-xs text-[var(--mv-muted)]">Historical and active transactions</p>
                 </div>
                 {currentRole !== 'Resident' && (
                   <button
@@ -3527,7 +3531,7 @@ export default function App() {
               </div>
 
               {currentRole !== 'Resident' && (
-                <div className="p-4 bg-white border border-[var(--mv-border)] rounded-2xl">
+                <div className="p-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl">
                   <BillingWorkflow
                     documents={registerDocuments}
                     problems={books.snapshot().problems}
@@ -3547,7 +3551,7 @@ export default function App() {
                     <span className="font-bold text-xs uppercase tracking-tight text-[var(--mv-ink)]">Billing Generation Wizard</span>
                     <button
                       onClick={() => setShowBillingWizard(false)}
-                      className="text-[10px] font-bold text-[var(--mv-accent)] uppercase py-0.5 px-1.5 bg-white border border-[var(--mv-border)] rounded-lg"
+                      className="text-[10px] font-bold text-[var(--mv-accent)] uppercase py-0.5 px-1.5 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-lg"
                     >
                       Close
                     </button>
@@ -3572,10 +3576,10 @@ export default function App() {
                       <div
                         key={inv.id}
                         onClick={viewDetails}
-                        className="flex items-center justify-between p-3 bg-white rounded-xl border border-[var(--mv-border)] hover:bg-[var(--mv-page)] cursor-pointer transition-all text-left"
+                        className="flex items-center justify-between p-3 bg-[var(--mv-surface)] rounded-xl border border-[var(--mv-border)] hover:bg-[var(--mv-page)] cursor-pointer transition-all text-left"
                       >
                         <div className="flex items-center gap-3 flex-1 min-w-0 pr-2">
-                          <div className="w-10 h-10 bg-gray-50 rounded-lg flex items-center justify-center border border-[var(--mv-border)] font-mono text-[9px] font-bold text-[#6B7280] shrink-0">
+                          <div className="w-10 h-10 bg-[var(--mv-page)] rounded-lg flex items-center justify-center border border-[var(--mv-border)] font-mono text-[9px] font-bold text-[var(--mv-muted)] shrink-0">
                             {inv.invoiceNo.replace('INV-', '')}
                           </div>
                           <div className="min-w-0 flex-1">
@@ -3583,7 +3587,7 @@ export default function App() {
                               {inv.period} Maintenance {currentRole !== 'Resident' ? `(${inv.flatNo})` : ''}
                             </p>
                             <p className="text-[10px] text-[var(--mv-accent)] font-bold uppercase truncate">
-                              Owner: <span className="text-gray-500 font-semibold">{inv.name}</span>
+                              Owner: <span className="text-[var(--mv-muted)] font-semibold">{inv.name}</span>
                             </p>
                           </div>
                         </div>
@@ -3615,14 +3619,14 @@ export default function App() {
                   <div className="flex items-baseline justify-between transition-all">
                     <div>
                       <h2 className="text-xl font-bold text-[var(--mv-ink)]">{onServer ? 'Payments' : 'Payments (demo)'}</h2>
-                      <p className="text-sm text-[#6B7280]">{mayPayOnline ? 'UPI, Net Banking & deposits' : 'What is due, and how to pay it'}</p>
+                      <p className="text-sm text-[var(--mv-muted)]">{mayPayOnline ? 'UPI, Net Banking & deposits' : 'What is due, and how to pay it'}</p>
                     </div>
                   </div>
 
                   {payingInvoice ? (
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-4 shadow-sm animate-scale-up text-left">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 space-y-4 shadow-sm animate-scale-up text-left">
                       <div className="flex justify-between items-center">
-                        <span className="font-bold text-[10px] uppercase text-[#6B7280] tracking-wider">Checkout bill summary</span>
+                        <span className="font-bold text-[10px] uppercase text-[var(--mv-muted)] tracking-wider">Checkout bill summary</span>
                         <button
                           onClick={() => setPayingInvoice(null)}
                           className="text-[10px] font-bold text-[var(--mv-accent)] uppercase"
@@ -3642,7 +3646,7 @@ export default function App() {
 
                       {/* Payment Methods */}
                       <form onSubmit={handleExecutePayment} className="space-y-4">
-                        <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block" id="pmethod-mobile-label">Payment method</span>
+                        <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block" id="pmethod-mobile-label">Payment method</span>
 
                         <div className="grid grid-cols-2 gap-2 text-xs" role="radiogroup" aria-labelledby="pmethod-mobile-label">
                           {[
@@ -3660,11 +3664,11 @@ export default function App() {
                               className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between cursor-pointer text-left ${
                                 paymentMethod === item.id
                                   ? 'bg-[var(--mv-ink)] text-white border-black shadow'
-                                  : 'bg-white text-[var(--mv-ink)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
+                                  : 'bg-[var(--mv-surface)] text-[var(--mv-ink)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
                               }`}
                             >
                               <span className="font-bold block leading-tight">{item.label}</span>
-                              <span className={`text-[8px] mt-2 block uppercase font-mono ${paymentMethod === item.id ? 'text-white/70' : 'text-[#6B7280]'}`}>
+                              <span className={`text-[8px] mt-2 block uppercase font-mono ${paymentMethod === item.id ? 'text-white/70' : 'text-[var(--mv-muted)]'}`}>
                                 No gateway — recorded only
                               </span>
                             </button>
@@ -3673,7 +3677,7 @@ export default function App() {
 
                         {/* Partial payment modifier */}
                         <div className="space-y-1.5 text-left">
-                          <label htmlFor="pay-amount-mobile" className="text-[10px] font-bold text-[#6B7280] uppercase block">Amount to pay</label>
+                          <label htmlFor="pay-amount-mobile" className="text-[10px] font-bold text-[var(--mv-muted)] uppercase block">Amount to pay</label>
                           <input
                             id="pay-amount-mobile"
                             type="number"
@@ -3681,9 +3685,9 @@ export default function App() {
                             value={partialAmountInput}
                             onChange={(e) => setPartialAmountInput(e.target.value)}
                             max={payingInvoice.total}
-                            className="bg-white border border-[var(--mv-border)] rounded-xl p-2.5 font-mono text-xs w-full text-gray-800 outline-none focus:border-[var(--mv-accent)]"
+                            className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl p-2.5 font-mono text-xs w-full text-[var(--mv-ink)] outline-none focus:border-[var(--mv-accent)]"
                           />
-                          <span className="text-[9px] text-[#6B7280] block font-medium leading-tight">
+                          <span className="text-[9px] text-[var(--mv-muted)] block font-medium leading-tight">
                             Partial payment leaves outstanding arrears on this ledger period.
                           </span>
                         </div>
@@ -3701,15 +3705,15 @@ export default function App() {
                     <div className="space-y-3.5 pb-24 text-left">
 
                       {/* Outstanding bills available to pay list */}
-                      <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3 shadow-xs">
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl space-y-3 shadow-xs">
                         <div className="flex justify-between items-center">
-                          <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">
+                          <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">
                             Pending Clearance
                           </span>
                         </div>
 
                         {rohanInvoices.filter(inv => inv.status !== 'Paid').length === 0 ? (
-                          <div className="py-4 text-center text-xs text-gray-400 font-semibold">
+                          <div className="py-4 text-center text-xs text-[var(--mv-muted)] font-semibold">
                             🎉 No outstanding dues on Flat {residentFlatNo}! Clean slate.
                           </div>
                         ) : (
@@ -3717,7 +3721,7 @@ export default function App() {
                             {rohanInvoices.filter(inv => inv.status !== 'Paid').map(inv => (
                               <div key={inv.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                                 <div>
-                                  <span className="font-mono text-[9px] font-bold text-gray-400">{inv.invoiceNo}</span>
+                                  <span className="font-mono text-[9px] font-bold text-[var(--mv-muted)]">{inv.invoiceNo}</span>
                                   <h5 className="font-bold text-[var(--mv-ink)] mt-0.5">{inv.period} Maintenance Bill</h5>
                                 </div>
                                 <div className="text-right flex items-center gap-2">
@@ -3739,16 +3743,16 @@ export default function App() {
                       </div>
 
                       {/* Advance Payment trigger */}
-                      <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3 shadow-xs">
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl space-y-3 shadow-xs">
                         <div>
-                          <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">Deposit Advance Funds</span>
-                          <span className="text-[10px] text-gray-450 mt-0.5 block leading-snug">
+                          <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Deposit Advance Funds</span>
+                          <span className="text-[10px] text-[var(--mv-muted)] mt-0.5 block leading-snug">
                             Over-credit counts toward subsequent quarterly maintenance invoices.
                           </span>
                         </div>
 
                         {!mayPayOnline ? (
-                          <p className="text-[11px] text-[#6B7280] leading-snug">
+                          <p className="text-[11px] text-[var(--mv-muted)] leading-snug">
                             No payment gateway is connected. Pay the association by UPI, NEFT or cheque and the
                             manager records it; anything beyond your dues is held as an advance
                             ({formatRupees(residentAdvancePaise)} now).
@@ -3763,7 +3767,7 @@ export default function App() {
                               value={customAdvanceInput}
                               onChange={(e) => setCustomAdvanceInput(e.target.value)}
                               placeholder="Deposit amount, e.g. 5000"
-                              className="flex-1 bg-white border border-[var(--mv-border)] rounded-xl p-2 px-3 text-xs font-mono font-bold text-gray-800 outline-none focus:border-[var(--mv-accent)]"
+                              className="flex-1 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl p-2 px-3 text-xs font-mono font-bold text-[var(--mv-ink)] outline-none focus:border-[var(--mv-accent)]"
                             />
                             <button
                               type="submit"
@@ -3787,15 +3791,15 @@ export default function App() {
                   <div className="flex items-baseline justify-between transition-all">
                     <div>
                       <h2 className="text-xl font-bold text-[var(--mv-ink)]">Defaulter Control</h2>
-                      <p className="text-sm text-[#6B7280]">Aging outstanding accounts receivable ledger</p>
+                      <p className="text-sm text-[var(--mv-muted)]">Aging outstanding accounts receivable ledger</p>
                     </div>
                   </div>
 
                   <div className="space-y-4 pb-24 text-left">
                     {/* Defaulter Registry cards list */}
-                    <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-xs">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-xs">
                       <div className="flex justify-between items-center pb-2 border-b border-[var(--mv-border)]">
-                        <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Unpaid Overdue Units ({overdueInvoices.length})</span>
+                        <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Unpaid Overdue Units ({overdueInvoices.length})</span>
                         <span className="text-[9px] font-bold text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded uppercase">
                           AR Ledger
                         </span>
@@ -3803,7 +3807,7 @@ export default function App() {
 
                       <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 hide-scrollbar">
                         {overdueInvoices.length === 0 ? (
-                          <div className="py-4 text-center text-xs text-gray-400 font-semibold font-mono">
+                          <div className="py-4 text-center text-xs text-[var(--mv-muted)] font-semibold font-mono">
                             Excellent! No overdue flat arrears on general records.
                           </div>
                         ) : (
@@ -3816,7 +3820,7 @@ export default function App() {
                                     {inv.name}
                                   </span>
                                 </div>
-                                <span className="text-[9px] text-[#6B7280] block mt-1 font-medium">Period: {inv.period} • Grace period expired</span>
+                                <span className="text-[9px] text-[var(--mv-muted)] block mt-1 font-medium">Period: {inv.period} • Grace period expired</span>
                               </div>
                               <div className="text-right flex items-center gap-2 font-mono text-xs">
                                 <span className="font-extrabold text-[var(--mv-ink)]">{formatRupee(inv.total)}</span>
@@ -3838,7 +3842,7 @@ export default function App() {
                     </div>
 
                     {/* Receipt entry: money already in the bank, against a flat. */}
-                    <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl shadow-xs">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl shadow-xs">
                       {mayRecordReceipts ? (
                         <ReceiptEntryForm
                           flats={members.map(m => ({ flatNo: m.flatNo, name: m.name }))}
@@ -3855,7 +3859,7 @@ export default function App() {
                           compact
                         />
                       ) : (
-                        <p className="text-xs text-[#6B7280] leading-relaxed">
+                        <p className="text-xs text-[var(--mv-muted)] leading-relaxed">
                           Receipts are recorded by the manager. This account does not hold the
                           payment.record permission.
                         </p>
@@ -3876,7 +3880,7 @@ export default function App() {
                <div className="flex justify-between items-baseline text-left">
                 <div>
                   <h2 className="text-xl font-bold text-[var(--mv-ink)]">Financial Books</h2>
-                  <p className="text-xs text-[#6B7280]">Double-entry ledger accuracy</p>
+                  <p className="text-xs text-[var(--mv-muted)]">Double-entry ledger accuracy</p>
                 </div>
                 <BookOpen className="w-4 h-4 text-[var(--mv-accent)]" />
               </div>
@@ -3885,25 +3889,25 @@ export default function App() {
               <div className="grid grid-cols-4 gap-1 bg-[var(--mv-soft)] p-1 rounded-xl text-[10px] uppercase font-bold text-center">
                 <button
                   onClick={() => setBooksSubTab('reports')}
-                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'reports' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[#6B7280]'}`}
+                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'reports' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[var(--mv-muted)]'}`}
                 >
                   Reports
                 </button>
                 <button
                   onClick={() => setBooksSubTab('ledger')}
-                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'ledger' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[#6B7280]'}`}
+                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'ledger' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[var(--mv-muted)]'}`}
                 >
                   Ledger
                 </button>
                 <button
                   onClick={() => setBooksSubTab('budget')}
-                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'budget' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[#6B7280]'}`}
+                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'budget' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[var(--mv-muted)]'}`}
                 >
                   Budget
                 </button>
                 <button
                   onClick={() => setBooksSubTab('audit')}
-                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'audit' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[#6B7280]'}`}
+                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'audit' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[var(--mv-muted)]'}`}
                 >
                   Audit
                 </button>
@@ -3918,7 +3922,7 @@ export default function App() {
                       className={`px-3 py-1 rounded-lg border font-bold transition-all cursor-pointer ${
                         reportsSubState === 'ie'
                           ? 'bg-[var(--mv-ink)] text-white border-black shadow'
-                          : 'bg-white text-[#6B7280] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
+                          : 'bg-[var(--mv-surface)] text-[var(--mv-muted)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
                       }`}
                     >
                       Income & Expense
@@ -3928,7 +3932,7 @@ export default function App() {
                       className={`px-3 py-1 rounded-lg border font-bold transition-all cursor-pointer ${
                         reportsSubState === 'bs'
                           ? 'bg-[var(--mv-ink)] text-white border-black shadow'
-                          : 'bg-white text-[#6B7280] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
+                          : 'bg-[var(--mv-surface)] text-[var(--mv-muted)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
                       }`}
                     >
                       Balance Sheet
@@ -3938,7 +3942,7 @@ export default function App() {
                       className={`px-3 py-1 rounded-lg border font-bold transition-all cursor-pointer ${
                         reportsSubState === 'rp'
                           ? 'bg-[var(--mv-ink)] text-white border-black shadow'
-                          : 'bg-white text-[#6B7280] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
+                          : 'bg-[var(--mv-surface)] text-[var(--mv-muted)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
                       }`}
                     >
                       Receipts &amp; Payments
@@ -3948,7 +3952,7 @@ export default function App() {
                       className={`px-3 py-1 rounded-lg border font-bold transition-all cursor-pointer ${
                         reportsSubState === 'tb'
                           ? 'bg-[var(--mv-ink)] text-white border-black shadow'
-                          : 'bg-white text-[#6B7280] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
+                          : 'bg-[var(--mv-surface)] text-[var(--mv-muted)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
                       }`}
                     >
                       Trial Balance
@@ -3963,7 +3967,7 @@ export default function App() {
 
               {/* TAB Books -> Sub Journal ledgers */}
               {booksSubTab === 'ledger' && (
-                <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
+                <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
                   <Suspense fallback={<PanelLoading />}>
                     <JournalLedger statements={statements} compact />
                   </Suspense>
@@ -3972,12 +3976,12 @@ export default function App() {
 
               {/* TAB Books -> Head budgets variance */}
               {booksSubTab === 'budget' && (
-                <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs text-left space-y-3">
+                <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs text-left space-y-3">
                   <div className="border-b border-[var(--mv-border)] pb-2">
-                    <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider block">
+                    <span className="text-[10px] uppercase font-bold text-[var(--mv-muted)] tracking-wider block">
                       Budget against actuals
                     </span>
-                    <p className="text-[9px] text-gray-400 mt-0.5 leading-snug">
+                    <p className="text-[9px] text-[var(--mv-muted)] mt-0.5 leading-snug">
                       Budgeted figures are demo values standing in for an approved budget.
                       The realised column and the variance are computed from the ledger.
                     </p>
@@ -3995,7 +3999,7 @@ export default function App() {
                             </span>
                           )}
                         </div>
-                        <div className="flex justify-between text-[10px] text-gray-500 font-mono">
+                        <div className="flex justify-between text-[10px] text-[var(--mv-muted)] font-mono">
                           <span>Budget {b.budgeted}</span>
                           <span className="font-bold text-[var(--mv-ink)]">Actual {b.actual}</span>
                         </div>
@@ -4014,12 +4018,12 @@ export default function App() {
               {/* TAB Books -> Security Audit trail logs */}
               {booksSubTab === 'audit' && (
                 <div className="space-y-3 pb-24 text-left">
-                  <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">Security Audit Log</span>
+                  <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Security Audit Log</span>
 
                   <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1 hide-scrollbar">
                     {auditLog.map((log) => (
-                      <div key={log.id} className="p-3 bg-white rounded-xl text-xs leading-relaxed border border-[var(--mv-border)] flex flex-col gap-1 shadow-xs">
-                        <div className="flex justify-between text-[8px] font-bold text-[#6B7280] uppercase">
+                      <div key={log.id} className="p-3 bg-[var(--mv-surface)] rounded-xl text-xs leading-relaxed border border-[var(--mv-border)] flex flex-col gap-1 shadow-xs">
+                        <div className="flex justify-between text-[8px] font-bold text-[var(--mv-muted)] uppercase">
                           <span>👤 {log.user}</span>
                           <span className="font-mono font-medium">{log.timestamp}</span>
                         </div>
@@ -4043,23 +4047,23 @@ export default function App() {
               <div className="flex justify-between items-baseline pb-1">
                 <div>
                   <h2 className="text-xl font-bold text-[var(--mv-ink)]">More Modules</h2>
-                  <p className="text-xs text-[#6B7280]">Systems, configurations, and sandboxes</p>
+                  <p className="text-xs text-[var(--mv-muted)]">Systems, configurations, and sandboxes</p>
                 </div>
               </div>
 
               {/* HELPDESK Raising Ticketing Portal */}
-              <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
-                <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">RWA Support Helpdesk</span>
+              <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
+                <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">RWA Support Helpdesk</span>
 
                 {currentRole === 'Resident' ? (
                   <form onSubmit={handleRaiseComplaint} className="space-y-3.5">
                     <div className="space-y-1">
-                      <label htmlFor="ticket-category-mobile" className="text-[10px] text-[#6B7280] font-bold uppercase tracking-wider block">Grievance Category</label>
+                      <label htmlFor="ticket-category-mobile" className="text-[10px] text-[var(--mv-muted)] font-bold uppercase tracking-wider block">Grievance Category</label>
                       <select
                         id="ticket-category-mobile"
                         value={ticketCategory}
                         onChange={(e) => setTicketCategory(e.target.value as any)}
-                        className="w-full bg-white border border-[var(--mv-border)] p-2.5 rounded-xl text-xs font-bold outline-none focus:border-[var(--mv-accent)]"
+                        className="w-full bg-[var(--mv-surface)] border border-[var(--mv-border)] p-2.5 rounded-xl text-xs font-bold outline-none focus:border-[var(--mv-accent)]"
                       >
                         <option value="Plumbing">🚰 Plumbing</option>
                         <option value="Lift">🛗 Lift Maintenance</option>
@@ -4070,14 +4074,14 @@ export default function App() {
                     </div>
 
                     <div className="space-y-1">
-                      <label htmlFor="ticket-description-mobile" className="text-[10px] text-[#6B7280] font-bold uppercase tracking-wider block">Grievance Description</label>
+                      <label htmlFor="ticket-description-mobile" className="text-[10px] text-[var(--mv-muted)] font-bold uppercase tracking-wider block">Grievance Description</label>
                       <textarea
                         id="ticket-description-mobile"
                         rows={3}
                         value={ticketDescription}
                         onChange={(e) => setTicketDescription(e.target.value)}
                         placeholder="e.g. Balcony pipeline leakage or elevator noises..."
-                        className="w-full bg-white border border-[var(--mv-border)] p-2.5 rounded-xl text-xs font-medium outline-none focus:border-[var(--mv-accent)] leading-snug"
+                        className="w-full bg-[var(--mv-surface)] border border-[var(--mv-border)] p-2.5 rounded-xl text-xs font-medium outline-none focus:border-[var(--mv-accent)] leading-snug"
                       />
                     </div>
 
@@ -4090,14 +4094,14 @@ export default function App() {
                   </form>
                 ) : (
                   <div className="space-y-2.5">
-                    <span className="text-[10px] font-bold text-[#6B7280] uppercase block">Active Grievance Log ({tickets.length})</span>
+                    <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase block">Active Grievance Log ({tickets.length})</span>
 
                     <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1 hide-scrollbar">
                       {tickets.map(t => (
                         <div key={t.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                           <div className="min-w-0 flex-1 pr-1.5 space-y-1">
                             <span className="font-extrabold text-[var(--mv-ink)] block">{t.flatNo} • {t.category}</span>
-                            <p className="text-[10px] text-[#6B7280] truncate leading-tight font-medium">{t.description}</p>
+                            <p className="text-[10px] text-[var(--mv-muted)] truncate leading-tight font-medium">{t.description}</p>
                           </div>
                           <div>
                             <span className={`px-2 py-0.5 text-[8px] font-bold rounded uppercase ${
@@ -4115,9 +4119,9 @@ export default function App() {
 
                {/* MEMBER MANAGEMENT CRUD (Manager only) */}
               {currentRole === 'Manager' && (
-                <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-sm text-left">
+                <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-sm text-left">
                   <div className="flex justify-between items-baseline border-b border-[var(--mv-border)] pb-2">
-                    <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">{onServer ? 'Flats on record' : 'Resident Roster'}</span>
+                    <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">{onServer ? 'Flats on record' : 'Resident Roster'}</span>
                     {!onServer && <button
                       onClick={() => {
                         setEditingMemberId(null);
@@ -4134,7 +4138,7 @@ export default function App() {
                   </div>
 
                   {onServer && (
-                    <p className="text-[10px] text-[#6B7280] leading-snug">
+                    <p className="text-[10px] text-[var(--mv-muted)] leading-snug">
                       Read only here. Adding, editing or removing a member is not available on this screen yet.
                     </p>
                   )}
@@ -4143,7 +4147,7 @@ export default function App() {
                     <form onSubmit={handleSaveMember} className="space-y-3.5 text-xs bg-[var(--mv-page)] p-3.5 rounded-xl border border-[var(--mv-border)] animate-scale-up">
                       <div className="grid grid-cols-2 gap-2.5">
                         <div className="space-y-1">
-                          <label htmlFor="member-name-mobile" className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">Resident Full Name</label>
+                          <label htmlFor="member-name-mobile" className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Resident Full Name</label>
                           <input
                             id="member-name-mobile"
                             type="text"
@@ -4151,11 +4155,11 @@ export default function App() {
                             value={formName}
                             onChange={(e) => setFormName(e.target.value)}
                             placeholder="e.g. Ramesh Desai"
-                            className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none focus:border-[var(--mv-accent)]"
+                            className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none focus:border-[var(--mv-accent)]"
                           />
                         </div>
                         <div className="space-y-1">
-                          <label htmlFor="member-flat-mobile" className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">Flat Number</label>
+                          <label htmlFor="member-flat-mobile" className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Flat Number</label>
                           <input
                             id="member-flat-mobile"
                             type="text"
@@ -4163,19 +4167,19 @@ export default function App() {
                             value={formFlat}
                             onChange={(e) => setFormFlat(e.target.value)}
                             placeholder="e.g. C-303"
-                            className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none focus:border-[var(--mv-accent)]"
+                            className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none focus:border-[var(--mv-accent)]"
                           />
                         </div>
                       </div>
 
                       <div className="grid grid-cols-2 gap-2.5">
                         <div className="space-y-1">
-                          <label htmlFor="member-wing-mobile" className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">Sector Wing</label>
+                          <label htmlFor="member-wing-mobile" className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Sector Wing</label>
                           <select
                             id="member-wing-mobile"
                             value={formWing}
                             onChange={(e) => setFormWing(e.target.value as any)}
-                            className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none"
+                            className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none"
                           >
                             <option value="A">Wing A</option>
                             <option value="B">Wing B</option>
@@ -4184,14 +4188,14 @@ export default function App() {
                           </select>
                         </div>
                         <div className="space-y-1">
-                          <label htmlFor="member-contact-mobile" className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">Contact Line</label>
+                          <label htmlFor="member-contact-mobile" className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Contact Line</label>
                           <input
                             id="member-contact-mobile"
                             type="text"
                             value={formContact}
                             onChange={(e) => setFormContact(e.target.value)}
                             placeholder="e.g. +91 988"
-                            className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold font-mono text-xs outline-none focus:border-[var(--mv-accent)]"
+                            className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold font-mono text-xs outline-none focus:border-[var(--mv-accent)]"
                           />
                         </div>
                       </div>
@@ -4211,13 +4215,13 @@ export default function App() {
                       <div key={m.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                         <div>
                           <span className="font-extrabold text-[var(--mv-ink)] block">{m.flatNo} • {m.name}</span>
-                          <span className="text-[9px] text-[#6B7280] block font-mono">{m.contact}</span>
+                          <span className="text-[9px] text-[var(--mv-muted)] block font-mono">{m.contact}</span>
                         </div>
                         {!onServer && (
                           <div className="flex gap-1.5">
                             <button
                               onClick={() => handleEditMemberClick(m)}
-                              className="w-7 h-7 bg-white border border-[var(--mv-border)] hover:bg-gray-50 text-[#6B7280] hover:text-[var(--mv-ink)] rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
+                              className="w-7 h-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] hover:bg-[var(--mv-soft)] text-[var(--mv-muted)] hover:text-[var(--mv-ink)] rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
                               title="Edit"
                               aria-label={`Edit ${m.name}, flat ${m.flatNo}`}
                             >
@@ -4225,7 +4229,7 @@ export default function App() {
                             </button>
                             <button
                               onClick={() => handleDeleteMember(m.id, m.name)}
-                              className="w-7 h-7 bg-white border border-[var(--mv-border)] hover:bg-red-50 text-red-650 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
+                              className="w-7 h-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] hover:bg-red-50 text-red-700 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
                               title="Remove"
                               aria-label={`Remove ${m.name}, flat ${m.flatNo}`}
                             >
@@ -4242,9 +4246,9 @@ export default function App() {
 
               {/* VENDOR LEDGER & CONTRACTS OUTLINE (Committee / manager accessible) */}
               {currentRole !== 'Resident' && (
-                <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-sm text-left">
+                <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-sm text-left">
                   <div className="flex justify-between items-center pb-1 border-b border-[var(--mv-border)]">
-                    <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Vendor Ledgers & Contracts</span>
+                    <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Vendor Ledgers & Contracts</span>
                     <span className="text-[8px] font-bold text-[var(--mv-ink)] bg-[var(--mv-soft)] px-1.5 py-0.5 rounded-md font-mono">Sec 194C Compliant</span>
                   </div>
 
@@ -4253,16 +4257,16 @@ export default function App() {
                       <div key={v.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                         <div className="min-w-0 flex-1 pr-1 bg-transparent">
                           <h5 className="font-bold text-[var(--mv-ink)] truncate">{v.name}</h5>
-                          <span className="text-[9px] font-bold text-[#6B7280] block mt-0.5 uppercase tracking-wide">
+                          <span className="text-[9px] font-bold text-[var(--mv-muted)] block mt-0.5 uppercase tracking-wide">
                             {v.category}
                           </span>
                           <span className="text-[9px] text-[var(--mv-accent)] font-bold mt-1.5 block">
-                            Renewal: <span className="text-gray-500 font-semibold">{v.contractRenewal}</span>
+                            Renewal: <span className="text-[var(--mv-muted)] font-semibold">{v.contractRenewal}</span>
                           </span>
                         </div>
                         <div className="text-right">
                           <span className="font-mono text-xs font-bold text-[var(--mv-ink)] block leading-tight">{formatRupee(v.balance)}</span>
-                          <span className="text-[9px] text-[#6B7280] font-bold uppercase tracking-tight block mt-1">Due Balance</span>
+                          <span className="text-[9px] text-[var(--mv-muted)] font-bold uppercase tracking-tight block mt-1">Due Balance</span>
                         </div>
                       </div>
                     ))}
@@ -4284,11 +4288,11 @@ export default function App() {
               )}
 
               {/* Basic quick switch user suggestion details / manual info cards */}
-              <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl text-left space-y-2 relative shadow-xs">
+              <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl text-left space-y-2 relative shadow-xs">
                 <span className="text-[9px] font-bold text-[var(--mv-accent)] uppercase tracking-wider bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded-md inline-block">
                   Co-op Housing Regulatory Code
                 </span>
-                <p className="text-[10px] text-[#6B7280] leading-relaxed pt-0.5 font-medium">
+                <p className="text-[10px] text-[var(--mv-muted)] leading-relaxed pt-0.5 font-medium">
                   Billing and statutory treatment require review against Mani Vista bylaws and the applicable laws before production use. GSTIN {gstinLabel}.
                 </p>
                 {currentRole === 'Resident' && !onServer && (
@@ -4302,8 +4306,8 @@ export default function App() {
               </div>
 
               {/* Logged-in member + logout */}
-              <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl text-left shadow-xs">
-                <p className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider">Logged in as</p>
+              <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl text-left shadow-xs">
+                <p className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Logged in as</p>
                 <p className="text-xs font-bold text-[var(--mv-ink)] truncate mt-0.5" title={sessionEmail || ''}>{sessionEmail}</p>
                 <button
                   onClick={handleLogout}
@@ -4370,7 +4374,7 @@ export default function App() {
             <div className="relative">
               <BookOpen className="w-5 h-5" />
               {currentRole === 'Resident' && (
-                <Lock className="w-2.5 h-2.5 text-[var(--mv-accent)] absolute -top-1 -right-1 bg-white rounded-full p-0.5" aria-label="Locked" />
+                <Lock className="w-2.5 h-2.5 text-[var(--mv-accent)] absolute -top-1 -right-1 bg-[var(--mv-surface)] rounded-full p-0.5" aria-label="Locked" />
               )}
             </div>
             <span className="text-[9px] font-bold uppercase tracking-wider flex items-center justify-center">
@@ -4450,7 +4454,7 @@ export default function App() {
         <Dialog
           labelledBy="payment-recorded-title"
           onClose={() => setShowSuccessPayModal(false)}
-          className="bg-white w-full max-w-[340px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] p-5 text-center space-y-4 animate-scale-up outline-none"
+          className="bg-[var(--mv-surface)] w-full max-w-[340px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] p-5 text-center space-y-4 animate-scale-up outline-none"
         >
           <div className="w-12 h-12 bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded-full flex items-center justify-center mx-auto">
             <Check className="w-6 h-6" aria-hidden="true" />
@@ -4493,7 +4497,7 @@ export default function App() {
             </button>
             <button
               onClick={() => setShowSuccessPayModal(false)}
-              className="py-2 px-3 bg-white border border-[var(--mv-border)] rounded-xl text-xs font-semibold text-[var(--mv-muted)]"
+              className="py-2 px-3 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl text-xs font-semibold text-[var(--mv-muted)]"
             >
               Close
             </button>

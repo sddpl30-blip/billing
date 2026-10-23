@@ -88,7 +88,7 @@ ${demonstration ? 'No bank or payment gateway was contacted.' : ''}
     <Dialog
       labelledBy="receipt-modal-title"
       onClose={onClose}
-      className="bg-white w-full max-w-[380px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] animate-fade-in animate-scale-up flex flex-col max-h-[90vh] outline-none"
+      className="bg-[var(--mv-surface)] w-full max-w-[380px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] animate-fade-in animate-scale-up flex flex-col max-h-[90vh] outline-none"
     >
 
         {/* Header */}
@@ -102,38 +102,38 @@ ${demonstration ? 'No bank or payment gateway was contacted.' : ''}
           <button
             onClick={onClose}
             aria-label="Close receipt"
-            className="p-1 hover:bg-black/5 rounded-full transition-colors text-[#6B7280]"
+            className="p-1 hover:bg-black/5 rounded-full transition-colors text-[var(--mv-muted)]"
           >
             <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
 
         {/* Content printable */}
-        <div className="p-5 overflow-y-auto flex-1 bg-white space-y-4 text-xs text-left">
+        <div className="p-5 overflow-y-auto flex-1 bg-[var(--mv-surface)] space-y-4 text-xs text-left">
 
           {/* Logo Brand */}
           <div className="text-center pb-2 border-b border-[var(--mv-border)]">
             <span className="flex items-center gap-2"><img src="/branding/mani-vista-logo.png" alt="Mani Vista" className="w-12 h-12 object-contain"/><span className="font-bold text-base text-[var(--mv-ink)] tracking-tight block">MANI VISTA</span></span>
-            <span className="text-[9px] text-[#6B7280] font-bold tracking-wide block uppercase">Residents Association</span>
-            <span className="text-[9px] text-[#6B7280] font-mono block">GSTIN: {gstinLabel}</span>
+            <span className="text-[9px] text-[var(--mv-muted)] font-bold tracking-wide block uppercase">Residents Association</span>
+            <span className="text-[9px] text-[var(--mv-muted)] font-mono block">GSTIN: {gstinLabel}</span>
           </div>
 
           {/* Receipt Info Box */}
           <div className="bg-[var(--mv-page)] p-3 rounded-xl border border-[var(--mv-border)] space-y-2 font-mono text-[11px]">
             <div className="flex justify-between">
-              <span className="text-[#6B7280]">RECEIPT NO</span>
+              <span className="text-[var(--mv-muted)]">RECEIPT NO</span>
               <span className="font-bold text-[var(--mv-ink)]">{receiptNo}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-[#6B7280]">PAYMENT DATE</span>
+              <span className="text-[var(--mv-muted)]">PAYMENT DATE</span>
               <span className="font-bold text-[var(--mv-ink)]">{paymentDate}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-[#6B7280]">PAYMENT MODE</span>
+              <span className="text-[var(--mv-muted)]">PAYMENT MODE</span>
               <span className="font-bold text-[var(--mv-accent)]">{paymentMethod}</span>
             </div>
             <div className="flex justify-between truncate">
-              <span className="text-[#6B7280]">INVOICE</span>
+              <span className="text-[var(--mv-muted)]">INVOICE</span>
               <span className="font-bold text-[var(--mv-ink)]">{invoice.invoiceNo}</span>
             </div>
           </div>
@@ -141,18 +141,18 @@ ${demonstration ? 'No bank or payment gateway was contacted.' : ''}
           {/* Demographics */}
           <div className="grid grid-cols-2 gap-3 pb-3 border-b border-[var(--mv-border)] text-[11px]">
             <div>
-              <span className="text-[#6B7280] font-bold block uppercase text-[9px]">Received From</span>
+              <span className="text-[var(--mv-muted)] font-bold block uppercase text-[9px]">Received From</span>
               <span className="font-bold text-[var(--mv-ink)]">{invoice.name}</span>
             </div>
             <div>
-              <span className="text-[#6B7280] font-bold block uppercase text-[9px]">Flat Unit</span>
+              <span className="text-[var(--mv-muted)] font-bold block uppercase text-[9px]">Flat Unit</span>
               <span className="font-bold text-[var(--mv-ink)]">{invoice.flatNo}</span>
             </div>
           </div>
 
           {/* Ledger Table */}
           <div className="space-y-1.5 text-[11px]">
-            <div className="flex justify-between text-[#6B7280] uppercase font-bold text-[9px]">
+            <div className="flex justify-between text-[var(--mv-muted)] uppercase font-bold text-[9px]">
               <span>Cleared Head Particulars</span>
               <span>Amount Paid</span>
             </div>
@@ -187,9 +187,9 @@ ${demonstration ? 'No bank or payment gateway was contacted.' : ''}
             )}
 
             {invoice.gst > 0 && (
-              <div className="flex justify-between text-[#6B7280] py-0.5 text-[10px]">
+              <div className="flex justify-between text-[var(--mv-muted)] py-0.5 text-[10px]">
                 <span>GST (CGST + SGST)</span>
-                <span className="font-mono text-[#6B7280]">{formatRupee(invoice.gst)}</span>
+                <span className="font-mono text-[var(--mv-muted)]">{formatRupee(invoice.gst)}</span>
               </div>
             )}
           </div>
@@ -204,9 +204,9 @@ ${demonstration ? 'No bank or payment gateway was contacted.' : ''}
             <div className="border border-[var(--mv-accent)]/45 bg-[var(--mv-accent-soft)] px-2.5 py-1 text-center rounded-lg rotate-[-2deg] mr-2">
               <span className="text-[9px] text-[var(--mv-accent)]/70 font-mono font-bold block leading-none">MANI VISTA RWA</span>
               <span className="text-[10px] text-[var(--mv-accent)] font-bold block leading-tight font-sans">{demonstration ? 'DEMONSTRATION' : 'RECEIPT'}</span>
-              <span className="text-[8px] text-[#6B7280] font-mono block leading-none">{demonstration ? 'No bank contacted' : 'Issued by the books'}</span>
+              <span className="text-[8px] text-[var(--mv-muted)] font-mono block leading-none">{demonstration ? 'No bank contacted' : 'Issued by the books'}</span>
             </div>
-            <span className="text-[9px] text-[#6B7280] font-bold uppercase mr-2 mt-2">Treasurer Audit Signatory</span>
+            <span className="text-[9px] text-[var(--mv-muted)] font-bold uppercase mr-2 mt-2">Treasurer Audit Signatory</span>
           </div>
 
         </div>
@@ -222,9 +222,9 @@ ${demonstration ? 'No bank or payment gateway was contacted.' : ''}
           </button>
           <button
             onClick={() => window.print()}
-            className="py-2.5 px-3 bg-white border border-[var(--mv-border)] text-[var(--mv-ink)] rounded-xl text-xs font-bold hover:bg-gray-50 transition-all flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
+            className="py-2.5 px-3 bg-[var(--mv-surface)] border border-[var(--mv-border)] text-[var(--mv-ink)] rounded-xl text-xs font-bold hover:bg-[var(--mv-soft)] transition-all flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
           >
-            <Printer className="w-4 h-4 text-[#6B7280]" aria-hidden="true" /> Print
+            <Printer className="w-4 h-4 text-[var(--mv-muted)]" aria-hidden="true" /> Print
           </button>
         </div>
         {downloadError !== null && (

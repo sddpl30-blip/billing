@@ -33,7 +33,7 @@ const STATE_STYLE: Record<RegisterView['state'], string> = {
   approved: 'bg-[var(--mv-accent-soft)] text-[#1D4ED8] border-[var(--mv-accent-border)]',
   released: 'bg-[#F5F3FF] text-[#6D28D9] border-[#DDD6FE]',
   'tax-invoice': 'bg-[#F0FDF4] text-[#166534] border-[#BBF7D0]',
-  cancelled: 'bg-gray-100 text-gray-500 border-gray-200',
+  cancelled: 'bg-[var(--mv-page)] text-[var(--mv-muted)] border-[var(--mv-border)]',
 };
 
 export const BillingWorkflow: React.FC<Props> = ({
@@ -48,13 +48,13 @@ export const BillingWorkflow: React.FC<Props> = ({
     icon: React.ReactNode; title: string; detail: string; n: number;
     action?: { label: string; onClick: () => void; disabled: boolean };
   }> = ({ icon, title, detail, n, action }) => (
-    <div className="p-3.5 bg-white border border-[var(--mv-border)] rounded-xl space-y-2">
+    <div className="p-3.5 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl space-y-2">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-2 min-w-0">
           <span className="text-[var(--mv-accent)] shrink-0 mt-0.5">{icon}</span>
           <div className="min-w-0">
             <p className="font-bold text-[11px] text-[var(--mv-ink)] leading-tight">{title}</p>
-            <p className="text-[10px] text-[#6B7280] leading-snug mt-0.5">{detail}</p>
+            <p className="text-[10px] text-[var(--mv-muted)] leading-snug mt-0.5">{detail}</p>
           </div>
         </div>
         <span className="font-mono font-bold text-base text-[var(--mv-ink)] shrink-0">{n}</span>
@@ -77,7 +77,7 @@ export const BillingWorkflow: React.FC<Props> = ({
         <h4 className="font-extrabold text-sm text-[var(--mv-ink)] uppercase tracking-wide leading-tight">
           Billing workflow
         </h4>
-        <p className="text-[10px] text-[#6B7280] mt-0.5 leading-snug">
+        <p className="text-[10px] text-[var(--mv-muted)] mt-0.5 leading-snug">
           A proforma invoice posts nothing. The receivable and the GST arise when
           it becomes a tax invoice — on payment, or on its due date.
         </p>
@@ -127,7 +127,7 @@ export const BillingWorkflow: React.FC<Props> = ({
 
       {documents.length > 0 && (
         <div className="space-y-1.5">
-          <span className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">
+          <span className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">
             Register
           </span>
           <div className="space-y-1.5 max-h-[280px] overflow-y-auto pr-1 hide-scrollbar">
@@ -145,7 +145,7 @@ export const BillingWorkflow: React.FC<Props> = ({
                   </span>
                 </div>
                 <div className="flex justify-between items-center gap-2">
-                  <span className="text-[9px] text-[#6B7280] font-medium truncate">
+                  <span className="text-[9px] text-[var(--mv-muted)] font-medium truncate">
                     {doc.flatNo} · {doc.period} · due {doc.dueOn}
                   </span>
                   <span
@@ -155,7 +155,7 @@ export const BillingWorkflow: React.FC<Props> = ({
                   </span>
                 </div>
                 {doc.state === 'tax-invoice' && (
-                  <div className="flex justify-between text-[9px] font-mono text-[#6B7280]">
+                  <div className="flex justify-between text-[9px] font-mono text-[var(--mv-muted)]">
                     <span>Status: {doc.status}</span>
                     <span>
                       {doc.outstanding > 0
@@ -177,7 +177,7 @@ export const BillingWorkflow: React.FC<Props> = ({
       )}
 
       {documents.length === 0 && (
-        <p className="text-[10px] text-[#6B7280] p-3 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl leading-snug">
+        <p className="text-[10px] text-[var(--mv-muted)] p-3 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl leading-snug">
           No documents in the register yet. Run the billing for a period to raise proformas.
         </p>
       )}

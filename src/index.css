@@ -85,6 +85,7 @@ aside .mv-theme-switcher button:not(.selected) { color: var(--mv-accent-on-dark)
 :root[data-mv-theme="ivory"] .mv-theme-switcher button.selected { background: #255041; color: #fff; }
 :root[data-mv-theme="ivory"] aside .mv-theme-switcher { background: rgba(255,255,255,.12); }
 :root[data-mv-theme="ivory"] aside .mv-theme-switcher button.selected { background: #f3e4ba; color: #073b2e; }
+:root[data-mv-theme="ivory"] aside .mv-theme-switcher button:not(.selected) { color: var(--mv-accent-on-dark); }
 /* Gold action elements: white text, at 4.5:1 or better on the darkened gold above. */
 .bg-\[var\(--mv-accent\)\] { color: #fff; }
 @media (max-width: 500px) {

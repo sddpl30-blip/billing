@@ -15,10 +15,10 @@ export const JournalLedger: React.FC<{ statements: Statements; compact?: boolean
 }) => (
   <div className="space-y-2.5 text-left">
     <div className="flex justify-between items-baseline gap-3 border-b border-[var(--mv-border)] pb-2">
-      <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider">
+      <span className="text-[10px] uppercase font-bold text-[var(--mv-muted)] tracking-wider">
         General journal
       </span>
-      <span className="text-[9px] font-mono text-gray-400">
+      <span className="text-[9px] font-mono text-[var(--mv-muted)]">
         {statements.journal.length} entries
       </span>
     </div>
@@ -28,7 +28,7 @@ export const JournalLedger: React.FC<{ statements: Statements; compact?: boolean
         <div key={entry.id} className="p-3 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl space-y-2">
           <div className="flex justify-between items-baseline gap-3">
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5 text-[9px] text-gray-400 font-mono">
+              <div className="flex items-center gap-1.5 text-[9px] text-[var(--mv-muted)] font-mono">
                 <span>{entry.date}</span>
                 <span>·</span>
                 <span>{entry.id}</span>
@@ -37,7 +37,7 @@ export const JournalLedger: React.FC<{ statements: Statements; compact?: boolean
                 {entry.narration}
               </p>
             </div>
-            <span className="text-[9px] font-mono text-gray-400 whitespace-nowrap shrink-0">
+            <span className="text-[9px] font-mono text-[var(--mv-muted)] whitespace-nowrap shrink-0">
               {entry.legs.length} legs
             </span>
           </div>
@@ -53,9 +53,9 @@ export const JournalLedger: React.FC<{ statements: Statements; compact?: boolean
                   >
                     {leg.side}
                   </span>
-                  <span className="font-mono text-gray-400 shrink-0">{leg.account}</span>
+                  <span className="font-mono text-[var(--mv-muted)] shrink-0">{leg.account}</span>
                   {leg.party && (
-                    <span className="font-mono text-gray-400 truncate">[{leg.party}]</span>
+                    <span className="font-mono text-[var(--mv-muted)] truncate">[{leg.party}]</span>
                   )}
                 </span>
                 <span className="font-mono font-bold text-[var(--mv-ink)] whitespace-nowrap">
