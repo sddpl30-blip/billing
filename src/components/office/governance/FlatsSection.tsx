@@ -3,6 +3,7 @@ import {
   AREA_BASES, addFlat, listFlats, setOwner, type AreaBasis, type FlatRow, type NewFlat, type OwnerChange,
 } from '../../../api/office/governance';
 import type { OfficeContext } from '../types';
+import { FlatImportDialog, downloadFlatTemplate } from './FlatImportDialog';
 import {
   Badge, Button, Card, FormDialog, LoadState, Table, cellClass, inputClass, labelClass,
   todayInIndia, useLoad, useWrite,
@@ -13,6 +14,7 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
   const flats = useLoad(() => listFlats(ctx.client), [ctx]);
   const { busy, run } = useWrite(ctx, flats.refresh);
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [changing, setChanging] = useState<FlatRow | null>(null);
   const [filter, setFilter] = useState('');
   const list = (flats.data ?? []).filter(f => {
@@ -21,7 +23,16 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
   });
 
   return (
-    <Card title="Flats and owners" actions={<Button tone="primary" onClick={() => setAdding(true)}>Add a flat</Button>}>
+    <Card
+      title="Flats and owners"
+      actions={(
+        <>
+          <Button onClick={downloadFlatTemplate}>Download template</Button>
+          <Button onClick={() => setImporting(true)}>Import from CSV</Button>
+          <Button tone="primary" onClick={() => setAdding(true)}>Add a flat</Button>
+        </>
+      )}
+    >
       <div>
         <label htmlFor="gov-flat-filter" className={labelClass}>Find a flat or owner</label>
         <input id="gov-flat-filter" className={`${inputClass} sm:max-w-xs`} value={filter} onChange={e => setFilter(e.target.value)} placeholder="e.g. B-204" />
@@ -55,6 +66,13 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
             </tr>
           ))}
         </Table>
+      )}
+      {importing && (
+        <FlatImportDialog
+          ctx={ctx}
+          onClose={() => setImporting(false)}
+          onImported={async () => { await Promise.all([ctx.reload(), flats.refresh()]); }}
+        />
       )}
       {adding && (
         <AddFlatDialog

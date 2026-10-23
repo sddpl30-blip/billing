@@ -444,6 +444,8 @@ export async function readOpening(tx: Queryable, societyId: string): Promise<{
   current: (BatchView & { plan: OpeningPlan }) | null;
   history: BatchView[];
   accounts: ChartRow[];
+  /** What an opening vendor bill can say it was for. */
+  expenseAccounts: ChartRow[];
   balancingAccount: string;
 }> {
   const history = await batchRows(tx, societyId, '', []);
@@ -465,7 +467,15 @@ export async function readOpening(tx: Queryable, societyId: string): Promise<{
       ORDER BY code`,
     [societyId],
   );
-  return { current, history, accounts: accounts.rows, balancingAccount: BALANCING_ACCOUNT };
+  const expenses = await tx.query<ChartRow>(
+    `SELECT code, name, class, control FROM accounts
+      WHERE society_id = $1 AND class = 'expenditure' ORDER BY code`,
+    [societyId],
+  );
+  return {
+    current, history, accounts: accounts.rows, expenseAccounts: expenses.rows,
+    balancingAccount: BALANCING_ACCOUNT,
+  };
 }
 
 // --- the maker's step ------------------------------------------------------
