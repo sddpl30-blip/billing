@@ -234,7 +234,9 @@ function requestTo(url, incoming, outgoing) {
       port: apiPort,
       method: incoming.method,
       path: `${url.pathname}${url.search}`,
-      headers: { ...incoming.headers, host: `127.0.0.1:${apiPort}` },
+      // Host passed through, as nginx's `proxy_set_header Host $host` does: the
+      // server compares a sign-in's Origin with the Host the browser used.
+      headers: { ...incoming.headers },
     },
     upstream => {
       outgoing.writeHead(upstream.statusCode ?? 500, upstream.headers);

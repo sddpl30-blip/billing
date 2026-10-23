@@ -16,6 +16,9 @@ society. Three roles share one dataset:
 
 Manager and Committee are behind a PIN.
 
+The October 2026 audit — what was found, what was fixed, and what is still
+open — is in `docs/AUDIT-2026-10.md`.
+
 ## Running it
 
 ```

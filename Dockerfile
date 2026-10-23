@@ -1,10 +1,7 @@
 # The backend image.
 #
-# NOT VERIFIED BY A BUILD. The machine this was written on has a docker binary
-# and no reachable daemon, so this file has never been built or run. It is
-# written from the project's actual layout — which is checked — rather than
-# from a template, but treat the first build as a build that may need fixing
-# rather than as a proven one.
+# CI builds this on every push (.github/workflows/ci.yml, the docker job);
+# no local build has been run, so that job is the proof that it builds.
 
 FROM node:22-bookworm-slim AS build
 WORKDIR /app

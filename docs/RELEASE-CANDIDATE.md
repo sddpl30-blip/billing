@@ -1,5 +1,10 @@
 # SocietyBooks — release candidate
 
+> **Superseded in part by [`AUDIT-2026-10.md`](AUDIT-2026-10.md)** — the frontend
+> build and the Vercel function have since been fixed and verified, the Docker
+> images fixed (CI builds them), and CI now runs every suite. Read that first.
+
+
 Produced 22 October 2026. This is the single report for the final production
 setup: what passed, what failed, and what is blocked on something only you can
 supply. Every number below is from a command run on this machine, in this
