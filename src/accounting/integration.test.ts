@@ -23,7 +23,9 @@ import { areaCharge, rateOn, requireApprovedRate, RateError } from './rates';
 import {
   balanceSheet, incomeAndExpenditure, receiptsAndPayments, reconcile, trialBalance,
 } from './reports';
-import { applyAdvance, bookVendorBill, payVendorBill, remitTds } from './transactions';
+import {
+  applyAdvance, bookVendorBill, gstHalf, gstOnContribution, payVendorBill, remitTds,
+} from './transactions';
 import { buildStatements } from './uiReports';
 import { SourceInvoice, SourceVendorInvoice, importDemoData } from './adapter';
 import { createBooksStore } from '../store/booksStore';
@@ -804,6 +806,106 @@ check('a non-standard GST rate flows through', () => {
     lines: [{ head: 'maintenance', amount: R(10000), taxable: true }],
   });
   eq(doc.estimatedTax, R(1200), '12% applied');
+});
+
+// The two society choices in `gst.treatment`, with the approach note's worked
+// figures: ₹4.50/sq ft, 18%. The server's api.test.mjs asserts the same
+// figures through its own engine, so the two agree to the paisa.
+
+const NOTE_FLATS: readonly FlatRecord[] = [
+  { flatNo: 'A-101', name: 'n', billingAreaSqFt: 1750, areaBasis: 'super-built-up' },
+  { flatNo: 'A-102', name: 'n', billingAreaSqFt: 2250, areaBasis: 'super-built-up' },
+  // ₹7,200 of maintenance: exempt alone, over ₹7,500 with a 10% sinking fund.
+  { flatNo: 'B-101', name: 'n', billingAreaSqFt: 1600, areaBasis: 'super-built-up' },
+];
+
+/** Bills and converts the note's flats, returning what each tax invoice posted. */
+function billNoteFlats(config: AccountingConfig, sinkingPercent?: number) {
+  const { ledger, register } = freshRegister(config);
+  const run = runBilling(register, {
+    period: 'Jul 2026', flats: NOTE_FLATS, issuedOn: '2026-07-01',
+    ...(sinkingPercent !== undefined ? { sinkingFundPercentOfMaintenance: sinkingPercent } : {}),
+  }, config);
+  const out: Record<string, { estimatedTax: number; gross: number; cgst: number; sgst: number; taxableSinking: boolean }> = {};
+  for (const doc of run.documents) {
+    register.approve(doc.proformaNo, 'T', '2026-07-01');
+    const { document, entry } = register.convertToTaxInvoice(doc.proformaNo, {
+      on: '2026-07-11', because: 'manual', by: 'T',
+    });
+    const leg = (code: string) => entry.postings.filter(p => p.accountCode === code).reduce((s, p) => s + p.credit, 0);
+    out[doc.flatNo] = {
+      estimatedTax: doc.estimatedTax,
+      gross: document.gross,
+      cgst: leg(A.CGST_OUTPUT),
+      sgst: leg(A.SGST_OUTPUT),
+      taxableSinking: doc.lines.some(l => l.head === 'sinking' && l.taxable),
+    };
+  }
+  assertTies(ledger, '2026-07-01', '2026-07-31', 'after the note flats');
+  return out;
+}
+
+check('flags absent: the note\'s figures to the paisa, as before', () => {
+  const bills = billNoteFlats(APPROVED);
+  eq(bills['A-101'].cgst, R(708.75), '1,750 sq ft CGST');
+  eq(bills['A-101'].sgst, R(708.75), '1,750 sq ft SGST');
+  eq(bills['A-101'].gross, R(9292.5), '1,750 sq ft total');
+  eq(bills['A-102'].cgst, R(911.25), '2,250 sq ft CGST');
+  eq(bills['A-102'].gross, R(11947.5), '2,250 sq ft total');
+});
+
+check('roundToRupee: each half to the nearest rupee, half up, on proforma and tax invoice alike', () => {
+  const bills = billNoteFlats({ ...APPROVED, gstRoundToRupee: true });
+  eq(bills['A-101'].estimatedTax, R(1418), '1,750 sq ft proforma estimate');
+  eq(bills['A-101'].cgst, R(709), '1,750 sq ft CGST: ₹708.75 rounds up');
+  eq(bills['A-101'].sgst, R(709), '1,750 sq ft SGST, equal');
+  eq(bills['A-101'].gross, R(9293), '1,750 sq ft total ₹9,293.00');
+  eq(bills['A-102'].cgst, R(911), '2,250 sq ft CGST: ₹911.25 rounds down');
+  eq(bills['A-102'].sgst, R(911), '2,250 sq ft SGST');
+  eq(bills['A-102'].gross, R(11947), '2,250 sq ft total ₹11,947.00');
+});
+
+check('sinkingFundTaxable off: a 10% sinking fund is neither taxed nor counted', () => {
+  const bills = billNoteFlats(APPROVED, 10);
+  truthy(!bills['A-101'].taxableSinking, 'the sinking line is not taxable');
+  eq(bills['A-101'].cgst, R(708.75), '1,750 sq ft CGST on maintenance alone');
+  eq(bills['A-101'].gross, R(7875 + 787.5 + 1417.5), '1,750 sq ft total');
+  eq(bills['B-101'].cgst, 0, '1,600 sq ft: ₹7,200 of maintenance is exempt');
+  eq(bills['B-101'].gross, R(7200 + 720), '1,600 sq ft total');
+});
+
+check('sinkingFundTaxable on: ₹787.50 sinking is taxed, and the exemption is tested on the total', () => {
+  const bills = billNoteFlats({ ...APPROVED, gstSinkingFundTaxable: true }, 10);
+  truthy(bills['A-101'].taxableSinking, 'the sinking line is taxable');
+  // ₹8,662.50 taxable; 9% is ₹779.625, ₹779.63 to the paisa.
+  eq(bills['A-101'].estimatedTax, R(1559.26), '1,750 sq ft proforma estimate');
+  eq(bills['A-101'].cgst, R(779.63), '1,750 sq ft CGST');
+  eq(bills['A-101'].sgst, R(779.63), '1,750 sq ft SGST');
+  eq(bills['A-101'].gross, R(7875 + 787.5 + 1559.26), '1,750 sq ft total ₹10,221.76');
+  // ₹7,200 + ₹720 = ₹7,920, over ₹7,500, so GST on the whole of it.
+  eq(bills['B-101'].cgst, R(712.8), '1,600 sq ft CGST on ₹7,920');
+  eq(bills['B-101'].gross, R(7920 + 1425.6), '1,600 sq ft total');
+});
+
+check('both flags: the sinking fund taxed and each half rounded to the rupee', () => {
+  const bills = billNoteFlats({ ...APPROVED, gstSinkingFundTaxable: true, gstRoundToRupee: true }, 10);
+  eq(bills['A-101'].cgst, R(780), '₹779.625 rounds to ₹780');
+  eq(bills['A-101'].sgst, R(780), 'SGST equal');
+  eq(bills['A-101'].gross, R(8662.5 + 1560), 'total ₹10,222.50');
+  // ₹10,125 + ₹1,012.50 = ₹11,137.50; 9% is ₹1,002.375, so ₹1,002.
+  eq(bills['A-102'].cgst, R(1002), '2,250 sq ft CGST');
+  eq(bills['A-102'].gross, R(11137.5 + 2004), '2,250 sq ft total ₹13,141.50');
+});
+
+check('rounding to the rupee is from the exact figure, never via the paisa', () => {
+  // 0.3% of ₹4,165 is ₹12.495: ₹12, where rounding ₹12.50 again gives ₹13.
+  eq(gstHalf(R(4165), 0.6, true), R(12), '₹12.495');
+  eq(gstHalf(R(4165), 0.6, false), R(12.5), 'the paisa rule, unchanged');
+  // 0.3% of ₹3,500 is ₹10.50 exactly, which rounds half up.
+  eq(gstHalf(R(3500), 0.6, true), R(11), '₹10.50');
+  const tax = gstOnContribution(R(7875), { ratePercent: 18, thresholdPaise: R(7500), roundToRupee: true });
+  eq(tax.cgst, tax.sgst, 'halves equal');
+  eq(tax.total, tax.cgst * 2, 'total twice a half');
 });
 
 // --- cancellation and reversal -------------------------------------------
