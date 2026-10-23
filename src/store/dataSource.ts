@@ -91,7 +91,12 @@ export async function resolveDataSource(
     base: apiBase(),
     ...(options.onUnauthenticated === undefined ? {} : { onUnauthenticated: options.onUnauthenticated }),
   });
-  const health = await probe(client);
+  // Generous, and tried twice: a serverless function and a database that
+  // scales to zero both start cold after an idle spell, and the first answer
+  // can take several seconds. Four seconds turned a sleeping database into
+  // "the books cannot be opened".
+  let health = await probe(client, 15_000);
+  if (!health.reachable) health = await probe(client, 15_000);
   const server = (): ServerBooksStore => createServerStore({
     client,
     clock,

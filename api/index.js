@@ -1,10 +1,11 @@
 /**
  * The whole API, as one Vercel function.
  *
- * Everything under /api/ arrives here: Vercel routes a request to the most
- * specific file in this directory, and a catch-all is the only pattern that
- * covers a router whose paths are declared in the application rather than in
- * the filesystem. One file also means one bundle and one cold start — a
+ * Everything under /api/ arrives here, sent by the rewrite in vercel.json; the
+ * request keeps its original URL, so the router sees /api/auth/me and not
+ * /api. It was a `[...path]` catch-all file, but outside Next.js Vercel reads
+ * that as a single path segment: /api/health worked and /api/auth/me was a
+ * platform 404. One file also means one bundle and one cold start — a
  * function per endpoint would multiply both, and each instance would hold its
  * own database connections.
  *

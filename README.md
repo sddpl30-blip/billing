@@ -54,7 +54,7 @@ npm run test:all         # every check
 
 **On Vercel and Neon, with no server to run.** The same API as one serverless
 function, the app as static files beside it, and the scheduler as an endpoint
-the platform calls. `api/[...path].js` hands Vercel's request to the handler
+the platform calls. `api/index.js` hands Vercel's request to the handler
 the standalone server uses, so the routes, the rules and the ledger are the
 same code — the full API suite runs over both transports. `docs/VERCEL.md` is
 the setup, start to finish; it also sets out what Vercel's plans mean for how

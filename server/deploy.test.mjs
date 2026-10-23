@@ -63,11 +63,20 @@ const routeSource = ['server/src/routes.ts', 'server/src/routesAdmin.ts', 'serve
 
 suite('the function');
 
-check('there is exactly one function, and it is a catch-all', () => {
+check('there is exactly one function, and every /api path is sent to it', () => {
   const files = readdirSync(join(root, 'api'));
   equal(files.length, 1, `files in api/: ${files.join(', ')}`);
   // A function per endpoint would multiply cold starts and connection pools.
-  matches(files[0], /^\[\.\.\..+\]\.js$/, 'the one file is a catch-all');
+  equal(files[0], 'index.js', 'the one file');
+  // Outside Next.js a `[...path]` file is a single segment: /api/health
+  // reached it and /api/auth/me was a platform 404. A rewrite sends every
+  // depth to the one function instead.
+  const rule = (config.rewrites ?? []).find(r => r.destination === '/api');
+  truthy(rule, 'a rewrite to /api');
+  truthy(new RegExp(`^${rule.source.replace('(.*)', '.*')}$`).test('/api/auth/me'), 'covers nested paths');
+  const rules = config.rewrites ?? [];
+  truthy(rules.indexOf(rule) < rules.findIndex(r => r.destination === '/index.html'),
+    'and comes before the SPA rewrite');
 });
 
 check('the build command compiles the server the function imports', () => {
@@ -82,7 +91,7 @@ check('the build command compiles the server the function imports', () => {
 let loadedEntry;
 try {
   const { pathToFileURL } = await import('node:url');
-  loadedEntry = await import(pathToFileURL(join(root, 'api', '[...path].js')).href);
+  loadedEntry = await import(pathToFileURL(join(root, 'api', 'index.js')).href);
 } catch (err) {
   loadedEntry = err;
 }
@@ -92,7 +101,7 @@ check('the function loads as an ES module', () => {
 });
 
 check('the function delegates to the shared wiring', () => {
-  const entry = read('api/[...path].js');
+  const entry = read('api/index.js');
   matches(entry, /createServerlessHandler/, 'it uses the adapter');
   matches(entry, /\.server-build\/server\/src\/serverless\.js/, 'from the built server, not a copy of it');
   // Anything else in here is a second implementation of the thing that is
@@ -101,7 +110,7 @@ check('the function delegates to the shared wiring', () => {
 });
 
 check('the function never runs migrations and never starts the worker', () => {
-  const entry = read('api/[...path].js');
+  const entry = read('api/index.js');
   const adapter = read('server/src/serverless.ts');
   for (const [where, text] of [['the entry point', entry], ['the adapter', adapter]]) {
     equal(/migrate|schema_migrations/.test(text), false, `${where} does not migrate`);

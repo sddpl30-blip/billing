@@ -18,7 +18,7 @@ it without paying for anything.
    ┌───────────────────────────────────────────────────────────┐
    │  /                 the React app (static files from dist) │
    │  /api/*            one serverless function                │
-   │                      → api/[...path].js                   │
+   │                      → api/index.js                   │
    │                      → server/src/serverless.ts           │
    │                      → the same routes, rules and ledger  │
    │                        as the standalone server           │
@@ -34,7 +34,7 @@ it without paying for anything.
 
 Three things to notice, because they are the whole design:
 
-* **The API is the same server.** `api/[...path].js` is twenty lines. It hands
+* **The API is the same server.** `api/index.js` is twenty lines. It hands
   Vercel's request and response objects to the handler the standalone server
   uses, so there is no second copy of the routing, the CSRF check, the
   authorisation or the error mapping. The full API suite — 185 checks — runs
