@@ -4,8 +4,8 @@
  * This implements the same `BooksStore` interface the screens already use, so
  * the UI does not know which one it has. Reads come from one snapshot endpoint
  * and are rehydrated into the engine's own `Ledger` and `BillingRegister` —
- * the objects the screens already render — and writes go to the API and then
- * refetch.
+ * the objects the screens already render — and writes go to the API, are
+ * awaited, and then refetch once.
  *
  * Why rehydrate rather than render server JSON directly: every derived figure
  * in this application already comes from the engine (a document's status, a
@@ -25,14 +25,19 @@ import {
   type SourceInvoice,
 } from '../accounting';
 import { DEMO_CONFIG } from '../accounting/config';
-import type { BooksSnapshot, BooksStore, VendorBillState } from './booksStore';
-import type { ApiClient } from '../api/client';
-import type { SnapshotResponse } from '../api/client';
+import type { BooksReader, BooksSnapshot, VendorBillState } from './booksStore';
+import type { BankAccountOption, BatchOutcome, BooksActions, ReceiptOutcome } from './actions';
+import type { ApiClient, SnapshotResponse } from '../api/client';
 
 export interface ServerStoreOptions {
   readonly client: ApiClient;
   readonly clock: Clock;
-  /** Called with anything the server refused, so a screen can show it. */
+  /**
+   * Called with a problem nobody asked about — a refresh that failed, a record
+   * the engine refused — so a screen can show it. A write's own failure is not
+   * sent here: it rejects the promise the screen is awaiting, and the screen
+   * says so where the action was taken.
+   */
   readonly onProblem?: (message: string) => void;
 }
 
@@ -51,20 +56,25 @@ export interface ServerContext {
   readonly rate: SnapshotResponse['rate'];
 }
 
-export interface ServerBooksStore extends BooksStore {
+export interface ServerBooksStore extends BooksReader {
   /** Fetches the books. Called once at start-up and after every write. */
   refresh(): Promise<void>;
   /** The server-side facts the screens need that a local store has no notion of. */
   context(): ServerContext | null;
+  /**
+   * The snapshot response the books were last rebuilt from, for the screens
+   * that map it onto their own shapes. Read from here rather than fetched
+   * again: one snapshot per change, not one per screen.
+   */
+  lastView(): SnapshotResponse | null;
   /** True while a write is in flight, for a screen to disable a button. */
   readonly busy: boolean;
+  /** Every write, awaited. */
+  readonly actions: BooksActions;
   /** A PDF of a document, from the server. */
   invoicePdf(proformaNo: string): Promise<Blob>;
   receiptPdf(receiptNo: string): Promise<Blob>;
 }
-
-const UNSUPPORTED =
-  'Not available when the books are on the server: that is a local-demo action.';
 
 export function createServerStore(options: ServerStoreOptions): ServerBooksStore {
   // The same configuration object the local store uses. It carries tax rates
@@ -76,6 +86,7 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
   let register = new BillingRegister(ledger, config, options.clock);
   let vendorBills: VendorBillState[] = [];
   let context: ServerContext | null = null;
+  let view: SnapshotResponse | null = null;
   let ready = false;
   let busy = false;
   let problems: string[] = [];
@@ -89,8 +100,14 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
   const listeners = new Set<() => void>();
   const notify = (): void => { for (const listener of listeners) listener(); };
 
-  const problem = (message: string): void => {
+  /** Kept on the list the screens can read, without interrupting anyone. */
+  const note = (message: string): void => {
     problems = [message, ...problems].slice(0, 20);
+  };
+
+  /** Kept, and passed to whoever is showing problems. */
+  const problem = (message: string): void => {
+    note(message);
     options.onProblem?.(message);
     notify();
   };
@@ -121,7 +138,7 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
 
   async function refresh(): Promise<void> {
     try {
-      const view = await options.client.get<SnapshotResponse>('/api/books/snapshot');
+      const next = await options.client.get<SnapshotResponse>('/api/books/snapshot');
 
       // A fresh ledger and register every time. Restoring into the existing
       // ones would refuse — `restore` rejects an id it already holds, which is
@@ -131,7 +148,7 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
       const nextRegister = new BillingRegister(nextLedger, config, options.clock);
 
       const rejected: string[] = [];
-      for (const entry of view.entries as readonly JournalEntry[]) {
+      for (const entry of next.entries as readonly JournalEntry[]) {
         try {
           nextLedger.restore(entry);
         } catch (err) {
@@ -144,8 +161,8 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
 
       try {
         nextRegister.restoreDocuments(
-          view.documents as Parameters<BillingRegister['restoreDocuments']>[0],
-          view.taxInvoiceSequence,
+          next.documents as Parameters<BillingRegister['restoreDocuments']>[0],
+          next.taxInvoiceSequence,
         );
       } catch (err) {
         rejected.push(err instanceof Error ? err.message : String(err));
@@ -153,7 +170,8 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
 
       ledger = nextLedger;
       register = nextRegister;
-      vendorBills = view.vendorBills.map(bill => ({
+      view = next;
+      vendorBills = next.vendorBills.map(bill => ({
         id: bill.id,
         vendorId: bill.vendorId,
         vendorName: bill.vendorName,
@@ -166,24 +184,27 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
         ...(bill.rejectedReason === undefined ? {} : { rejectedReason: bill.rejectedReason }),
         ...(bill.billNo === undefined ? {} : { billNo: bill.billNo }),
       }));
-      serverMode = view.mode;
+      serverMode = next.mode;
       context = {
-        societyName: view.societyName,
-        registrationNo: view.registrationNo,
-        gstin: view.gstin,
-        scope: view.scope,
-        email: view.email,
-        roles: view.roles,
-        permissions: view.permissions,
-        flats: view.flats,
-        settings: view.settings,
-        rate: view.rate,
+        societyName: next.societyName,
+        registrationNo: next.registrationNo,
+        gstin: next.gstin,
+        scope: next.scope,
+        email: next.email,
+        roles: next.roles,
+        permissions: next.permissions,
+        flats: next.flats,
+        settings: next.settings,
+        rate: next.rate,
       };
 
       flatIds.clear();
-      for (const flat of view.flats) flatIds.set(flat.flatNo, flat.id);
-      documentIds.clear();
-      for (const document of view.documents as ReadonlyArray<{ proformaNo: string; id?: string }>) {
+      for (const flat of next.flats) flatIds.set(flat.flatNo, flat.id);
+      // The snapshot carries each document's id. Added to rather than cleared:
+      // a server that predates the id leaves the map as the listing filled it,
+      // instead of emptying it on every refresh — which is what used to make
+      // every write after the first fail with "no document numbered".
+      for (const document of next.documents as ReadonlyArray<{ proformaNo: string; id?: string }>) {
         if (typeof document.id === 'string') documentIds.set(document.proformaNo, document.id);
       }
 
@@ -204,41 +225,9 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
     }
   }
 
-  /** Looks up the server's id for a document, refreshing once if it is new. */
-  async function documentId(proformaNo: string): Promise<string> {
-    const known = documentIds.get(proformaNo);
-    if (known !== undefined) return known;
-    await refresh();
-    const found = documentIds.get(proformaNo);
-    if (found === undefined) {
-      throw new Error(`The server does not have a document numbered ${proformaNo}.`);
-    }
-    return found;
-  }
-
-  /** Runs a write, keeps the busy flag honest, and refetches afterwards. */
-  async function write<T>(what: string, body: () => Promise<T>): Promise<T> {
-    busy = true;
-    notify();
-    try {
-      const result = await body();
-      await refresh();
-      return result;
-    } catch (err) {
-      problem(`${what}: ${err instanceof Error ? err.message : String(err)}`);
-      throw err;
-    } finally {
-      busy = false;
-      notify();
-    }
-  }
-
   /**
-   * The documents endpoint, for the ids the snapshot does not carry.
-   *
-   * The snapshot is engine-shaped and the engine's documents have no server
-   * id, so this fills the map from the listing. Called lazily, because most
-   * sessions never write.
+   * The documents endpoint, for an id the snapshot did not carry — a server
+   * older than the snapshot's `id` field, or a document raised since.
    */
   async function loadDocumentIds(): Promise<void> {
     const listing = await options.client.get<{
@@ -249,12 +238,267 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
     }
   }
 
+  /** Looks up the server's id for a document, asking the listing once if it is new. */
+  async function documentId(proformaNo: string): Promise<string> {
+    const known = documentIds.get(proformaNo);
+    if (known !== undefined) return known;
+    await loadDocumentIds();
+    const found = documentIds.get(proformaNo);
+    if (found === undefined) {
+      throw new Error(`The server does not have a document numbered ${proformaNo}.`);
+    }
+    return found;
+  }
+
   async function loadPaymentIds(): Promise<void> {
     const listing = await options.client.get<{
       payments: ReadonlyArray<{ id: string; receiptNo: string }>;
     }>('/api/payments');
     for (const payment of listing.payments) paymentIds.set(payment.receiptNo, payment.id);
   }
+
+  /**
+   * Runs a write: marks the store busy, awaits the server, refetches once —
+   * even after a failure, because part of a batch may have landed — and
+   * hands the caller the server's answer or its refusal.
+   */
+  async function write<T>(what: string, body: () => Promise<T>): Promise<T> {
+    busy = true;
+    notify();
+    try {
+      return await body();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      note(`${what}: ${message}`);
+      throw err instanceof Error ? err : new Error(message);
+    } finally {
+      await refresh();
+      busy = false;
+      notify();
+    }
+  }
+
+  const flatIdFor = (flatNo: string): string => {
+    const id = flatIds.get(flatNo);
+    if (id === undefined) throw new Error(`The server has no flat ${flatNo} on record.`);
+    return id;
+  };
+
+  /** A key per request, so a retried request is one payment and not two. */
+  const idempotencyKey = (prefix: string): string =>
+    `${prefix}-${typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+
+  interface PaymentAnswer {
+    paymentId: string; receiptNo: string; appliedToDues: number; heldAsAdvance: number;
+    note?: string;
+  }
+
+  const receiptFrom = (answer: PaymentAnswer, outstandingAfter: Paise | null): ReceiptOutcome => {
+    paymentIds.set(answer.receiptNo, answer.paymentId);
+    return {
+      receiptNo: answer.receiptNo,
+      appliedToDues: answer.appliedToDues as Paise,
+      heldAsAdvance: answer.heldAsAdvance as Paise,
+      outstandingAfter,
+      note: answer.note ?? null,
+    };
+  };
+
+  /** What is still owed on a document, read from the refreshed register. */
+  const outstandingOn = (proformaNo: string): Paise | null => {
+    const document = register.all().find(d => d.proformaNo === proformaNo);
+    return document === undefined ? null : document.outstanding;
+  };
+
+  /** Each document in turn, with refusals counted rather than ending the batch. */
+  async function eachDocument(
+    proformaNos: readonly string[],
+    send: (id: string, proformaNo: string) => Promise<string | void>,
+  ): Promise<BatchOutcome> {
+    let done = 0;
+    let refused = 0;
+    const notes: string[] = [];
+    for (const proformaNo of proformaNos) {
+      try {
+        const said = await send(await documentId(proformaNo), proformaNo);
+        if (typeof said === 'string' && !notes.includes(said)) notes.push(said);
+        done++;
+      } catch (err) {
+        refused++;
+        notes.push(`${proformaNo}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { done, refused, notes };
+  }
+
+  const actions: BooksActions = {
+    runBilling: input => write('Billing run', async () => {
+      // The server runs the cycle with its own approved rate and settings;
+      // the screen's figures are not sent, because the server would not use
+      // them. What comes back is what was actually raised.
+      const result = await options.client.post<{
+        period: string;
+        issued: ReadonlyArray<{ flatNo: string; documentId?: string }>;
+        skipped: ReadonlyArray<{ flatNo: string; why: string }>;
+        totals: { net: number; estimatedTax: number; gross: number };
+      }>('/api/billing/run', {
+        period: input.period,
+        issuedOn: input.issuedOn ?? options.clock.today(),
+      });
+      return {
+        period: input.period,
+        raised: result.issued.length,
+        skipped: result.skipped,
+        totalNet: result.totals.net as Paise,
+        totalTax: result.totals.estimatedTax as Paise,
+        totalGross: result.totals.gross as Paise,
+      };
+    }),
+
+    approveDocuments: proformaNos => write('Approval', () =>
+      eachDocument(proformaNos, async id => {
+        await options.client.post(`/api/billing/documents/${id}/approve`, {
+          on: options.clock.today(),
+        });
+      })),
+
+    releaseDocuments: proformaNos => write('Release', () =>
+      eachDocument(proformaNos, async id => {
+        const result = await options.client.post<{ delivered: boolean; note: string }>(
+          `/api/billing/documents/${id}/release`,
+          { channel: 'email' },
+        );
+        // The server says whether anything was actually sent. Passed on either
+        // way, because "released" and "delivered" are different claims.
+        return result.note;
+      })),
+
+    convertDueDocuments: () => write('Conversion', () => {
+      const today = options.clock.today();
+      const due = register.all().filter(
+        document => (document.state === 'approved' || document.state === 'released')
+          && document.dueOn <= today,
+      );
+      return eachDocument(due.map(d => d.proformaNo), async id => {
+        await options.client.post(`/api/billing/documents/${id}/convert`, {
+          on: today,
+          because: 'due-date-reached',
+        });
+      });
+    }),
+
+    cancelDocument: (proformaNo, _by, reason) => write('Cancellation', async () => {
+      const id = await documentId(proformaNo);
+      await options.client.post(`/api/billing/documents/${id}/cancel`, {
+        reason, on: options.clock.today(),
+      });
+    }),
+
+    payDocument: input => write('Receipt', async () => {
+      const document = register.all().find(d => d.proformaNo === input.proformaNo);
+      if (document === undefined) throw new Error(`No document ${input.proformaNo}.`);
+      const flatId = flatIdFor(document.flatNo);
+      const documentServerId = await documentId(input.proformaNo);
+      // Converted first where it has not been: a payment against a proforma
+      // is what raises the tax invoice, and the server will not allocate to
+      // a document that has no receivable.
+      if (document.state !== 'tax-invoice') {
+        await options.client.post(`/api/billing/documents/${documentServerId}/convert`, {
+          on: options.clock.today(), because: 'payment-received',
+        });
+      }
+      const answer = await options.client.post<PaymentAnswer>(
+        '/api/payments',
+        {
+          flatId,
+          amountPaise: Math.round(input.amountRupees * 100),
+          receivedOn: options.clock.today(),
+          method: methodFor(input.method),
+          againstDocumentId: documentServerId,
+        },
+        { idempotencyKey: idempotencyKey('ui-receipt') },
+      );
+      return answer;
+    }).then(answer => receiptFrom(answer, outstandingOn(input.proformaNo))),
+
+    recordReceipt: input => write('Receipt', async () => {
+      const flatId = flatIdFor(input.flatNo);
+      const against = input.againstProformaNo === undefined
+        ? undefined
+        : await documentId(input.againstProformaNo);
+      return options.client.post<PaymentAnswer>(
+        '/api/payments',
+        {
+          flatId,
+          amountPaise: Math.round(input.amountRupees * 100),
+          receivedOn: input.receivedOn,
+          method: input.method,
+          ...(input.reference === undefined || input.reference === ''
+            ? {} : { instrumentRef: input.reference }),
+          ...(input.bankAccountId === undefined || input.bankAccountId === ''
+            ? {} : { bankAccountId: input.bankAccountId }),
+          ...(against === undefined ? {} : { againstDocumentId: against }),
+        },
+        { idempotencyKey: idempotencyKey('ui-receipt') },
+      );
+    }).then(answer => receiptFrom(
+      answer,
+      input.againstProformaNo === undefined ? null : outstandingOn(input.againstProformaNo),
+    )),
+
+    depositAdvance: input => write('Advance', async () => options.client.post<PaymentAnswer>(
+      '/api/payments',
+      {
+        flatId: flatIdFor(input.flatNo),
+        amountPaise: Math.round(input.amountRupees * 100),
+        receivedOn: options.clock.today(),
+        method: methodFor(input.method),
+      },
+      { idempotencyKey: idempotencyKey('ui-advance') },
+    )).then(answer => receiptFrom(answer, null)),
+
+    approveVendorBill: id => write('Vendor approval', async () => {
+      await options.client.post(`/api/vendor-bills/${id}/approve`);
+    }),
+
+    bookVendorBill: id => write('Vendor booking', async () => {
+      await options.client.post(`/api/vendor-bills/${id}/book`, { on: options.clock.today() });
+    }),
+
+    rejectVendorBill: id => Promise.reject(new Error(
+      // There is no reject endpoint yet. Said rather than pretended.
+      `Rejecting bill ${id} is not yet a server action. Nothing was changed.`,
+    )),
+
+    payVendor: input => write('Vendor payment', async () => {
+      await options.client.post(
+        `/api/vendor-bills/${input.id}/pay`,
+        {
+          amountPaise: Math.round(input.amountRupees * 100),
+          paidOn: options.clock.today(),
+          method: 'neft',
+          paymentRef: input.paymentRef,
+        },
+        { idempotencyKey: `ui-vendor-${input.paymentRef}` },
+      );
+    }),
+
+    async bankAccounts(): Promise<readonly BankAccountOption[]> {
+      const listing = await options.client.get<{
+        accounts: ReadonlyArray<{
+          id: string; label: string; bankName: string; accountLast4: string; active: boolean;
+        }>;
+      }>('/api/bank-accounts');
+      return listing.accounts
+        .filter(account => account.active)
+        .map(account => ({
+          id: account.id,
+          label: `${account.label} · ${account.bankName} ••${account.accountLast4}`,
+        }));
+    },
+  };
 
   const store: ServerBooksStore = {
     snapshot,
@@ -268,209 +512,11 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
 
     context: () => context,
 
+    lastView: () => view,
+
     refresh,
 
-    // --- billing ----------------------------------------------------------
-
-    runBillingFor(input) {
-      // The server runs the billing cycle. The local engine's `runBilling`
-      // return shape is what the screens read, so this returns the empty shape
-      // and the figures arrive with the refresh — the alternative is computing
-      // a preview here that might differ from what the server then does.
-      void write('Billing run', async () => {
-        const period = input.period;
-        const issuedOn = input.issuedOn ?? options.clock.today();
-        const result = await options.client.post<{
-          issued: ReadonlyArray<{ flatNo: string; gross: number }>;
-          skipped: ReadonlyArray<{ flatNo: string; why: string }>;
-        }>('/api/billing/run', { period, issuedOn });
-        for (const skipped of result.skipped) {
-          problem(`${skipped.flatNo}: ${skipped.why}`);
-        }
-        await loadDocumentIds();
-        return result;
-      });
-      return { period: input.period, documents: [], skipped: [], totals: { net: 0, tax: 0, gross: 0 } } as unknown as ReturnType<BooksStore['runBillingFor']>;
-    },
-
-    approveDocuments(proformaNos) {
-      void write('Approval', async () => {
-        for (const proformaNo of proformaNos) {
-          const id = await documentId(proformaNo);
-          await options.client.post(`/api/billing/documents/${id}/approve`, {
-            on: options.clock.today(),
-          });
-        }
-      });
-      return { approved: proformaNos.length, refused: 0 };
-    },
-
-    releaseDocument(proformaNo) {
-      void write('Release', async () => {
-        const id = await documentId(proformaNo);
-        const result = await options.client.post<{ delivered: boolean; note: string }>(
-          `/api/billing/documents/${id}/release`,
-          { channel: 'email' },
-        );
-        // The server says whether anything was actually sent. Surfaced either
-        // way, because "released" and "delivered" are different claims.
-        problem(result.note);
-      });
-    },
-
-    convertDueDocuments() {
-      void write('Conversion', async () => {
-        const due = register.all().filter(
-          document => (document.state === 'approved' || document.state === 'released')
-            && document.dueOn <= options.clock.today(),
-        );
-        for (const document of due) {
-          const id = await documentId(document.proformaNo);
-          await options.client.post(`/api/billing/documents/${id}/convert`, {
-            on: options.clock.today(),
-            because: 'due-date-reached',
-          });
-        }
-      });
-      return { converted: 0, refused: 0 };
-    },
-
-    cancelDocument(proformaNo, _by, reason) {
-      void write('Cancellation', async () => {
-        const id = await documentId(proformaNo);
-        await options.client.post(`/api/billing/documents/${id}/cancel`, {
-          reason, on: options.clock.today(),
-        });
-      });
-    },
-
-    // --- receipts ---------------------------------------------------------
-
-    recordMemberPayment(input) {
-      void write('Receipt', async () => {
-        const document = register.all().find(d => d.proformaNo === input.proformaNo);
-        if (document === undefined) throw new Error(`No document ${input.proformaNo}.`);
-        const flatId = flatIds.get(document.flatNo);
-        if (flatId === undefined) throw new Error(`No flat ${document.flatNo} on the server.`);
-
-        const documentServerId = await documentId(input.proformaNo);
-        // Converted first where it has not been: a payment against a proforma
-        // is what raises the tax invoice, and the server will not allocate to
-        // a document that has no receivable.
-        if (document.state !== 'tax-invoice') {
-          await options.client.post(`/api/billing/documents/${documentServerId}/convert`, {
-            on: options.clock.today(), because: 'payment-received',
-          });
-        }
-
-        await options.client.post(
-          '/api/payments',
-          {
-            flatId,
-            amountPaise: Math.round(input.amountRupees * 100),
-            receivedOn: options.clock.today(),
-            method: methodFor(input.method),
-            againstDocumentId: documentServerId,
-          },
-          // The receipt number the screen generated is the idempotency key, so
-          // a double-submit of the same payment is one payment.
-          { idempotencyKey: `ui-receipt-${input.receiptNo}` },
-        );
-      });
-      return { appliedToDues: 0, heldAsAdvance: 0, outstandingAfter: 0, converted: false };
-    },
-
-    applyMemberAdvance() {
-      problem(
-        'Applying an advance by hand is not a server action: an advance is applied to the ' +
-        'next invoice when it is raised.',
-      );
-      return 0 as Paise;
-    },
-
-    depositAdvance(input) {
-      void write('Advance', async () => {
-        const flatId = flatIds.get(input.flatNo);
-        if (flatId === undefined) throw new Error(`No flat ${input.flatNo} on the server.`);
-        await options.client.post(
-          '/api/payments',
-          {
-            flatId,
-            amountPaise: Math.round(input.amountRupees * 100),
-            receivedOn: options.clock.today(),
-            method: methodFor(input.method),
-          },
-          { idempotencyKey: `ui-advance-${input.receiptNo}` },
-        );
-      });
-      return { appliedToDues: 0, heldAsAdvance: 0 };
-    },
-
-    // --- vendors ----------------------------------------------------------
-
-    approveVendorBill(id) {
-      void write('Vendor approval', () => options.client.post(`/api/vendor-bills/${id}/approve`));
-    },
-
-    rejectVendorBill(id, _by, reason) {
-      // There is no reject endpoint: a bill is rejected by recording why, and
-      // the server has no route for it yet. Said rather than pretended.
-      problem(
-        `Rejecting bill ${id} is not yet a server action (${reason}). Nothing was changed.`,
-      );
-    },
-
-    bookApprovedVendorBill(id, _by, _expenseAccount) {
-      void write('Vendor booking', () => options.client.post(`/api/vendor-bills/${id}/book`, {
-        on: options.clock.today(),
-      }));
-    },
-
-    payVendor(input) {
-      void write('Vendor payment', () => options.client.post(
-        `/api/vendor-bills/${input.id}/pay`,
-        {
-          amountPaise: Math.round(input.amountRupees * 100),
-          paidOn: options.clock.today(),
-          method: 'neft',
-          paymentRef: input.paymentRef,
-        },
-        { idempotencyKey: `ui-vendor-${input.paymentRef}` },
-      ));
-    },
-
-    remitWithheldTds(input) {
-      void write('TDS remittance', () => options.client.post(
-        `/api/tds/${quarterOf(options.clock.today())}/remit`,
-        {
-          section: input.section,
-          challanNo: input.challanNo,
-          challanDate: options.clock.today(),
-        },
-        { idempotencyKey: `ui-tds-${input.challanNo}` },
-      ));
-    },
-
-    // --- persistence ------------------------------------------------------
-
-    importSeedOnce(name) {
-      // Demo seeds have no business in a production database, and the server
-      // has no endpoint that would take them.
-      return {
-        imported: false,
-        why: `"${name}" was not imported: the books are on the server, which does not take ` +
-          'sample data.',
-        entriesAdded: 0,
-      };
-    },
-
-    persist() {
-      // Nothing to do: the server wrote it before it answered.
-    },
-
-    resetToEmpty() {
-      problem(UNSUPPORTED);
-    },
+    actions,
 
     exportJson() {
       // The books as the engine's own snapshot, from what the server sent.
@@ -487,11 +533,6 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
         null,
         2,
       );
-    },
-
-    importJson() {
-      problem(UNSUPPORTED);
-      return { entriesRestored: 0, documentsRestored: 0 };
     },
 
     // --- reads ------------------------------------------------------------
@@ -518,7 +559,9 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
     },
 
     async receiptPdf(receiptNo: string): Promise<Blob> {
-      if (paymentIds.size === 0) await loadPaymentIds();
+      // Refetched on a miss: a receipt recorded after the first lookup is not
+      // in the map yet, and "no such receipt" would be wrong.
+      if (!paymentIds.has(receiptNo)) await loadPaymentIds();
       const id = paymentIds.get(receiptNo);
       if (id === undefined) throw new Error(`The server has no receipt ${receiptNo}.`);
       return options.client.pdf(`/api/payments/${id}/pdf`);

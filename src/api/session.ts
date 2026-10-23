@@ -33,20 +33,40 @@ export function apiBase(): string {
  * Whether this build should expect a backend at all.
  *
  * The published demo is a static site with no server behind it, and it has to
- * keep working: `VITE_DATA_SOURCE=demo` says so explicitly, and the default is
- * to try the server and fall back only if it is not there.
+ * keep working: `VITE_DATA_SOURCE=demo` says so explicitly. Left unset, a
+ * production build expects the server — so a deployment that forgot the
+ * variable shows an error rather than quietly showing sample figures — and a
+ * development build tries the server and falls back to the demo if it is not
+ * there.
  */
 export function configuredDataSource(): 'server' | 'demo' | 'auto' {
   const value = readViteEnv('VITE_DATA_SOURCE');
-  return value === 'server' || value === 'demo' ? value : 'auto';
+  if (value === 'server' || value === 'demo') return value;
+  return isProductionBuild() ? 'server' : 'auto';
+}
+
+function isProductionBuild(): boolean {
+  return viteEnv()?.PROD === true;
+}
+
+/**
+ * `import.meta.env`, or undefined outside Vite.
+ *
+ * Written as one expression on purpose. Vite finds `import.meta.env` in the
+ * source text and replaces it (in a build) or defines it (in dev); reading
+ * `import.meta` into a variable first and `.env` off that later hid it from
+ * Vite, so every VITE_ variable read as unset and VITE_DATA_SOURCE did
+ * nothing. Under plain tsc or node it is simply undefined.
+ */
+function viteEnv(): Record<string, unknown> | undefined {
+  return (import.meta as unknown as { env?: Record<string, unknown> }).env;
 }
 
 function readViteEnv(key: string): string | undefined {
   // import.meta.env exists under Vite and not under plain tsc or node, so it
   // is read defensively rather than relied upon.
-  const meta = import.meta as unknown as { env?: Record<string, string | undefined> };
-  const value = meta.env?.[key];
-  return value === undefined || value === '' ? undefined : value;
+  const value = viteEnv()?.[key];
+  return typeof value !== 'string' || value === '' ? undefined : value;
 }
 
 export function createClient(onUnauthenticated?: () => void): ApiClient {

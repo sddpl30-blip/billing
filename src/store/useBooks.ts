@@ -12,8 +12,9 @@
  * screen says it is a demonstration.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { BooksStore } from './booksStore';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { BooksReader, BooksStore } from './booksStore';
+import type { BooksActions } from './actions';
 import type { ServerBooksStore } from './serverStore';
 import { resolveDataSource, type DataSourceKind, type ResolvedDataSource } from './dataSource';
 import type { ApiClient, SessionUser } from '../api/client';
@@ -37,9 +38,15 @@ export interface BooksSession {
 }
 
 export interface UseBooks {
-  readonly status: 'resolving' | 'ready' | 'needs-sign-in';
+  /** 'unavailable' is a required server that did not answer: nothing opens. */
+  readonly status: 'resolving' | 'ready' | 'needs-sign-in' | 'unavailable';
   readonly kind: DataSourceKind | null;
-  readonly store: BooksStore | null;
+  /** What the screens read. */
+  readonly store: BooksReader | null;
+  /** Every write, awaited. */
+  readonly actions: BooksActions | null;
+  /** The local store, in demo mode only, for the demo-only actions. */
+  readonly local: BooksStore | null;
   readonly server: ServerBooksStore | null;
   readonly client: ApiClient | null;
   readonly session: BooksSession | null;
@@ -60,6 +67,12 @@ export interface UseBooksOptions {
   readonly force?: DataSourceKind | 'auto';
   /** The flat the demo shows. Only used when there is no server. */
   readonly demoFlatNo: string;
+  /**
+   * Problems nobody asked about — a refresh that failed, a record the engine
+   * refused — for the screen to show. Read through a ref, so a new function
+   * each render is fine.
+   */
+  readonly onProblem?: (message: string) => void;
 }
 
 export function useBooks(options: UseBooksOptions): UseBooks {
@@ -69,8 +82,16 @@ export function useBooks(options: UseBooksOptions): UseBooks {
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
+  const onProblem = useRef(options.onProblem);
+  onProblem.current = options.onProblem;
 
-  useEffect(() => () => { mounted.current = false; }, []);
+  // Set on mount as well as cleared on unmount: React's development mode
+  // mounts, unmounts and mounts again, and a ref only ever cleared stayed
+  // false after that — so a sign-in in development never finished.
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   // Resolved once. A second resolve would open a second store over the same
   // browser storage, which is how two stores end up disagreeing.
@@ -83,6 +104,9 @@ export function useBooks(options: UseBooksOptions): UseBooks {
           ? {}
           : { vendorInvoices: options.vendorInvoices }),
         ...(options.force === undefined ? {} : { force: options.force }),
+        onProblem: (message: string) => {
+          if (!cancelled && mounted.current) onProblem.current?.(message);
+        },
         onUnauthenticated: () => {
           if (!cancelled && mounted.current) {
             setSession(null);
@@ -96,6 +120,10 @@ export function useBooks(options: UseBooksOptions): UseBooks {
 
       if (source.kind === 'demo') {
         setStatus('ready');
+        return;
+      }
+      if (source.unavailable === true) {
+        setStatus('unavailable');
         return;
       }
 
@@ -165,9 +193,13 @@ export function useBooks(options: UseBooksOptions): UseBooks {
     if (resolved?.server !== undefined) await resolved.server.refresh();
   }, [resolved]);
 
-  const booksSession: BooksSession | null = resolved === null
+  // Memoised on the fields that make it up. A new object each render was a new
+  // dependency each render for every effect that reads the session — one of
+  // which reset the chosen view, so a member with two roles could not switch.
+  const resolvedKind = resolved?.kind ?? null;
+  const booksSession = useMemo((): BooksSession | null => resolvedKind === null
     ? null
-    : resolved.kind === 'demo'
+    : resolvedKind === 'demo'
       ? {
           email: 'demo@localhost',
           // In demo mode the browser holds every role, because there is no
@@ -194,7 +226,8 @@ export function useBooks(options: UseBooksOptions): UseBooks {
             primaryFlatNo: session.flats[0]?.flatNo ?? '',
             view: viewForRoles(session.roles),
             availableViews: viewsAvailable(session.roles),
-          };
+          },
+  [resolvedKind, session, options.demoFlatNo]);
 
   const can = useCallback((permission: string): boolean => {
     if (resolved?.kind === 'demo') return true;
@@ -205,6 +238,8 @@ export function useBooks(options: UseBooksOptions): UseBooks {
     status,
     kind: resolved?.kind ?? null,
     store: resolved?.store ?? null,
+    actions: resolved?.actions ?? null,
+    local: resolved?.local ?? null,
     server: resolved?.server ?? null,
     client: resolved?.client ?? null,
     session: booksSession,

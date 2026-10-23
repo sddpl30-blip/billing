@@ -10,15 +10,16 @@
  *    browser. The published demonstration site has no backend behind it and
  *    has to keep working; this is that, and it is labelled as that.
  *
- * `VITE_DATA_SOURCE` forces one. Left unset, the app asks the server whether
- * it is there and uses it if so. A deployment that means to be production
- * should set `VITE_DATA_SOURCE=server`, because then a server that cannot be
- * reached is an error on screen rather than a silent fall back to sample data
- * — which is the failure worth preventing: a committee looking at demo
- * figures and believing them.
+ * `VITE_DATA_SOURCE` forces one. Left unset, a production build expects the
+ * server (see `configuredDataSource`) and a development build asks the server
+ * whether it is there and uses it if so. When the server is expected and
+ * cannot be reached, that is an error on screen — the app does not open — and
+ * not a silent fall back to sample data, which is the failure worth
+ * preventing: a committee looking at demo figures and believing them.
  */
 
-import { createBooksStore, type BooksStore } from './booksStore';
+import { createBooksStore, type BooksReader, type BooksStore } from './booksStore';
+import { localActions, type BooksActions } from './actions';
 import { browserStorage, resolveRepository } from './repository';
 import { createServerStore, type ServerBooksStore } from './serverStore';
 import { systemClock, type Clock } from '../accounting';
@@ -30,7 +31,12 @@ export type DataSourceKind = 'server' | 'demo';
 
 export interface ResolvedDataSource {
   readonly kind: DataSourceKind;
-  readonly store: BooksStore;
+  /** What every screen reads. */
+  readonly store: BooksReader;
+  /** Every write, awaited, whichever books they go to. */
+  readonly actions: BooksActions;
+  /** The local store itself. Present in demo mode only. */
+  readonly local?: BooksStore;
   /** Present in server mode only. */
   readonly server?: ServerBooksStore;
   readonly client?: ApiClient;
@@ -40,6 +46,12 @@ export interface ResolvedDataSource {
   readonly note: string;
   /** Set when the app wanted the server and could not have it. */
   readonly error?: string;
+  /**
+   * True when the server was required and did not answer. The app shows an
+   * error and nothing else: no sample data, and no buttons that would act on
+   * books that are not there.
+   */
+  readonly unavailable?: boolean;
 }
 
 export interface ResolveOptions {
@@ -51,16 +63,9 @@ export interface ResolveOptions {
   readonly force?: DataSourceKind | 'auto';
 }
 
-function demoSource(reason: string, error?: string): ResolvedDataSource {
-  return {
-    kind: 'demo',
-    store: lastDemoStore as BooksStore,
-    note: reason,
-    ...(error === undefined ? {} : { error }),
-  };
+function demoSource(store: BooksStore, reason: string): ResolvedDataSource {
+  return { kind: 'demo', store, local: store, actions: localActions(store), note: reason };
 }
-
-let lastDemoStore: BooksStore | null = null;
 
 export async function resolveDataSource(
   options: ResolveOptions = {},
@@ -68,19 +73,16 @@ export async function resolveDataSource(
   const clock = options.clock ?? systemClock;
   const choice = options.force ?? configuredDataSource();
 
-  const makeDemo = (): BooksStore => {
-    lastDemoStore = createBooksStore({
-      clock,
-      repository: resolveRepository(browserStorage()),
-      mode: 'demo',
-      ...(options.vendorInvoices === undefined ? {} : { vendorInvoices: options.vendorInvoices }),
-    });
-    return lastDemoStore;
-  };
+  const makeDemo = (): BooksStore => createBooksStore({
+    clock,
+    repository: resolveRepository(browserStorage()),
+    mode: 'demo',
+    ...(options.vendorInvoices === undefined ? {} : { vendorInvoices: options.vendorInvoices }),
+  });
 
   if (choice === 'demo') {
-    makeDemo();
     return demoSource(
+      makeDemo(),
       'Demonstration data, kept in this browser. No server is configured for this build.',
     );
   }
@@ -90,24 +92,34 @@ export async function resolveDataSource(
     ...(options.onUnauthenticated === undefined ? {} : { onUnauthenticated: options.onUnauthenticated }),
   });
   const health = await probe(client);
+  const server = (): ServerBooksStore => createServerStore({
+    client,
+    clock,
+    ...(options.onProblem === undefined ? {} : { onProblem: options.onProblem }),
+  });
 
   if (!health.reachable || !health.databaseReachable) {
     if (choice === 'server') {
-      // Asked for the server explicitly, so this is an error and not a
-      // fallback. Showing sample data here is how a committee ends up
-      // reading figures that belong to nobody.
-      makeDemo();
+      // Asked for the server, so this is an error and not a fallback. No demo
+      // store is opened at all: sample data here is how a committee ends up
+      // reading figures that belong to nobody, and demo buttons here would
+      // look like they acted on the association's books.
+      const empty = server();
       return {
-        ...demoSource(
-          'The server could not be reached, so nothing here is this association’s data.',
-          health.why ?? 'the API did not answer',
-        ),
+        kind: 'server',
+        store: empty,
+        actions: empty.actions,
+        server: empty,
+        client,
         health,
+        note: 'The SocietyBooks server could not be reached.',
+        error: health.why ?? 'the API did not answer',
+        unavailable: true,
       };
     }
-    makeDemo();
     return {
       ...demoSource(
+        makeDemo(),
         'Demonstration data, kept in this browser. No SocietyBooks server answered, so the ' +
         'sample society is being shown.',
       ),
@@ -115,16 +127,12 @@ export async function resolveDataSource(
     };
   }
 
-  const server = createServerStore({
-    client,
-    clock,
-    ...(options.onProblem === undefined ? {} : { onProblem: options.onProblem }),
-  });
-
+  const connected = server();
   return {
     kind: 'server',
-    store: server,
-    server,
+    store: connected,
+    actions: connected.actions,
+    server: connected,
     client,
     health,
     note: `Connected to the SocietyBooks server (schema ${health.schemaVersion ?? 'unknown'}).`,

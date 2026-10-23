@@ -162,6 +162,18 @@ export interface BooksStore {
   journal(): readonly JournalEntry[];
 }
 
+/**
+ * The part of a store every screen may read, whichever books it is on.
+ *
+ * The server store implements only this, plus awaited writes (see
+ * actions.ts): its answers arrive a round trip later, so it cannot honestly
+ * implement the synchronous write methods above.
+ */
+export type BooksReader = Pick<
+  BooksStore,
+  'snapshot' | 'subscribe' | 'exportJson' | 'documentsFor' | 'allDocuments' | 'positionOf' | 'journal'
+>;
+
 const TDS_SECTION_FOR_RATE = (rate: number): TdsSection =>
   rate === 0 ? 'none' : rate >= 10 ? '194J' : '194C';
 
