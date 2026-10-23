@@ -71,6 +71,7 @@ import {
 import type { TicketResponse } from './api/client';
 import type { OfficeContext } from './components/office/types';
 import { SetupGate } from './components/SetupScreen';
+import { ScheduledRelease } from './components/ScheduledRelease';
 import { LoginScreen } from './components/LoginScreen';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import { downloadInvoice, pdfFilename, saveBlob } from './invoiceExport';
@@ -702,6 +703,12 @@ export default function App() {
   /** Whether this account may record a receipt. In demo every view may. */
   const mayRecordReceipts = !onServer || booksSource.can('payment.record');
   const mayPayOnline = !onServer || booksSource.can('payment.record');
+  // Periods with approved proformas not yet released: what a 6 am release
+  // would send.
+  const approvedPeriods = useMemo(
+    () => [...new Set(registerDocuments.filter(d => d.state === 'approved').map(d => d.period))],
+    [registerDocuments],
+  );
 
   // The Office is server-only (it is the API's own screens) and not for the
   // resident view; OfficeHub then offers only the sections this account's
@@ -2265,6 +2272,17 @@ export default function App() {
                         onReleaseApproved={handleReleaseApproved}
                         onConvertDue={handleConvertDue}
                       />
+                      {onServer && booksSource.client !== null && (booksSource.can('billing.release') || booksSource.can('report.read')) && (
+                        <div className="mt-4">
+                          <ScheduledRelease
+                            client={booksSource.client}
+                            approvedPeriods={approvedPeriods}
+                            mayRelease={booksSource.can('billing.release')}
+                            toast={triggerToast}
+                            reload={() => booksSource.reload()}
+                          />
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -3596,6 +3614,17 @@ export default function App() {
                     onConvertDue={handleConvertDue}
                     compact
                   />
+                  {onServer && booksSource.client !== null && (booksSource.can('billing.release') || booksSource.can('report.read')) && (
+                    <div className="mt-4">
+                      <ScheduledRelease
+                        client={booksSource.client}
+                        approvedPeriods={approvedPeriods}
+                        mayRelease={booksSource.can('billing.release')}
+                        toast={triggerToast}
+                        reload={() => booksSource.reload()}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 

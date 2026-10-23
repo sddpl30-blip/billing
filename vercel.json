@@ -13,7 +13,7 @@
   "crons": [
     {
       "path": "/api/cron/run",
-      "schedule": "17 1 * * *"
+      "schedule": "30 0 * * *"
     }
   ],
   "rewrites": [

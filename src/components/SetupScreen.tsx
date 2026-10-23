@@ -37,12 +37,16 @@ export function SetupGate({ client, children }: { client: ApiClient; children: R
       </>
     );
   }
-  if (!status.required) return <>{children}</>;
-  return <SetupForm client={client} open={status.open} onDone={setCreated} />;
+  // Setup that is needed but closed (no SETUP_TOKEN) is not something this
+  // browser can do anything about, and a database holding only the demo
+  // society is in exactly that state; blocking sign-in there locked people out
+  // of the demo. The terminal route, db:bootstrap, is documented elsewhere.
+  if (!status.required || !status.open) return <>{children}</>;
+  return <SetupForm client={client} onDone={setCreated} />;
 }
 
-function SetupForm({ client, open, onDone }: {
-  client: ApiClient; open: boolean; onDone: (secretaryEmail: string) => void;
+function SetupForm({ client, onDone }: {
+  client: ApiClient; onDone: (secretaryEmail: string) => void;
 }) {
   const [form, setForm] = useState({
     token: '', societyName: '', registrationNo: '', gstin: '', stateCode: '',
@@ -131,13 +135,6 @@ function SetupForm({ client, open, onDone }: {
             maintenance rate from the Office.
           </p>
 
-          {!open ? (
-            <p role="alert" className="text-sm rounded-xl border border-[var(--mv-border)] p-4">
-              Setup from this page is closed because <code>SETUP_TOKEN</code> is not set in the deployment.
-              Add it (at least 16 characters) in the hosting settings and redeploy, or run{' '}
-              <code>npm run db:bootstrap</code> from a terminal.
-            </p>
-          ) : (
             <form onSubmit={e => { void submit(e); }} className="space-y-5" noValidate={false}>
               <fieldset className="space-y-3">
                 <legend className="text-xs font-bold uppercase tracking-wider mb-2">Society</legend>
@@ -185,7 +182,6 @@ function SetupForm({ client, open, onDone }: {
                 {busy ? 'Setting up…' : 'Create the society'}
               </button>
             </form>
-          )}
         </div>
       </div>
     </div>

@@ -18,6 +18,7 @@ import { createRoutes } from './routes';
 import { createAdminRoutes } from './routesAdmin';
 import { createCronRoutes } from './routesCron';
 import { createSetupRoutes } from './routesSetup';
+import { createScheduleRoutes } from './routesSchedule';
 import { AuthService } from './auth';
 import { resolveOtpProvider, type OtpProvider } from './providers/otp';
 import { resolveEmailProvider, type EmailProvider } from './providers/email';
@@ -93,6 +94,7 @@ export function buildApp(
     // deployment run the same routes.
     ...createCronRoutes({ pool, config, log, email }),
     ...createSetupRoutes({ pool, config, log }),
+    ...createScheduleRoutes({ pool }),
   ];
 
   const { server, handler } = createApp(routes, {

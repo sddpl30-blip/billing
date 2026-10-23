@@ -232,7 +232,7 @@ There is no process to keep a timer in, so the worker is replaced by an
 endpoint the platform calls: `GET /api/cron/run`, declared in `vercel.json`.
 
 ```json
-"crons": [{ "path": "/api/cron/run", "schedule": "17 1 * * *" }]
+"crons": [{ "path": "/api/cron/run", "schedule": "30 0 * * *" }]
 ```
 
 **What it does and does not do.** A pass drains jobs that somebody with
@@ -295,7 +295,7 @@ thing in this whole deployment that money fixes. (The schedule in
 `vercel.json` is deliberately daily so that a Hobby deployment is not rejected
 outright; Vercel refuses a too-frequent schedule at deploy time.)
 
-Cron schedules are UTC. `17 1 * * *` is 06:47 IST.
+Cron schedules are UTC. `30 0 * * *` is 06:00 IST, the time a scheduled release goes out (on Hobby, Vercel may fire it any time within that hour).
 
 ---
 

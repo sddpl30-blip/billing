@@ -3160,6 +3160,76 @@ await check('and this society\'s books tie after all of it', async () => {
 
 // --- one last consistency sweep --------------------------------------------
 
+suite('scheduled release at 6 am');
+
+// The approach note: the treasurer approves the batch, and it is released
+// and e-mailed at 06:00 IST on the 1st.
+const releasePeriod = 'Feb 2027';
+let scheduledReleaseId = null;
+const indiaToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+
+await check('a batch is raised and approved for the period', async () => {
+  const run = await manager.post('/api/billing/run', { period: releasePeriod, issuedOn: '2027-02-01' });
+  equal(run.status, 201, 'billing run');
+  for (const document of run.body.issued) {
+    const r = await treasurer.post(`/api/billing/documents/${document.documentId}/approve`, { on: '2027-02-01' });
+    equal(r.status, 200, `approving ${document.flatNo}`);
+  }
+});
+
+await check('a manager cannot schedule the release; it is the treasurer\'s', async () => {
+  const r = await manager.post(`/api/billing/periods/${encodeURIComponent(releasePeriod)}/schedule-release`, { on: indiaToday });
+  equal(r.status, 403, 'status');
+});
+
+await check('a release cannot be scheduled for a date that has passed', async () => {
+  const r = await treasurer.post(`/api/billing/periods/${encodeURIComponent(releasePeriod)}/schedule-release`, { on: '2020-01-01' });
+  equal(r.status, 400, 'status');
+});
+
+await check('the treasurer schedules it for 06:00 IST', async () => {
+  const r = await treasurer.post(`/api/billing/periods/${encodeURIComponent(releasePeriod)}/schedule-release`, { on: indiaToday });
+  equal(r.status, 201, 'status');
+  equal(r.body.scheduledFor, `${indiaToday}T06:00:00+05:30`, 'six in the morning, India time');
+  truthy(r.body.approvedNow > 0, 'approved proformas waiting');
+  scheduledReleaseId = r.body.id;
+  const again = await treasurer.post(`/api/billing/periods/${encodeURIComponent(releasePeriod)}/schedule-release`, { on: indiaToday });
+  equal(again.status, 409, 'a second schedule for the same period is refused');
+});
+
+await check('a scheduled release can be cancelled and set again', async () => {
+  const cancelled = await treasurer.post(`/api/billing/scheduled-releases/${scheduledReleaseId}/cancel`);
+  equal(cancelled.status, 200, 'cancelled');
+  const r = await treasurer.post(`/api/billing/periods/${encodeURIComponent(releasePeriod)}/schedule-release`, { on: indiaToday });
+  equal(r.status, 201, 'scheduled again');
+  scheduledReleaseId = r.body.id;
+  const list = await treasurer.get('/api/billing/scheduled-releases');
+  truthy(list.body.releases.some(x => x.id === scheduledReleaseId && x.state === 'pending'), 'listed as pending');
+});
+
+await check('at the time, the approved proformas are released and their emails queued', async () => {
+  // Brought forward, so the check does not depend on the hour it runs at.
+  psql(`UPDATE scheduled_jobs SET scheduled_for = now() - interval '1 minute' WHERE id = '${scheduledReleaseId}';`);
+  const summary = await runDueJobs(jobContext, { worker: `release-${stamp}` });
+  truthy(summary.succeeded >= 1, `the job ran: ${JSON.stringify(summary)}`);
+
+  const states = psql(
+    `SELECT string_agg(DISTINCT state, ',') FROM billing_documents
+      WHERE society_id = '${fixture.societyId}' AND period = '${releasePeriod}';`,
+  );
+  equal(states.out, 'released', 'every approved proforma is released');
+  const queued = psql(
+    `SELECT count(*) FROM notifications
+      WHERE society_id = '${fixture.societyId}' AND template = 'invoice-issued'
+        AND payload->>'period' = '${releasePeriod}' AND payload->>'kind' = 'proforma';`,
+  );
+  truthy(Number(queued.out) > 0, 'an email per owner is queued, as a proforma');
+  const list = await treasurer.get('/api/billing/scheduled-releases');
+  const done = list.body.releases.find(x => x.id === scheduledReleaseId);
+  equal(done.state, 'succeeded', 'the release is recorded as done');
+  truthy(done.result.released > 0, 'with how many went out');
+});
+
 suite('consistency');
 
 await check('the trial balance ties out over everything this suite did', async () => {

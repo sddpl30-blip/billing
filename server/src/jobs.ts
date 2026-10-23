@@ -24,7 +24,7 @@ import { generateDocument } from './documents';
 import { gstTreatment, invoicePrefix } from './settings';
 import { audit } from './audit';
 
-export type JobKind = 'monthly-billing' | 'due-date-conversion' | 'notification-dispatch';
+export type JobKind = 'monthly-billing' | 'due-date-conversion' | 'notification-dispatch' | 'scheduled-release';
 
 export interface Job {
   readonly id: string;
@@ -202,7 +202,7 @@ const notificationDispatch: Handler = async (job, ctx) => {
   let attached = 0;
   for (const notification of queued.rows) {
     const payload = JSON.parse(notification.payload) as {
-      text?: unknown; documentId?: unknown; reference?: unknown;
+      text?: unknown; documentId?: unknown; reference?: unknown; kind?: unknown;
     };
     try {
       // The document itself, attached. Generated from the stored render
@@ -215,7 +215,10 @@ const notificationDispatch: Handler = async (job, ctx) => {
           const generated = await ctx.pool.transaction(async (tx) =>
             generateDocument(tx, {
               societyId,
-              kind: 'tax-invoice',
+              // A proforma sent at release is not a tax invoice yet. This was
+              // always 'tax-invoice', so a released proforma's attachment
+              // failed and the bill went out without its PDF.
+              kind: payload.kind === 'proforma' ? 'proforma' : 'tax-invoice',
               documentId: payload.documentId as string,
               asAt: ctx.now(),
             }));
@@ -266,10 +269,124 @@ const notificationDispatch: Handler = async (job, ctx) => {
   };
 };
 
+/**
+ * Releases a period's approved proformas and emails them, at the time the
+ * treasurer chose — the approach note's "e-mailed at 6:00 am on the 1st".
+ *
+ * Only what is approved when the job runs is released; a draft is left for
+ * its approver and counted in the result, so the batch report says which
+ * flats did not go out and why. The emails are queued in the same
+ * transaction as the release and then sent straight away by the dispatcher,
+ * so a release and its notice cannot drift apart.
+ */
+const scheduledRelease: Handler = async (job, ctx) => {
+  const societyId = job.societyId;
+  if (societyId === null) throw new Error('a release job must name a society');
+  const period = job.payload.period;
+  const requestedBy = typeof job.payload.requestedBy === 'string' ? job.payload.requestedBy : null;
+  if (typeof period !== 'string') throw new Error('this job needs payload.period');
+
+  const released = await ctx.pool.transaction(async (tx) => {
+    const documents = await tx.query<{
+      id: string; proforma_no: string; gross: string; due_on: string; flat_no: string;
+      owner_email: string | null; to_user: string | null;
+    }>(
+      `SELECT d.id, d.proforma_no, d.gross::text, d.due_on::text, f.flat_no,
+              o.email AS owner_email, u.id AS to_user
+         FROM billing_documents d
+         JOIN flats f ON f.id = d.flat_id
+         LEFT JOIN flat_ownership fo
+                ON fo.flat_id = d.flat_id AND fo.role = 'owner' AND fo.held_until IS NULL
+         LEFT JOIN owners o ON o.id = fo.owner_id
+         LEFT JOIN users u ON u.owner_id = o.id AND u.is_active
+        WHERE d.society_id = $1 AND d.period = $2 AND d.state = 'approved'
+        ORDER BY f.flat_no
+        FOR UPDATE OF d`,
+      [societyId, period],
+    );
+    const drafts = await tx.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM billing_documents
+        WHERE society_id = $1 AND period = $2 AND state = 'draft'`,
+      [societyId, period],
+    );
+
+    const withoutAnAddress: string[] = [];
+    for (const document of documents.rows) {
+      await tx.query(`UPDATE billing_documents SET state = 'released' WHERE id = $1`, [document.id]);
+      if (document.owner_email === null) {
+        withoutAnAddress.push(document.flat_no);
+        await tx.query(
+          `INSERT INTO dispatch_attempts (document_id, by_user, channel, delivered, failure, note)
+           VALUES ($1, $2, 'in-app', false, 'no-recipient',
+                   'Released by the scheduled send. No current owner email on record, so nothing was emailed.')`,
+          [document.id, requestedBy],
+        );
+        continue;
+      }
+      await tx.query(
+        `INSERT INTO dispatch_attempts (document_id, by_user, channel, delivered, note)
+         VALUES ($1, $2, 'email', false,
+                 'Released by the scheduled send and queued for email; the notifications log records delivery.')`,
+        [document.id, requestedBy],
+      );
+      await tx.query(
+        `INSERT INTO notifications
+           (society_id, channel, template, to_user, to_address, subject, payload)
+         VALUES ($1, 'email', 'invoice-issued', $2, $3, $4, $5::jsonb)`,
+        [
+          societyId, document.to_user, document.owner_email,
+          `Maintenance bill ${document.proforma_no} — flat ${document.flat_no}, ${period}`,
+          JSON.stringify({
+            documentId: document.id,
+            kind: 'proforma',
+            flatNo: document.flat_no,
+            reference: document.proforma_no,
+            period,
+            dueOn: document.due_on,
+            grossPaise: Number(document.gross),
+            text:
+              `Flat ${document.flat_no} — ${period}\n` +
+              `Proforma: ${document.proforma_no}\n` +
+              `Amount: INR ${(Number(document.gross) / 100).toFixed(2)}\n` +
+              `Due: ${document.due_on}\n\n` +
+              'The proforma invoice is attached. A tax invoice is issued when you pay, or on the due date.\n',
+          }),
+        ],
+      );
+    }
+
+    await audit(tx, {
+      societyId,
+      actorUser: requestedBy,
+      actorLabel: 'scheduled release',
+      action: 'billing.release',
+      subjectTable: 'billing_documents',
+      subjectId: period,
+      detail: {
+        scheduled: true,
+        released: documents.rows.length,
+        withoutAnAddress: withoutAnAddress.length,
+        draftsLeft: Number(drafts.rows[0]?.n ?? '0'),
+      },
+    });
+
+    return {
+      released: documents.rows.length,
+      withoutAnAddress,
+      draftsLeft: Number(drafts.rows[0]?.n ?? '0'),
+    };
+  });
+
+  // The emails, now rather than at the next dispatch run.
+  const dispatched = await notificationDispatch(job, ctx);
+  return { summary: { period, ...released, dispatch: dispatched.summary } };
+};
+
 export const HANDLERS: Record<JobKind, Handler> = {
   'monthly-billing': monthlyBilling,
   'due-date-conversion': dueDateConversion,
   'notification-dispatch': notificationDispatch,
+  'scheduled-release': scheduledRelease,
 };
 
 /**
