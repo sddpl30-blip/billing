@@ -52,11 +52,13 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
               </td>
               <td className={`${cellClass} break-words`}>{f.owner ?? <span className="text-[var(--mv-muted)]">no current owner</span>}</td>
               <td className={`${cellClass} whitespace-nowrap`}>
-                {f.billingAreaSqFt === null ? '—' : `${f.billingAreaSqFt.toLocaleString('en-IN')} sq ft ${f.areaBasis ?? ''}`}
+                {f.billingAreaSqFt === null ? '—' : `${f.billingAreaSqFt.toLocaleString('en-IN')} sq ft ${f.areaBasis ?? '· basis pending verification'}`}
               </td>
               <td className={cellClass}>
                 <div className="flex flex-wrap gap-1">
-                  {f.billable ? <Badge tone="ok">Billable</Badge> : <Badge tone="warn">No area — cannot bill</Badge>}
+                  {f.billable
+                    ? <Badge tone="ok">Billable</Badge>
+                    : <Badge tone="warn">{f.billingAreaSqFt === null ? 'No area — cannot bill' : 'Basis pending — cannot bill'}</Badge>}
                   {f.nonOccupied && <Badge tone="muted">Non-occupied</Badge>}
                 </div>
               </td>
