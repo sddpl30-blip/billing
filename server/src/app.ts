@@ -22,6 +22,7 @@ import { resolveOtpProvider, type OtpProvider } from './providers/otp';
 import { resolveEmailProvider, type EmailProvider } from './providers/email';
 import { unconfiguredBankApi } from './providers/bank';
 import { startWorker, type Worker } from './jobs';
+import { isoDateInIndia } from '../../src/accounting/clock';
 import type { Server } from 'node:http';
 
 export interface App {
@@ -100,7 +101,11 @@ export function buildApp(
 
   const worker = options.runWorker === true
     ? startWorker(
-        { pool, log: log.child({ component: 'scheduler' }), email, now: () => new Date().toISOString().slice(0, 10) },
+        // The scheduler's "today" is India's, not UTC's. In UTC the first
+        // five and a half hours of every Indian day are still yesterday, so a
+        // job run just after midnight IST converted due bills and stamped
+        // jobs with the previous day's date.
+        { pool, log: log.child({ component: 'scheduler' }), email, now: () => isoDateInIndia() },
         {
           worker: `${env.HOSTNAME ?? 'worker'}:${process.pid}`,
           intervalMs: options.workerIntervalMs ?? 60_000,
