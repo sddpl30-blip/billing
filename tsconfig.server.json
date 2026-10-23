@@ -1,0 +1,33 @@
+{
+  // The backend build. Separate from the app and the engine configs: this
+  // targets node, has no DOM, and emits runnable JavaScript.
+  //
+  // moduleResolution is omitted deliberately, as in tsconfig.accounting.json —
+  // pairing "bundler" with CommonJS is rejected by the TypeScript version this
+  // project pins, and omitting it lets each compiler use its own default.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+    "skipLibCheck": true,
+    "outDir": ".server-build",
+    // Rooted at the repository so the server can import the accounting engine
+    // from src/accounting rather than reimplementing its arithmetic. Entry
+    // points land at .server-build/server/src/*.js.
+    "rootDir": ".",
+    "types": []
+  },
+  "include": ["server/src/**/*.ts", "src/accounting/**/*.ts", "api/**/*.ts"],
+  "exclude": [
+    "src/accounting/selftest.ts",
+    "src/accounting/integration.test.ts",
+    "src/accounting/persistence.test.ts",
+    "src/accounting/demo.ts"
+  ]
+}

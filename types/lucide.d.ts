@@ -1,0 +1,37 @@
+declare module 'lucide-react' {
+  import { FC, SVGProps } from 'react';
+  export type LucideIcon = FC<SVGProps<SVGSVGElement> & { size?: number | string }>;
+  export const AlertCircle: LucideIcon;
+  export const ArrowRight: LucideIcon;
+  export const Bell: LucideIcon;
+  export const BookOpen: LucideIcon;
+  export const Check: LucideIcon;
+  export const CheckCircle: LucideIcon;
+  export const ChevronLeft: LucideIcon;
+  export const ChevronRight: LucideIcon;
+  export const Clock: LucideIcon;
+  export const CreditCard: LucideIcon;
+  export const Database: LucideIcon;
+  export const Download: LucideIcon;
+  export const Edit3: LucideIcon;
+  export const ExternalLink: LucideIcon;
+  export const FileSpreadsheet: LucideIcon;
+  export const FileText: LucideIcon;
+  export const HelpCircle: LucideIcon;
+  export const Home: LucideIcon;
+  export const Lock: LucideIcon;
+  export const Mail: LucideIcon;
+  export const Menu: LucideIcon;
+  export const Plus: LucideIcon;
+  export const Printer: LucideIcon;
+  export const Receipt: LucideIcon;
+  export const RefreshCw: LucideIcon;
+  export const Send: LucideIcon;
+  export const ShieldCheck: LucideIcon;
+  export const Trash2: LucideIcon;
+  export const TrendingUp: LucideIcon;
+  export const Unlock: LucideIcon;
+  export const User: LucideIcon;
+  export const Users: LucideIcon;
+  export const X: LucideIcon;
+}

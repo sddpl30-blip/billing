@@ -1,0 +1,1412 @@
+// SocietyBooks — Prisma schema.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// NOT GENERATED, NOT VALIDATED BY PRISMA IN THIS REPOSITORY.
+//
+// `prisma generate`, `prisma validate` and `prisma migrate` have never been run
+// against this file. The environment it was written in has no reachable npm
+// registry, so neither `prisma` nor `@prisma/client` could be installed, and
+// binaries.prisma.sh is unreachable so the query engine could not be fetched
+// either. Run `npx prisma validate` as the first thing you do with it.
+//
+// It is a faithful transcription of server/migrations/001–004, which HAVE been
+// applied to PostgreSQL 16.13 and are covered by 101 passing constraint tests.
+// Where the two could differ, the SQL is authoritative — it is the thing that
+// has been executed.
+//
+// Several guarantees in those migrations CANNOT be expressed here, and Prisma
+// will not enforce them:
+//   · the deferred constraint triggers that make an unbalanced journal entry
+//     impossible to commit, and that make a receipt add up to its allocations
+//   · the trigger that refuses a posting into a closed financial period
+//   · the trigger requiring a party on a control-account posting
+//   · the DO INSTEAD NOTHING rules that make journal entries, postings, audit
+//     rows, payments and ticket events undeletable
+//   · most multi-column CHECK constraints
+//   · partial unique indexes, which Prisma models only as raw SQL
+// `prisma migrate` must therefore not be used to create this schema from
+// scratch: it would produce a database missing every one of those. Keep the
+// SQL migrations as the migration path and use Prisma as a typed client over
+// the result, with `prisma db pull` to refresh this file.
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Societies and configuration ─────────────────────────────────────────────
+
+enum SocietyMode {
+  demo
+  production
+}
+
+model Society {
+  id                      String      @id @default(uuid()) @db.Uuid
+  name                    String
+  /// Demo rows hold sample data. The application refuses to load one mode's
+  /// books into the other.
+  mode                    SocietyMode
+  registrationNo          String?     @map("registration_no")
+  /// Null until the association supplies its own. Never a sample value: a
+  /// GSTIN on a tax invoice is a legal assertion.
+  gstin                   String?
+  stateCode               String?     @map("state_code")
+  financialYearStartMonth Int         @default(4) @map("financial_year_start_month") @db.SmallInt
+  createdAt               DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  settings          SocietySetting[]
+  towers            Tower[]
+  flats             Flat[]
+  owners            Owner[]
+  users             User[]
+  accounts          Account[]
+  receiptHeads      ReceiptHead[]
+  journalEntries    JournalEntry[]
+  billingDocuments  BillingDocument[]
+  adjustments       InvoiceAdjustment[]
+  payments          Payment[]
+  maintenanceRates  MaintenanceRate[]
+  vendors           Vendor[]
+  vendorBills       VendorBill[]
+  vendorPayments    VendorPayment[]
+  bankAccounts      BankAccount[]
+  statementImports  StatementImport[]
+  bankTransactions  BankTransaction[]
+  reconciliations   BankReconciliation[]
+  virtualAccounts   VirtualAccount[]
+  fixedDeposits     FixedDeposit[]
+  events            Event[]
+  ticketCategories  TicketCategory[]
+  tickets           Ticket[]
+  attachments       Attachment[]
+  generatedDocs     GeneratedDocument[]
+  notifications     Notification[]
+  resolutions       Resolution[]
+  approvals         Approval[]
+  periods           FinancialPeriod[]
+  scheduledJobs     ScheduledJob[]
+  auditLog          AuditLogEntry[]
+  gstRegister       GstRegisterRow[]
+  tdsRegister       TdsRegisterRow[]
+
+  @@map("societies")
+}
+
+model SocietySetting {
+  societyId  String   @map("society_id") @db.Uuid
+  key        String
+  value      Json
+  /// Null for any setting a CA has not signed off. The billing path refuses to
+  /// use an unapproved tax treatment rather than defaulting to one.
+  approvedBy String?  @map("approved_by") @db.Uuid
+  approvedOn DateTime? @map("approved_on") @db.Date
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  note       String?
+
+  society  Society @relation(fields: [societyId], references: [id])
+  approver User?   @relation(fields: [approvedBy], references: [id])
+
+  @@id([societyId, key])
+  @@map("society_settings")
+}
+
+// ── Towers, flats, owners ───────────────────────────────────────────────────
+
+model Tower {
+  id        String  @id @default(uuid()) @db.Uuid
+  societyId String  @map("society_id") @db.Uuid
+  name      String
+  floors    Int?    @db.SmallInt
+
+  society Society @relation(fields: [societyId], references: [id])
+  flats   Flat[]
+
+  @@unique([societyId, name])
+  @@map("towers")
+}
+
+enum AreaBasis {
+  carpet
+  built_up       @map("built-up")
+  super_built_up @map("super-built-up")
+}
+
+model Flat {
+  id        String  @id @default(uuid()) @db.Uuid
+  societyId String  @map("society_id") @db.Uuid
+  flatNo    String  @map("flat_no")
+  wing      String?
+  floor     Int?    @db.SmallInt
+  towerId   String? @map("tower_id") @db.Uuid
+  /// Nullable on purpose. A flat with no recorded area cannot be billed and
+  /// the application refuses rather than guessing.
+  billingAreaSqft Decimal? @map("billing_area_sqft") @db.Decimal(10, 2)
+  /// Also nullable, and for a sharper reason: the same rupee rate over carpet
+  /// area and over super built-up area differs by roughly a third.
+  areaBasis   AreaBasis? @map("area_basis")
+  nonOccupied Boolean    @default(false) @map("non_occupied")
+
+  society          Society           @relation(fields: [societyId], references: [id])
+  tower            Tower?            @relation(fields: [towerId], references: [id])
+  ownerships       FlatOwnership[]
+  billingDocuments BillingDocument[]
+  payments         Payment[]
+  virtualAccounts  VirtualAccount[]
+  tickets          Ticket[]
+  contributions    EventContribution[]
+
+  @@unique([societyId, flatNo])
+  @@map("flats")
+}
+
+model Owner {
+  id        String   @id @default(uuid()) @db.Uuid
+  societyId String   @map("society_id") @db.Uuid
+  fullName  String   @map("full_name")
+  email     String
+  phone     String?
+  pan       String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  society    Society         @relation(fields: [societyId], references: [id])
+  ownerships FlatOwnership[]
+  users      User[]
+
+  @@unique([societyId, email])
+  @@map("owners")
+}
+
+enum OccupancyRole {
+  owner
+  co_owner @map("co-owner")
+  tenant
+}
+
+/// An owner may hold several flats and a flat changes hands, so the mapping is
+/// its own table with dates. A partial unique index in SQL allows only one open
+/// row per flat per role — two open rows is how a previous owner's arrears
+/// attach to a new one. Prisma cannot express that index; see the header.
+model FlatOwnership {
+  id        String        @id @default(uuid()) @db.Uuid
+  flatId    String        @map("flat_id") @db.Uuid
+  ownerId   String        @map("owner_id") @db.Uuid
+  role      OccupancyRole
+  heldFrom  DateTime      @map("held_from") @db.Date
+  heldUntil DateTime?     @map("held_until") @db.Date
+
+  flat  Flat  @relation(fields: [flatId], references: [id])
+  owner Owner @relation(fields: [ownerId], references: [id])
+
+  @@index([ownerId])
+  @@map("flat_ownership")
+}
+
+// ── Identity, roles, sessions ───────────────────────────────────────────────
+
+enum SocietyRole {
+  resident
+  manager
+  treasurer
+  secretary
+  auditor
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  societyId    String    @map("society_id") @db.Uuid
+  email        String
+  /// A hash and its parameters, or null for an account that signs in by
+  /// emailed one-time code only. There is deliberately no column anywhere in
+  /// this schema that could hold a demo PIN.
+  passwordHash String?   @map("password_hash")
+  ownerId      String?   @map("owner_id") @db.Uuid
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz
+
+  society          Society          @relation(fields: [societyId], references: [id])
+  owner            Owner?           @relation(fields: [ownerId], references: [id])
+  roles            UserRole[]
+  sessions         Session[]
+  loginCodes       LoginCode[]
+  settingsApproved SocietySetting[]
+  ratesApproved    MaintenanceRate[]
+  docsApproved     BillingDocument[]  @relation("documentApprover")
+  docsCancelled    BillingDocument[]  @relation("documentCanceller")
+  adjustmentsApproved InvoiceAdjustment[]
+  entriesPosted    JournalEntry[]
+  paymentsRecorded Payment[]
+  billsApproved    VendorBill[]
+  dispatches       DispatchAttempt[]
+  imports          StatementImport[]
+  matches          BankTransaction[]
+  reconciliations  BankReconciliation[]
+  ticketsRaised    Ticket[]           @relation("ticketRaiser")
+  ticketsAssigned  Ticket[]           @relation("ticketAssignee")
+  ticketEvents     TicketEvent[]
+  uploads          Attachment[]
+  notifications    Notification[]
+  approvalsMade    Approval[]         @relation("approvalRequester")
+  approvalsDecided Approval[]         @relation("approvalDecider")
+  periodsClosed    FinancialPeriod[]  @relation("periodCloser")
+  periodsReopened  FinancialPeriod[]  @relation("periodReopener")
+  auditEntries     AuditLogEntry[]
+  rolesGranted     UserRole[]         @relation("roleGranter")
+
+  @@unique([societyId, email])
+  @@map("users")
+}
+
+model UserRole {
+  userId    String      @map("user_id") @db.Uuid
+  role      SocietyRole
+  grantedAt DateTime    @default(now()) @map("granted_at") @db.Timestamptz
+  grantedBy String?     @map("granted_by") @db.Uuid
+
+  user    User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  granter User? @relation("roleGranter", fields: [grantedBy], references: [id])
+
+  @@id([userId, role])
+  @@map("user_roles")
+}
+
+model Session {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  /// Hashed, so a database copy does not hand over live sessions.
+  tokenHash String    @unique @map("token_hash")
+  issuedAt  DateTime  @default(now()) @map("issued_at") @db.Timestamptz
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz
+  userAgent String?   @map("user_agent")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model LoginCode {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  /// Hashed, so the code cannot be read out of the database and used. The demo
+  /// front end shows the code on screen; this column cannot support that.
+  codeHash   String    @map("code_hash")
+  issuedAt   DateTime  @default(now()) @map("issued_at") @db.Timestamptz
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz
+  attempts   Int       @default(0) @db.SmallInt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("login_codes")
+}
+
+// ── Chart of accounts ───────────────────────────────────────────────────────
+
+enum AccountClass {
+  asset
+  liability
+  fund
+  income
+  expenditure
+}
+
+enum ControlKind {
+  resident
+  vendor
+}
+
+model Account {
+  societyId String       @map("society_id") @db.Uuid
+  code      String
+  name      String
+  class     AccountClass
+  grp       String
+  isCash    Boolean      @default(false) @map("is_cash")
+  control   ControlKind?
+
+  society           Society           @relation(fields: [societyId], references: [id])
+  postings          JournalPosting[]
+  headsAsIncome     ReceiptHead[]     @relation("headIncome")
+  headsAsFund       ReceiptHead[]     @relation("headFund")
+  vendorBills       VendorBill[]
+  bankAccounts      BankAccount[]
+
+  @@id([societyId, code])
+  @@map("accounts")
+}
+
+enum ReceiptHeadKey {
+  maintenance
+  sinking
+  festival
+  rental
+  reimbursement
+  other
+}
+
+model ReceiptHead {
+  societyId     String         @map("society_id") @db.Uuid
+  key           ReceiptHeadKey
+  label         String
+  incomeAccount String?        @map("income_account")
+  fundAccount   String?        @map("fund_account")
+  taxable       Boolean
+  /// True where a contribution credits the fund directly rather than passing
+  /// through income. Which applies is a CA decision, not a default.
+  creditsFundDirectly Boolean @default(false) @map("credits_fund_directly")
+
+  society Society  @relation(fields: [societyId], references: [id])
+  income  Account? @relation("headIncome", fields: [societyId, incomeAccount], references: [societyId, code])
+  fund    Account? @relation("headFund", fields: [societyId, fundAccount], references: [societyId, code])
+
+  @@id([societyId, key])
+  @@map("receipt_heads")
+}
+
+// ── The ledger ──────────────────────────────────────────────────────────────
+
+/// Never deleted. A SQL rule makes DELETE a no-op; a correction is a reversal.
+/// Amounts are BIGINT paise, never Decimal or Float, so a trial balance
+/// compares exactly.
+model JournalEntry {
+  id              String   @id @default(uuid()) @db.Uuid
+  societyId       String   @map("society_id") @db.Uuid
+  entryRef        String   @map("entry_ref")
+  entryDate       DateTime @map("entry_date") @db.Date
+  narration       String
+  sourceKind      String   @map("source_kind")
+  sourceRef       String?  @map("source_ref")
+  /// The duplicate guard. Two concurrent requests for the same business event
+  /// cannot both succeed: the second violates this and rolls back whole.
+  idempotencyKey  String   @map("idempotency_key")
+  reversalOf      String?  @map("reversal_of") @db.Uuid
+  reversedBy      String?  @map("reversed_by") @db.Uuid
+  postedBy        String?  @map("posted_by") @db.Uuid
+  postedByLabel   String   @map("posted_by_label")
+  postedAt        DateTime @default(now()) @map("posted_at") @db.Timestamptz
+  /// Denormalised, and tied to the legs by a deferred trigger. Prisma cannot
+  /// express that trigger; without it these two numbers are only a claim.
+  totalDebit      BigInt   @map("total_debit")
+  totalCredit     BigInt   @map("total_credit")
+
+  society   Society          @relation(fields: [societyId], references: [id])
+  poster    User?            @relation(fields: [postedBy], references: [id])
+  postings  JournalPosting[]
+  reverses  JournalEntry?    @relation("reversalLink", fields: [reversalOf], references: [id])
+  reversedByEntry JournalEntry[] @relation("reversalLink")
+
+  documentsPosted    BillingDocument[]
+  adjustmentsPosted  InvoiceAdjustment[]
+  paymentsPosted     Payment[]
+  vendorBillsPosted  VendorBill[]
+  vendorPaymentsPosted VendorPayment[]
+  eventExpenses      EventExpense[]
+  tdsRemittances     TdsRegisterRow[]
+
+  @@unique([societyId, idempotencyKey])
+  @@unique([societyId, entryRef])
+  @@index([societyId, entryDate])
+  @@index([societyId, sourceKind, sourceRef])
+  @@map("journal_entries")
+}
+
+/// One leg. Exactly one of debit/credit is non-zero, enforced by a SQL CHECK.
+model JournalPosting {
+  id          BigInt  @id @default(autoincrement())
+  entryId     String  @map("entry_id") @db.Uuid
+  societyId   String  @map("society_id") @db.Uuid
+  accountCode String  @map("account_code")
+  debit       BigInt  @default(0)
+  credit      BigInt  @default(0)
+  /// Required on a control account, by trigger: without it a receivable
+  /// balance cannot be attributed to a flat.
+  party       String?
+  /// Which document this leg raises or settles. Without it an invoice's status
+  /// cannot be derived from the ledger.
+  docRef      String? @map("doc_ref")
+  memo        String?
+
+  entry   JournalEntry @relation(fields: [entryId], references: [id])
+  account Account      @relation(fields: [societyId, accountCode], references: [societyId, code])
+
+  @@index([entryId])
+  @@index([societyId, accountCode])
+  @@map("journal_postings")
+}
+
+// ── Billing ─────────────────────────────────────────────────────────────────
+
+model MaintenanceRate {
+  id                String   @id @default(uuid()) @db.Uuid
+  societyId         String   @map("society_id") @db.Uuid
+  /// Paise per square foot, so ₹4.50 is 450 and no rate is held as a float.
+  ratePaisePerSqft  BigInt   @map("rate_paise_per_sqft")
+  areaBasis         AreaBasis @map("area_basis")
+  effectiveFrom     DateTime @map("effective_from") @db.Date
+  authority         String
+  /// Null means nobody has signed this rate off, and the billing path refuses
+  /// to use it. That refusal is the point.
+  approvedBy        String?  @map("approved_by") @db.Uuid
+  approvedOn        DateTime? @map("approved_on") @db.Date
+
+  society  Society @relation(fields: [societyId], references: [id])
+  approver User?   @relation(fields: [approvedBy], references: [id])
+
+  @@unique([societyId, effectiveFrom])
+  @@map("maintenance_rates")
+}
+
+enum DocumentState {
+  draft
+  approved
+  released
+  tax_invoice @map("tax-invoice")
+  cancelled
+}
+
+enum ConversionReason {
+  payment_received  @map("payment-received")
+  due_date_reached  @map("due-date-reached")
+  manual
+}
+
+/// A proforma posts nothing. The receivable and the GST arise on conversion to
+/// a tax invoice, on payment or on the due date.
+///
+/// Duplicate billing is prevented by a partial unique index on
+/// (society, flat, period) WHERE state <> 'cancelled', so cancelling frees the
+/// slot for a replacement while a live document does not. Prisma cannot model
+/// a partial index; see the header.
+model BillingDocument {
+  id               String            @id @default(uuid()) @db.Uuid
+  societyId        String            @map("society_id") @db.Uuid
+  proformaNo       String            @map("proforma_no")
+  taxInvoiceNo     String?           @map("tax_invoice_no")
+  flatId           String            @map("flat_id") @db.Uuid
+  period           String
+  estimatedTax     BigInt            @map("estimated_tax")
+  gross            BigInt
+  issuedOn         DateTime          @map("issued_on") @db.Date
+  dueOn            DateTime          @map("due_on") @db.Date
+  state            DocumentState
+  approvedBy       String?           @map("approved_by") @db.Uuid
+  approvedOn       DateTime?         @map("approved_on") @db.Date
+  convertedOn      DateTime?         @map("converted_on") @db.Date
+  convertedBecause ConversionReason? @map("converted_because")
+  postedEntryId    String?           @map("posted_entry_id") @db.Uuid
+  cancelledBy      String?           @map("cancelled_by") @db.Uuid
+  cancelledReason  String?           @map("cancelled_reason")
+
+  society     Society                @relation(fields: [societyId], references: [id])
+  flat        Flat                   @relation(fields: [flatId], references: [id])
+  approver    User?                  @relation("documentApprover", fields: [approvedBy], references: [id])
+  canceller   User?                  @relation("documentCanceller", fields: [cancelledBy], references: [id])
+  postedEntry JournalEntry?          @relation(fields: [postedEntryId], references: [id])
+  lines       BillingDocumentLine[]
+  dispatches  DispatchAttempt[]
+  adjustments InvoiceAdjustment[]
+  allocations ReceiptAllocation[]
+  attachments Attachment[]
+  generated   GeneratedDocument[]
+  gstRows     GstRegisterRow[]
+
+  @@unique([societyId, proformaNo])
+  @@unique([societyId, taxInvoiceNo])
+  @@map("billing_documents")
+}
+
+model BillingDocumentLine {
+  id         BigInt         @id @default(autoincrement())
+  documentId String         @map("document_id") @db.Uuid
+  head       ReceiptHeadKey
+  amount     BigInt
+  taxable    Boolean
+  position   Int            @db.SmallInt
+
+  document BillingDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, position])
+  @@map("billing_document_lines")
+}
+
+enum AdjustmentKind {
+  credit
+  debit
+}
+
+model InvoiceAdjustment {
+  id            String         @id @default(uuid()) @db.Uuid
+  societyId     String         @map("society_id") @db.Uuid
+  documentId    String         @map("document_id") @db.Uuid
+  noteNo        String         @map("note_no")
+  kind          AdjustmentKind
+  reason        String
+  amount        BigInt
+  taxAmount     BigInt         @default(0) @map("tax_amount")
+  issuedOn      DateTime       @map("issued_on") @db.Date
+  approvedBy    String?        @map("approved_by") @db.Uuid
+  postedEntryId String?        @map("posted_entry_id") @db.Uuid
+
+  society     Society          @relation(fields: [societyId], references: [id])
+  document    BillingDocument  @relation(fields: [documentId], references: [id])
+  approver    User?            @relation(fields: [approvedBy], references: [id])
+  postedEntry JournalEntry?    @relation(fields: [postedEntryId], references: [id])
+  gstRows     GstRegisterRow[]
+  generated   GeneratedDocument[]
+
+  @@unique([societyId, noteNo])
+  @@map("invoice_adjustments")
+}
+
+// ── Receipts ────────────────────────────────────────────────────────────────
+
+/// A payment's allocations must add up to the payment, enforced by a deferred
+/// trigger so the rows can be inserted in any order within the transaction.
+model Payment {
+  id             String   @id @default(uuid()) @db.Uuid
+  societyId      String   @map("society_id") @db.Uuid
+  receiptNo      String   @map("receipt_no")
+  flatId         String   @map("flat_id") @db.Uuid
+  receivedOn     DateTime @map("received_on") @db.Date
+  amount         BigInt
+  method         String
+  instrumentRef  String?  @map("instrument_ref")
+  bankAccountId  String?  @map("bank_account_id") @db.Uuid
+  postedEntryId  String?  @map("posted_entry_id") @db.Uuid
+  /// The caller's key, so a retried request cannot take the money twice.
+  idempotencyKey String   @map("idempotency_key")
+  recordedBy     String?  @map("recorded_by") @db.Uuid
+  recordedAt     DateTime @default(now()) @map("recorded_at") @db.Timestamptz
+
+  society     Society             @relation(fields: [societyId], references: [id])
+  flat        Flat                @relation(fields: [flatId], references: [id])
+  bankAccount BankAccount?        @relation(fields: [bankAccountId], references: [id])
+  postedEntry JournalEntry?       @relation(fields: [postedEntryId], references: [id])
+  recorder    User?               @relation(fields: [recordedBy], references: [id])
+  allocations ReceiptAllocation[]
+  bankMatches BankTransaction[]
+  contributions EventContribution[]
+  generated   GeneratedDocument[]
+
+  @@unique([societyId, receiptNo])
+  @@unique([societyId, idempotencyKey])
+  @@map("payments")
+}
+
+/// Which slice of a receipt settled which document. A null document means the
+/// slice was held on account as an advance.
+model ReceiptAllocation {
+  id          BigInt          @id @default(autoincrement())
+  paymentId   String          @map("payment_id") @db.Uuid
+  documentId  String?         @map("document_id") @db.Uuid
+  amount      BigInt
+  head        ReceiptHeadKey?
+  allocatedAt DateTime        @default(now()) @map("allocated_at") @db.Timestamptz
+
+  payment  Payment          @relation(fields: [paymentId], references: [id])
+  document BillingDocument? @relation(fields: [documentId], references: [id])
+
+  @@index([paymentId])
+  @@index([documentId])
+  @@map("receipt_allocations")
+}
+
+// ── Funds and deposits ──────────────────────────────────────────────────────
+
+enum FundKind {
+  sinking
+  festival
+  general
+}
+
+model FixedDeposit {
+  id              String    @id @default(uuid()) @db.Uuid
+  societyId       String    @map("society_id") @db.Uuid
+  fdRef           String    @map("fd_ref")
+  bankName        String    @map("bank_name")
+  /// Last four digits only. The full number is not needed to run a register
+  /// and is one more thing to lose.
+  accountLast4    String?   @map("account_last4")
+  principal       BigInt
+  /// Basis points, so 7.25% is 725 and no rate is stored as a float.
+  rateBps         Int       @map("rate_bps")
+  placedOn        DateTime  @map("placed_on") @db.Date
+  maturesOn       DateTime  @map("matures_on") @db.Date
+  closedOn        DateTime? @map("closed_on") @db.Date
+  interestAccrued BigInt    @default(0) @map("interest_accrued")
+  fund            FundKind
+
+  society Society @relation(fields: [societyId], references: [id])
+
+  @@unique([societyId, fdRef])
+  @@map("fixed_deposits")
+}
+
+// ── Events ──────────────────────────────────────────────────────────────────
+
+model Event {
+  id        String    @id @default(uuid()) @db.Uuid
+  societyId String    @map("society_id") @db.Uuid
+  name      String
+  heldOn    DateTime? @map("held_on") @db.Date
+  budget    BigInt?
+  /// Voluntary collections are not dues, and billing never raises them.
+  voluntary Boolean   @default(true)
+  closed    Boolean   @default(false)
+
+  society       Society             @relation(fields: [societyId], references: [id])
+  contributions EventContribution[]
+  expenses      EventExpense[]
+
+  @@unique([societyId, name, heldOn])
+  @@map("events")
+}
+
+model EventContribution {
+  id          String   @id @default(uuid()) @db.Uuid
+  eventId     String   @map("event_id") @db.Uuid
+  flatId      String?  @map("flat_id") @db.Uuid
+  sponsorName String?  @map("sponsor_name")
+  amount      BigInt
+  receivedOn  DateTime @map("received_on") @db.Date
+  paymentId   String?  @map("payment_id") @db.Uuid
+
+  event   Event    @relation(fields: [eventId], references: [id])
+  flat    Flat?    @relation(fields: [flatId], references: [id])
+  payment Payment? @relation(fields: [paymentId], references: [id])
+
+  @@map("event_contributions")
+}
+
+model EventExpense {
+  id            String   @id @default(uuid()) @db.Uuid
+  eventId       String   @map("event_id") @db.Uuid
+  description   String
+  amount        BigInt
+  incurredOn    DateTime @map("incurred_on") @db.Date
+  vendorId      String?  @map("vendor_id") @db.Uuid
+  postedEntryId String?  @map("posted_entry_id") @db.Uuid
+
+  event       Event         @relation(fields: [eventId], references: [id])
+  postedEntry JournalEntry? @relation(fields: [postedEntryId], references: [id])
+
+  @@map("event_expenses")
+}
+
+// ── Vendors ─────────────────────────────────────────────────────────────────
+
+enum TdsSection {
+  s194C @map("194C")
+  s194J @map("194J")
+  s194I @map("194I")
+  none
+}
+
+enum PayeeKind {
+  company
+  individual_or_huf @map("individual-or-huf")
+}
+
+/// No internet-banking credential has a column here, by design. Last four
+/// digits and IFSC are enough to identify an account on a payment advice.
+model Vendor {
+  id          String      @id @default(uuid()) @db.Uuid
+  societyId   String      @map("society_id") @db.Uuid
+  name        String
+  category    String
+  pan         String?
+  gstin       String?
+  tdsSection  TdsSection? @map("tds_section")
+  /// 194C is 2% for a company and 1% for an individual or HUF, so the payee
+  /// kind is part of the rate, not metadata.
+  payeeKind   PayeeKind?  @map("payee_kind")
+  bankLast4   String?     @map("bank_last4")
+  bankIfsc    String?     @map("bank_ifsc")
+  active      Boolean     @default(true)
+
+  society   Society           @relation(fields: [societyId], references: [id])
+  contracts VendorContract[]
+  bills     VendorBill[]
+  payments  VendorPayment[]
+  tickets   Ticket[]
+  tdsRows   TdsRegisterRow[]
+
+  @@unique([societyId, name])
+  @@map("vendors")
+}
+
+model VendorContract {
+  id                String   @id @default(uuid()) @db.Uuid
+  vendorId          String   @map("vendor_id") @db.Uuid
+  title             String
+  startsOn          DateTime @map("starts_on") @db.Date
+  endsOn            DateTime @map("ends_on") @db.Date
+  monthlyValue      BigInt?  @map("monthly_value")
+  renewalNoticeDays Int      @default(30) @map("renewal_notice_days") @db.SmallInt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id])
+
+  @@map("vendor_contracts")
+}
+
+enum VendorBillState {
+  awaiting_approval @map("awaiting-approval")
+  approved
+  booked
+  rejected
+}
+
+/// Approval, booking and payment are three distinct steps. `approved` posts
+/// nothing; `booked` debits the expense at gross, credits the payable net of
+/// tax and credits the TDS, and touches no bank.
+model VendorBill {
+  id             String          @id @default(uuid()) @db.Uuid
+  societyId      String          @map("society_id") @db.Uuid
+  vendorId       String          @map("vendor_id") @db.Uuid
+  billNo         String          @map("bill_no")
+  billDate       DateTime        @map("bill_date") @db.Date
+  receivedOn     DateTime?       @map("received_on") @db.Date
+  expenseAccount String          @map("expense_account")
+  gross          BigInt
+  inputGst       BigInt          @default(0) @map("input_gst")
+  tdsSection     TdsSection      @map("tds_section")
+  tdsRateBps     Int             @default(0) @map("tds_rate_bps")
+  tdsAmount      BigInt          @default(0) @map("tds_amount")
+  netPayable     BigInt          @map("net_payable")
+  state          VendorBillState
+  approvedBy     String?         @map("approved_by") @db.Uuid
+  rejectedReason String?         @map("rejected_reason")
+  postedEntryId  String?         @map("posted_entry_id") @db.Uuid
+
+  society     Society          @relation(fields: [societyId], references: [id])
+  vendor      Vendor           @relation(fields: [vendorId], references: [id])
+  account     Account          @relation(fields: [societyId, expenseAccount], references: [societyId, code])
+  approver    User?            @relation(fields: [approvedBy], references: [id])
+  postedEntry JournalEntry?    @relation(fields: [postedEntryId], references: [id])
+  payments    VendorPayment[]
+  attachments Attachment[]
+  tdsRows     TdsRegisterRow[]
+
+  @@unique([societyId, vendorId, billNo])
+  @@map("vendor_bills")
+}
+
+model VendorPayment {
+  id             String   @id @default(uuid()) @db.Uuid
+  societyId      String   @map("society_id") @db.Uuid
+  vendorId       String   @map("vendor_id") @db.Uuid
+  billId         String?  @map("bill_id") @db.Uuid
+  paymentRef     String   @map("payment_ref")
+  paidOn         DateTime @map("paid_on") @db.Date
+  amount         BigInt
+  method         String
+  bankAccountId  String?  @map("bank_account_id") @db.Uuid
+  postedEntryId  String?  @map("posted_entry_id") @db.Uuid
+  idempotencyKey String   @map("idempotency_key")
+
+  society     Society           @relation(fields: [societyId], references: [id])
+  vendor      Vendor            @relation(fields: [vendorId], references: [id])
+  bill        VendorBill?       @relation(fields: [billId], references: [id])
+  bankAccount BankAccount?      @relation(fields: [bankAccountId], references: [id])
+  postedEntry JournalEntry?     @relation(fields: [postedEntryId], references: [id])
+  bankMatches BankTransaction[]
+
+  @@unique([societyId, paymentRef])
+  @@unique([societyId, idempotencyKey])
+  @@map("vendor_payments")
+}
+
+// ── Tax registers ───────────────────────────────────────────────────────────
+
+enum SupplyType {
+  B2B
+  B2C
+}
+
+model GstRegisterRow {
+  id                String     @id @default(autoincrement()) @map("id") @db.Uuid
+  societyId         String     @map("society_id") @db.Uuid
+  documentId        String?    @map("document_id") @db.Uuid
+  adjustmentId      String?    @map("adjustment_id") @db.Uuid
+  taxPeriod         String     @map("tax_period")
+  invoiceNo         String     @map("invoice_no")
+  invoiceDate       DateTime   @map("invoice_date") @db.Date
+  counterparty      String
+  counterpartyGstin String?    @map("counterparty_gstin")
+  /// B2B where the member supplied a GSTIN, B2C otherwise. Drives GSTR-1.
+  supplyType        SupplyType @map("supply_type")
+  sacCode           String?    @map("sac_code")
+  taxableValue      BigInt     @map("taxable_value")
+  cgst              BigInt     @default(0)
+  sgst              BigInt     @default(0)
+  igst              BigInt     @default(0)
+  rateBps           Int        @map("rate_bps")
+  reverseCharge     Boolean    @default(false) @map("reverse_charge")
+
+  society    Society            @relation(fields: [societyId], references: [id])
+  document   BillingDocument?   @relation(fields: [documentId], references: [id])
+  adjustment InvoiceAdjustment? @relation(fields: [adjustmentId], references: [id])
+
+  @@index([societyId, taxPeriod])
+  @@map("gst_register")
+}
+
+model TdsRegisterRow {
+  id                 String    @id @default(autoincrement()) @map("id") @db.Uuid
+  societyId          String    @map("society_id") @db.Uuid
+  billId             String?   @map("bill_id") @db.Uuid
+  vendorId           String    @map("vendor_id") @db.Uuid
+  section            TdsSection
+  /// 'Q2-FY26-27', validated by a CHECK in SQL.
+  quarter            String
+  deductedOn         DateTime  @map("deducted_on") @db.Date
+  gross              BigInt
+  rateBps            Int       @map("rate_bps")
+  tdsAmount          BigInt    @map("tds_amount")
+  /// Null means the deduction is still a liability. A challan number and its
+  /// date go together or neither is recorded.
+  challanNo          String?   @map("challan_no")
+  challanDate        DateTime? @map("challan_date") @db.Date
+  remittanceEntryId  String?   @map("remittance_entry_id") @db.Uuid
+
+  society    Society       @relation(fields: [societyId], references: [id])
+  bill       VendorBill?   @relation(fields: [billId], references: [id])
+  vendor     Vendor        @relation(fields: [vendorId], references: [id])
+  remittance JournalEntry? @relation(fields: [remittanceEntryId], references: [id])
+
+  @@index([societyId, quarter])
+  @@map("tds_register")
+}
+
+// ── Banking ─────────────────────────────────────────────────────────────────
+
+enum BankPurpose {
+  operating
+  sinking
+  festival
+  other
+}
+
+/// There is deliberately no column for a full account number, a customer id, a
+/// password or an API secret. A reconciliation system needs none of them, and
+/// storing them is what makes a database worth attacking.
+model BankAccount {
+  id             String      @id @default(uuid()) @db.Uuid
+  societyId      String      @map("society_id") @db.Uuid
+  label          String
+  bankName       String      @map("bank_name")
+  accountLast4   String      @map("account_last4")
+  ifsc           String
+  ledgerAccount  String      @map("ledger_account")
+  purpose        BankPurpose
+  active         Boolean     @default(true)
+
+  society         Society              @relation(fields: [societyId], references: [id])
+  account         Account              @relation(fields: [societyId, ledgerAccount], references: [societyId, code])
+  imports         StatementImport[]
+  transactions    BankTransaction[]
+  reconciliations BankReconciliation[]
+  virtualAccounts VirtualAccount[]
+  payments        Payment[]
+  vendorPayments  VendorPayment[]
+
+  @@unique([societyId, label])
+  @@map("bank_accounts")
+}
+
+enum StatementFormat {
+  csv
+  xlsx
+  mt940
+}
+
+model StatementImport {
+  id             String          @id @default(uuid()) @db.Uuid
+  societyId      String          @map("society_id") @db.Uuid
+  bankAccountId  String          @map("bank_account_id") @db.Uuid
+  format         StatementFormat
+  filename       String
+  /// Hash of the file, so the same statement cannot be imported twice.
+  contentSha256  String          @map("content_sha256")
+  periodFrom     DateTime?       @map("period_from") @db.Date
+  periodTo       DateTime?       @map("period_to") @db.Date
+  rowsTotal      Int             @default(0) @map("rows_total")
+  rowsImported   Int             @default(0) @map("rows_imported")
+  rowsDuplicate  Int             @default(0) @map("rows_duplicate")
+  rowsRejected   Int             @default(0) @map("rows_rejected")
+  importedBy     String?         @map("imported_by") @db.Uuid
+  importedAt     DateTime        @default(now()) @map("imported_at") @db.Timestamptz
+
+  society      Society           @relation(fields: [societyId], references: [id])
+  bankAccount  BankAccount       @relation(fields: [bankAccountId], references: [id])
+  importer     User?             @relation(fields: [importedBy], references: [id])
+  transactions BankTransaction[]
+
+  @@unique([societyId, bankAccountId, contentSha256])
+  @@map("statement_imports")
+}
+
+enum BankTransactionState {
+  unmatched
+  suggested
+  matched
+  suspense
+  ignored
+}
+
+model BankTransaction {
+  id              String               @id @default(uuid()) @db.Uuid
+  societyId       String               @map("society_id") @db.Uuid
+  bankAccountId   String               @map("bank_account_id") @db.Uuid
+  importId        String?              @map("import_id") @db.Uuid
+  valueDate       DateTime             @map("value_date") @db.Date
+  narration       String
+  reference       String?
+  /// Signed: positive is money in.
+  amount          BigInt
+  runningBalance  BigInt?              @map("running_balance")
+  /// The bank's own reference where it gives one, else a hash of date, amount
+  /// and narration. Unique per account, which is the deduplication.
+  dedupeKey       String               @map("dedupe_key")
+  state           BankTransactionState @default(unmatched)
+  matchedPaymentId String?             @map("matched_payment_id") @db.Uuid
+  matchedVendorPaymentId String?       @map("matched_vendor_payment_id") @db.Uuid
+  matchedBy       String?              @map("matched_by") @db.Uuid
+  matchedAt       DateTime?            @map("matched_at") @db.Timestamptz
+  suspenseReason  String?              @map("suspense_reason")
+
+  society       Society          @relation(fields: [societyId], references: [id])
+  bankAccount   BankAccount      @relation(fields: [bankAccountId], references: [id])
+  import        StatementImport? @relation(fields: [importId], references: [id])
+  payment       Payment?         @relation(fields: [matchedPaymentId], references: [id])
+  vendorPayment VendorPayment?   @relation(fields: [matchedVendorPaymentId], references: [id])
+  matcher       User?            @relation(fields: [matchedBy], references: [id])
+
+  @@unique([societyId, bankAccountId, dedupeKey])
+  @@map("bank_transactions")
+}
+
+/// A reconciliation can only be signed off when the difference is zero, and
+/// the difference itself is constrained to equal statement less ledger — so it
+/// cannot be asserted clean while the two sides disagree.
+model BankReconciliation {
+  id               String    @id @default(uuid()) @db.Uuid
+  societyId        String    @map("society_id") @db.Uuid
+  bankAccountId    String    @map("bank_account_id") @db.Uuid
+  asAt             DateTime  @map("as_at") @db.Date
+  statementBalance BigInt    @map("statement_balance")
+  ledgerBalance    BigInt    @map("ledger_balance")
+  unmatchedCount   Int       @default(0) @map("unmatched_count")
+  difference       BigInt
+  reconciledBy     String?   @map("reconciled_by") @db.Uuid
+  reconciledAt     DateTime? @map("reconciled_at") @db.Timestamptz
+
+  society     Society     @relation(fields: [societyId], references: [id])
+  bankAccount BankAccount @relation(fields: [bankAccountId], references: [id])
+  reconciler  User?       @relation(fields: [reconciledBy], references: [id])
+
+  @@unique([societyId, bankAccountId, asAt])
+  @@map("bank_reconciliations")
+}
+
+/// Per-flat virtual accounts, for when a bank provides them. NOT CONNECTED:
+/// no provider is integrated, so no row here is live.
+model VirtualAccount {
+  id            String  @id @default(uuid()) @db.Uuid
+  societyId     String  @map("society_id") @db.Uuid
+  flatId        String  @map("flat_id") @db.Uuid
+  bankAccountId String  @map("bank_account_id") @db.Uuid
+  virtualRef    String  @map("virtual_ref")
+  upiId         String? @map("upi_id")
+  provider      String
+  active        Boolean @default(true)
+
+  society     Society     @relation(fields: [societyId], references: [id])
+  flat        Flat        @relation(fields: [flatId], references: [id])
+  bankAccount BankAccount @relation(fields: [bankAccountId], references: [id])
+
+  @@unique([societyId, virtualRef])
+  @@unique([societyId, flatId, bankAccountId])
+  @@map("virtual_accounts")
+}
+
+// ── Helpdesk ────────────────────────────────────────────────────────────────
+
+enum EscalationRole {
+  manager
+  treasurer
+  secretary
+}
+
+model TicketCategory {
+  societyId      String          @map("society_id") @db.Uuid
+  key            String
+  label          String
+  /// The SLA in hours, as a setting rather than a constant in code.
+  slaHours       Int             @map("sla_hours")
+  escalateToRole EscalationRole? @map("escalate_to_role")
+
+  society Society  @relation(fields: [societyId], references: [id])
+  tickets Ticket[]
+
+  @@id([societyId, key])
+  @@map("ticket_categories")
+}
+
+enum TicketPriority {
+  emergency
+  high
+  normal
+  low
+}
+
+enum TicketState {
+  open
+  assigned
+  in_progress @map("in-progress")
+  resolved
+  confirmed
+  closed
+  reopened
+}
+
+model Ticket {
+  id               String         @id @default(uuid()) @db.Uuid
+  societyId        String         @map("society_id") @db.Uuid
+  ticketNo         String         @map("ticket_no")
+  flatId           String?        @map("flat_id") @db.Uuid
+  raisedBy         String?        @map("raised_by") @db.Uuid
+  category         String
+  description      String
+  priority         TicketPriority @default(normal)
+  state            TicketState    @default(open)
+  assignedToUser   String?        @map("assigned_to_user") @db.Uuid
+  assignedToVendor String?        @map("assigned_to_vendor") @db.Uuid
+  raisedAt         DateTime       @default(now()) @map("raised_at") @db.Timestamptz
+  dueAt            DateTime       @map("due_at") @db.Timestamptz
+  resolvedAt       DateTime?      @map("resolved_at") @db.Timestamptz
+  confirmedAt      DateTime?      @map("confirmed_at") @db.Timestamptz
+  closedAt         DateTime?      @map("closed_at") @db.Timestamptz
+  reopenedCount    Int            @default(0) @map("reopened_count") @db.SmallInt
+  escalatedAt      DateTime?      @map("escalated_at") @db.Timestamptz
+  resolutionNote   String?        @map("resolution_note")
+  satisfaction     Int?           @db.SmallInt
+  cost             BigInt?
+
+  society        Society        @relation(fields: [societyId], references: [id])
+  flat           Flat?          @relation(fields: [flatId], references: [id])
+  raiser         User?          @relation("ticketRaiser", fields: [raisedBy], references: [id])
+  categoryRef    TicketCategory @relation(fields: [societyId, category], references: [societyId, key])
+  assignedUser   User?          @relation("ticketAssignee", fields: [assignedToUser], references: [id])
+  assignedVendor Vendor?        @relation(fields: [assignedToVendor], references: [id])
+  events         TicketEvent[]
+  attachments    Attachment[]
+
+  @@unique([societyId, ticketNo])
+  @@map("tickets")
+}
+
+model TicketEvent {
+  id         BigInt   @id @default(autoincrement())
+  ticketId   String   @map("ticket_id") @db.Uuid
+  at         DateTime @default(now()) @db.Timestamptz
+  actorUser  String?  @map("actor_user") @db.Uuid
+  actorLabel String   @map("actor_label")
+  fromState  String?  @map("from_state")
+  toState    String?  @map("to_state")
+  note       String?
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+  actor  User?  @relation(fields: [actorUser], references: [id])
+
+  @@map("ticket_events")
+}
+
+/// An attachment hangs off exactly one thing, enforced by a CHECK. The bytes
+/// live in object storage in production and on disk in development — never in
+/// the database.
+model Attachment {
+  id            String   @id @default(uuid()) @db.Uuid
+  societyId     String   @map("society_id") @db.Uuid
+  ticketId      String?  @map("ticket_id") @db.Uuid
+  documentId    String?  @map("document_id") @db.Uuid
+  vendorBillId  String?  @map("vendor_bill_id") @db.Uuid
+  filename      String
+  contentType   String   @map("content_type")
+  byteSize      Int      @map("byte_size")
+  sha256        String
+  storageKey    String   @map("storage_key")
+  uploadedBy    String?  @map("uploaded_by") @db.Uuid
+  uploadedAt    DateTime @default(now()) @map("uploaded_at") @db.Timestamptz
+
+  society    Society          @relation(fields: [societyId], references: [id])
+  ticket     Ticket?          @relation(fields: [ticketId], references: [id])
+  document   BillingDocument? @relation(fields: [documentId], references: [id])
+  vendorBill VendorBill?      @relation(fields: [vendorBillId], references: [id])
+  uploader   User?            @relation(fields: [uploadedBy], references: [id])
+
+  @@unique([societyId, storageKey])
+  @@map("attachments")
+}
+
+// ── Documents and notifications ─────────────────────────────────────────────
+
+/// Records that a document was released for dispatch, and whether anything
+/// actually left the building. `delivered` is false while no provider is
+/// configured — a row recording a delivery that did not happen is worse than
+/// no row, because a committee acts on it.
+model DispatchAttempt {
+  id          BigInt    @id @default(autoincrement())
+  documentId  String    @map("document_id") @db.Uuid
+  attemptedAt DateTime  @default(now()) @map("attempted_at") @db.Timestamptz
+  byUser      String?   @map("by_user") @db.Uuid
+  channel     String
+  delivered   Boolean   @default(false)
+  providerId  String?   @map("provider_id")
+  failure     String?
+  note        String
+
+  document BillingDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  actor    User?           @relation(fields: [byUser], references: [id])
+
+  @@map("dispatch_attempts")
+}
+
+enum DocumentKind {
+  tax_invoice @map("tax-invoice")
+  proforma
+  receipt
+  credit_note @map("credit-note")
+  debit_note  @map("debit-note")
+  statement
+  report
+}
+
+model GeneratedDocument {
+  id            String       @id @default(uuid()) @db.Uuid
+  societyId     String       @map("society_id") @db.Uuid
+  kind          DocumentKind
+  documentId    String?      @map("document_id") @db.Uuid
+  paymentId     String?      @map("payment_id") @db.Uuid
+  adjustmentId  String?      @map("adjustment_id") @db.Uuid
+  contentType   String       @default("application/pdf") @map("content_type")
+  byteSize      Int?         @map("byte_size")
+  sha256        String?
+  storageKey    String?      @map("storage_key")
+  generatedAt   DateTime     @default(now()) @map("generated_at") @db.Timestamptz
+  /// The data the document was rendered from, so a reprint is byte-identical
+  /// and a later rate change cannot alter a document already issued.
+  renderPayload Json         @map("render_payload")
+
+  society       Society            @relation(fields: [societyId], references: [id])
+  document      BillingDocument?   @relation(fields: [documentId], references: [id])
+  payment       Payment?           @relation(fields: [paymentId], references: [id])
+  adjustment    InvoiceAdjustment? @relation(fields: [adjustmentId], references: [id])
+  notifications Notification[]
+
+  @@map("generated_documents")
+}
+
+enum NotificationChannel {
+  email
+  sms
+  whatsapp
+  in_app @map("in-app")
+}
+
+enum NotificationState {
+  queued
+  sending
+  sent
+  failed
+  bounced
+  suppressed
+}
+
+/// A notification cannot be marked `sent` without a provider and that
+/// provider's message id, by CHECK. Nothing may record a delivery it cannot
+/// evidence.
+model Notification {
+  id                String              @id @default(uuid()) @db.Uuid
+  societyId         String              @map("society_id") @db.Uuid
+  channel           NotificationChannel
+  template          String
+  toUser            String?             @map("to_user") @db.Uuid
+  toAddress         String              @map("to_address")
+  subject           String?
+  payload           Json
+  documentId        String?             @map("document_id") @db.Uuid
+  state             NotificationState   @default(queued)
+  attempts          Int                 @default(0) @db.SmallInt
+  provider          String?
+  providerMessageId String?             @map("provider_message_id")
+  lastError         String?             @map("last_error")
+  queuedAt          DateTime            @default(now()) @map("queued_at") @db.Timestamptz
+  sentAt            DateTime?           @map("sent_at") @db.Timestamptz
+
+  society  Society            @relation(fields: [societyId], references: [id])
+  user     User?              @relation(fields: [toUser], references: [id])
+  document GeneratedDocument? @relation(fields: [documentId], references: [id])
+
+  @@map("notifications")
+}
+
+// ── Governance ──────────────────────────────────────────────────────────────
+
+enum MeetingKind {
+  committee
+  agm
+  sgm
+}
+
+model Resolution {
+  id          String      @id @default(uuid()) @db.Uuid
+  societyId   String      @map("society_id") @db.Uuid
+  reference   String
+  passedOn    DateTime    @map("passed_on") @db.Date
+  meetingKind MeetingKind @map("meeting_kind")
+  subject     String
+  body        String
+
+  society   Society    @relation(fields: [societyId], references: [id])
+  approvals Approval[]
+
+  @@unique([societyId, reference])
+  @@map("resolutions")
+}
+
+enum ApprovalDecision {
+  approved
+  rejected
+}
+
+/// Maker-checker, at the database: a CHECK forbids decided_by = requested_by,
+/// so whoever prepared a thing cannot be whoever approves it.
+model Approval {
+  id           String            @id @default(uuid()) @db.Uuid
+  societyId    String            @map("society_id") @db.Uuid
+  subjectTable String            @map("subject_table")
+  subjectId    String            @map("subject_id")
+  requestedBy  String            @map("requested_by") @db.Uuid
+  requestedAt  DateTime          @default(now()) @map("requested_at") @db.Timestamptz
+  decidedBy    String?           @map("decided_by") @db.Uuid
+  decidedAt    DateTime?         @map("decided_at") @db.Timestamptz
+  decision     ApprovalDecision?
+  reason       String?
+  resolutionId String?           @map("resolution_id") @db.Uuid
+
+  society    Society     @relation(fields: [societyId], references: [id])
+  requester  User        @relation("approvalRequester", fields: [requestedBy], references: [id])
+  decider    User?       @relation("approvalDecider", fields: [decidedBy], references: [id])
+  resolution Resolution? @relation(fields: [resolutionId], references: [id])
+
+  @@map("approvals")
+}
+
+enum PeriodState {
+  open
+  closing
+  closed
+  reopened
+}
+
+/// The lock. A trigger refuses a journal entry dated inside a closed period, so
+/// the close is enforced by the database and not only by the application.
+model FinancialPeriod {
+  id                 String      @id @default(uuid()) @db.Uuid
+  societyId          String      @map("society_id") @db.Uuid
+  period             String
+  startsOn           DateTime    @map("starts_on") @db.Date
+  endsOn             DateTime    @map("ends_on") @db.Date
+  state              PeriodState @default(open)
+  closedBy           String?     @map("closed_by") @db.Uuid
+  closedAt           DateTime?   @map("closed_at") @db.Timestamptz
+  reopenedBy         String?     @map("reopened_by") @db.Uuid
+  reopenedReason     String?     @map("reopened_reason")
+  /// A closed period records the trial balance it closed on, and a CHECK
+  /// requires the two sides to agree.
+  trialBalanceDebit  BigInt?     @map("trial_balance_debit")
+  trialBalanceCredit BigInt?     @map("trial_balance_credit")
+
+  society  Society @relation(fields: [societyId], references: [id])
+  closer   User?   @relation("periodCloser", fields: [closedBy], references: [id])
+  reopener User?   @relation("periodReopener", fields: [reopenedBy], references: [id])
+
+  @@unique([societyId, period])
+  @@map("financial_periods")
+}
+
+// ── Operations ──────────────────────────────────────────────────────────────
+
+enum JobState {
+  pending
+  running
+  succeeded
+  failed
+  abandoned
+}
+
+model ScheduledJob {
+  id            String    @id @default(uuid()) @db.Uuid
+  societyId     String?   @map("society_id") @db.Uuid
+  kind          String
+  /// The business key for this run, so a scheduler firing twice does the work
+  /// once. 'monthly-billing' + '2026-07' can only exist as one row.
+  runKey        String    @map("run_key")
+  scheduledFor  DateTime  @map("scheduled_for") @db.Timestamptz
+  state         JobState  @default(pending)
+  attempts      Int       @default(0) @db.SmallInt
+  maxAttempts   Int       @default(5) @map("max_attempts") @db.SmallInt
+  nextAttemptAt DateTime? @map("next_attempt_at") @db.Timestamptz
+  lockedBy      String?   @map("locked_by")
+  lockedAt      DateTime? @map("locked_at") @db.Timestamptz
+  payload       Json      @default("{}")
+  result        Json?
+  lastError     String?   @map("last_error")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  finishedAt    DateTime? @map("finished_at") @db.Timestamptz
+
+  society Society? @relation(fields: [societyId], references: [id])
+
+  @@unique([kind, runKey])
+  @@map("scheduled_jobs")
+}
+
+/// Append-only: SQL rules make both DELETE and UPDATE no-ops.
+model AuditLogEntry {
+  id           BigInt   @id @default(autoincrement())
+  societyId    String   @map("society_id") @db.Uuid
+  at           DateTime @default(now()) @db.Timestamptz
+  actorUser    String?  @map("actor_user") @db.Uuid
+  actorLabel   String   @map("actor_label")
+  action       String
+  subjectTable String?  @map("subject_table")
+  subjectId    String?  @map("subject_id")
+  detail       Json?
+  requestId    String?  @map("request_id")
+
+  society Society @relation(fields: [societyId], references: [id])
+  actor   User?   @relation(fields: [actorUser], references: [id])
+
+  @@index([societyId, at])
+  @@map("audit_log")
+}
+
+/// Subjects are hashed by the application, so this table is not a list of who
+/// tried to log in.
+model RateLimitBucket {
+  subjectHash String   @map("subject_hash")
+  action      String
+  windowStart DateTime @map("window_start") @db.Timestamptz
+  count       Int      @default(1)
+
+  @@id([subjectHash, action, windowStart])
+  @@map("rate_limit_buckets")
+}

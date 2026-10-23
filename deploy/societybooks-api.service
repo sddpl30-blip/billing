@@ -1,0 +1,76 @@
+# systemd unit for the SocietyBooks API.
+#
+# NOT INSTALLED OR STARTED ANYWHERE. Written for a Debian or Ubuntu VPS; it has
+# not been run, because the machine this was written on is not the deployment
+# target and no host has been named.
+#
+#   sudo cp deploy/societybooks-api.service /etc/systemd/system/
+#   sudo install -d -o societybooks -g societybooks -m 0750 /etc/societybooks
+#   sudo install -o root -g societybooks -m 0640 deploy/societybooks.env.example \
+#        /etc/societybooks/api.env      # then edit it in place
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now societybooks-api
+#   journalctl -u societybooks-api -f
+#
+# The credentials live in /etc/societybooks/api.env, owned by root and readable
+# only by the service's group. Not in this file — a unit file is world-readable
+# and ends up in version control.
+
+[Unit]
+Description=SocietyBooks API
+Documentation=file:/opt/societybooks/society/docs/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=societybooks
+Group=societybooks
+WorkingDirectory=/opt/societybooks/society
+
+# DATABASE_URL, DIRECT_URL, SESSION_SECRET and the SMTP_* variables go here.
+EnvironmentFile=/etc/societybooks/api.env
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=4000
+
+ExecStart=/usr/bin/node /opt/societybooks/society/.server-build/server/src/app.js
+
+# The process handles SIGTERM: it stops accepting, closes the server, then
+# closes the pool. 30 seconds is more than enough for an in-flight request.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5s
+
+# Hardening. The service reads its own code and talks to a database and an SMTP
+# server; it has no business doing anything else.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Generated documents and uploads, if STORAGE_DIR is used. Everything else on
+# the filesystem is read-only to this service.
+ReadWritePaths=/var/lib/societybooks
+# Outbound only: the database and, if configured, an SMTP server.
+IPAddressDeny=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Logs go to the journal as JSON lines, one per request, with the request id.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=societybooks-api
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+# Nothing here is needed to build the site or to run the function, and
+# everything here makes the upload bigger and the build slower.
+server/*.test.mjs
+scripts/*test*.mjs
+browser-test/
+docs/
+prisma/
+.storage/
+.server-build/
+.browser-build/
+.accounting-build/

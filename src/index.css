@@ -1,0 +1,72 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Custom global styles inside phone viewport */
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.hide-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+/* Simulated status card pulsing and visual elements */
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.82; }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+
+/* Mani Vista RWA visual identity — directly sampled from the supplied emblem. */
+:root, :root[data-mv-theme="emerald"] {
+  --mv-ink: #073b2e;
+  --mv-accent: #b78b2e;
+  --mv-accent-soft: #faf0d7;
+  --mv-accent-border: #e7d1a0;
+  --mv-dark-border: #275749;
+  --mv-page: #f9f8f3;
+  --mv-soft: #f0eee6;
+  --mv-border: #e7e2d5;
+}
+:root[data-mv-theme="ivory"] {
+  --mv-ink: #255041;
+  --mv-accent: #9e7825;
+  --mv-accent-soft: #fff4de;
+  --mv-accent-border: #e1bf7b;
+  --mv-dark-border: #386456;
+  --mv-page: #fffdf6;
+  --mv-soft: #f7f1e4;
+  --mv-border: #e9dfcc;
+}
+body { background: var(--mv-page); }
+::selection { background: #d3b566; color: #073b2e; }
+.mv-logo-tile {
+  height: 3.2rem; width: 3.2rem; flex: 0 0 3.2rem;
+  border: 1px solid rgba(194,151,63,.55); border-radius: .75rem;
+  background: #fffdf8; box-shadow: 0 2px 12px rgba(0,0,0,.10);
+  display: grid; place-items: center; overflow: hidden;
+}
+.mv-logo-tile img { width: 100%; height: 100%; object-fit: contain; }
+.mv-theme-switcher { display: inline-flex; gap: 3px; background: rgba(255,255,255,.12); padding: 3px; border: 1px solid rgba(183,139,46,.35); border-radius: 10px; }
+.mv-theme-switcher button { color: #d6bf86; font-size: 10px; font-weight: 800; border-radius: 7px; padding: 6px 9px; cursor: pointer; transition: all .15s ease; }
+.mv-theme-switcher button.selected { background: #f3e4ba; color: #073b2e; }
+:root[data-mv-theme="ivory"] .mv-theme-switcher { background: #f7f1e4; }
+:root[data-mv-theme="ivory"] .mv-theme-switcher button { color: #7c622e; }
+:root[data-mv-theme="ivory"] .mv-theme-switcher button.selected { background: #255041; color: #fff; }
+/* Gold action elements: dark ink text ensures the gold buttons remain accessible. */
+.bg-\[var\(--mv-accent\)\] { color: #fff; }
+@media (max-width: 500px) {
+  #phone-frame-container header .mv-theme-switcher {
+    position: absolute; right: 10px; top: 2px;
+    transform: scale(.74); transform-origin: top right;
+  }
+}

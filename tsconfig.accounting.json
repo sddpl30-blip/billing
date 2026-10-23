@@ -1,0 +1,42 @@
+{
+  // Builds the engine on its own, for the test and demo runners.
+  //
+  // `moduleResolution` is deliberately not set. Pairing it with
+  // `module: "CommonJS"` is where this config went wrong before: "bundler"
+  // requires `module` to be "esnext" or "preserve", so TypeScript 5.8 — the
+  // version this project pins — rejected it, while the newer compiler it was
+  // written against accepted it. Omitting the option lets each compiler pick
+  // its own default for CommonJS, which both versions accept.
+  //
+  // CommonJS rather than ESM because package.json sets "type": "module", and
+  // node's ESM loader needs an explicit extension on every relative import.
+  // The engine's imports are extensionless so that Vite resolves them, so the
+  // test build emits CommonJS and scripts/test-accounting.mjs marks the output
+  // directory accordingly.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "skipLibCheck": true,
+    "outDir": ".accounting-build",
+    // Rooted at src/ rather than src/accounting, because the integration suite
+    // exercises src/store/booksStore.ts — the seam the screens call. Entry
+    // points therefore land at .accounting-build/accounting/*.js.
+    "rootDir": "src",
+    "types": []
+  },
+  "include": ["src/accounting/**/*.ts", "src/store/**/*.ts"],
+  "exclude": [
+    // The React hook needs react's own types, and the server store needs the
+    // DOM's Blob — neither is available in this node-only build. Both are
+    // typechecked by tsconfig.check.json (front end, with the stubs in
+    // types/) and compiled by tsconfig.browser.json for the browser tests.
+    "src/store/useBooks.ts",
+    "src/store/serverStore.ts",
+    "src/store/dataSource.ts"
+  ]
+}

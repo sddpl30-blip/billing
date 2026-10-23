@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>SocietyBooks persistence harness</title>
+  </head>
+  <body>
+    <!--
+      A harness, not a screen. It loads the accounting store exactly as the app
+      does — real browser, real localStorage, real page reload — and exposes a
+      few calls on window so a Playwright script can post transactions, reload
+      the page, and check that nothing vanished.
+
+      This tests the store and the persistence layer in a browser. It does not
+      test the React screens: those need Vite to build, and this environment has
+      no npm registry, so react and friends are not installable here.
+    -->
+    <h1 id="state">loading</h1>
+    <pre id="out"></pre>
+
+    <script type="module">
+      import { createBooksStore } from '../.browser-build/store/booksStore.js';
+      import { localStorageRepository, browserStorage } from '../.browser-build/store/repository.js';
+      import { fixedClock } from '../.browser-build/accounting/index.js';
+      import { A } from '../.browser-build/accounting/index.js';
+      import { trialBalance, reconcile, balanceSheet } from '../.browser-build/accounting/index.js';
+      import { outstandingInvoices } from '../.browser-build/accounting/index.js';
+      import { DEMO_CONFIG } from '../.browser-build/accounting/index.js';
+      import { unifiedInvoices, invoiceTotals } from '../.browser-build/store/invoiceView.js';
+
+      const CONFIG = { ...DEMO_CONFIG, reviewedBy: 'Browser test CA', reviewedOn: '2026-06-01' };
+      const CLOCK = fixedClock('2026-07-15');
+      const FLATS = [
+        { flatNo: 'A-101', name: 'Priya Nair', billingAreaSqFt: 1750, areaBasis: 'super-built-up' },
+        { flatNo: 'B-204', name: 'Rohan Mehta', billingAreaSqFt: 2000, areaBasis: 'super-built-up' },
+        { flatNo: 'C-302', name: 'Suresh Iyer', billingAreaSqFt: 2400, areaBasis: 'super-built-up' },
+      ];
+
+      const storage = browserStorage();
+      const store = createBooksStore({
+        config: CONFIG,
+        clock: CLOCK,
+        repository: localStorageRepository(storage),
+        mode: 'demo',
+      });
+
+      /** A compact view of the books, for the test to compare across reloads. */
+      const fingerprint = () => {
+        const s = store.snapshot();
+        const tb = trialBalance(s.ledger, '2026-12-31');
+        const bs = balanceSheet(s.ledger, '2026-12-31');
+        const rec = reconcile(s.ledger, '2026-07-01', '2026-12-31');
+        return {
+          ready: s.ready,
+          durable: s.durable,
+          storageNote: s.storageNote,
+          savedAt: s.savedAt,
+          saveError: s.saveError,
+          mode: s.mode,
+          migrationsApplied: [...s.migrationsApplied],
+          entries: s.ledger.all().length,
+          documents: s.register.all().length,
+          totalDebit: tb.totalDebit,
+          balanced: bs.balanced,
+          difference: bs.difference,
+          reconciles: rec.allPassed,
+          bank: s.ledger.balanceOf(A.BANK_OPERATING),
+          receivable: s.ledger.balanceOf(A.MAINTENANCE_RECEIVABLE),
+          advance: s.ledger.balanceOf(A.MEMBER_ADVANCE),
+          cgst: s.ledger.balanceOf(A.CGST_OUTPUT),
+          statuses: s.register.all().map(d => `${d.proformaNo}=${d.status}@${d.outstanding}`),
+          allocations: FLATS.map(f =>
+            `${f.flatNo}:` + outstandingInvoices(s.ledger, f.flatNo)
+              .map(i => `${i.docRef}=${i.outstanding}`).join(',')),
+        };
+      };
+
+      window.sb = {
+        fingerprint,
+
+        /** Raises, approves and part-settles a month of bills. */
+        seedActivity() {
+          const run = store.runBillingFor({
+            period: 'Jul 2026', flats: FLATS, issuedOn: '2026-07-01',
+            sinkingFundPercentOfMaintenance: 20,
+          });
+          store.approveDocuments(run.documents.map(d => d.proformaNo), 'Treasurer');
+          store.recordMemberPayment({
+            proformaNo: run.documents[0].proformaNo, amountRupees: 5000,
+            receiptNo: 'RCT-BROWSER-1', method: 'UPI', by: 'Manager',
+          });
+          store.recordMemberPayment({
+            proformaNo: run.documents[1].proformaNo, amountRupees: 2000,
+            receiptNo: 'RCT-BROWSER-2', method: 'NEFT', by: 'Manager',
+          });
+          store.depositAdvance({
+            flatNo: 'C-302', amountRupees: 30000,
+            receiptNo: 'ADV-BROWSER-1', method: 'UPI', by: 'Resident',
+          });
+          return { raised: run.documents.length, skipped: run.skipped.length };
+        },
+
+        payOne(amountRupees, receiptNo) {
+          const open = store.snapshot().register.all().find(d => d.outstanding > 0);
+          if (!open) return { paid: false, why: 'nothing open' };
+          const r = store.recordMemberPayment({
+            proformaNo: open.proformaNo, amountRupees,
+            receiptNo, method: 'UPI', by: 'Manager',
+          });
+          return { paid: true, proformaNo: open.proformaNo, outstandingAfter: r.outstandingAfter };
+        },
+
+        /** The merged invoice list the screens read. */
+        invoiceList() {
+          const rows = unifiedInvoices({
+            registerDocuments: store.snapshot().register.all(),
+            legacyInvoices: [],
+          });
+          return { rows: rows.map(r => `${r.reference}|${r.status}|${r.outstandingFormatted}|${r.source}`),
+                   totals: invoiceTotals(rows) };
+        },
+
+        rawStoredBytes() {
+          return (storage.getItem('sb_books_snapshot_v3') ?? '').length;
+        },
+
+        resetAll() { store.resetToEmpty(); },
+      };
+
+      document.getElementById('state').textContent = 'ready';
+      document.getElementById('out').textContent = JSON.stringify(fingerprint(), null, 1);
+    </script>
+  </body>
+</html>

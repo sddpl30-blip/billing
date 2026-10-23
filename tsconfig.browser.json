@@ -1,0 +1,30 @@
+{
+  // Builds the engine, the store and the API client as browser-loadable ES
+  // modules, for the Playwright tests. Separate from tsconfig.accounting.json
+  // because that one emits CommonJS for node.
+  //
+  // The React components are not here: they need JSX and the real react
+  // types, which cannot be installed in this environment. What this covers is
+  // every layer below them — the engine, both stores, and the client that
+  // talks to the server — run in a real browser against a real server.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": ".browser-build",
+    "rootDir": "src",
+    "types": []
+  },
+  "include": ["src/accounting/**/*.ts", "src/store/**/*.ts", "src/api/**/*.ts"],
+  "exclude": [
+    // The React hook cannot be built without react's own types, which are not
+    // installable here. The modules it is a thin wrapper over are all built.
+    "src/store/useBooks.ts",
+    "src/accounting/selftest.ts",
+    "src/accounting/integration.test.ts",
+    "src/accounting/persistence.test.ts",
+    "src/accounting/demo.ts"
+  ]
+}

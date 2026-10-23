@@ -1,0 +1,7 @@
+.accounting-build/
+.browser-build/
+.server-build/
+.storage/
+
+# Real configuration. .env.example is the template and carries no secret.
+.env

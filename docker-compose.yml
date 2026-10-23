@@ -1,0 +1,110 @@
+# Local stack: Postgres, the migrations, the API, and the app behind nginx.
+#
+# The database service is behind a profile, so there are two ways to run this:
+#
+#   docker compose --profile local-db up --build
+#       a PostgreSQL in a container, for local work
+#
+#   DATABASE_URL=... DIRECT_URL=... docker compose up --build
+#       against a hosted database (Neon, RDS, Supabase). The db and migrate
+#       services below use DATABASE_URL when it is set, so nothing local is
+#       started and the migrations run over DIRECT_URL.
+#
+# NOT VERIFIED. Written but never run: the machine this was authored on has no
+# reachable docker daemon. The schema and the server it describes are both
+# exercised against a real PostgreSQL by `npm run test:backend`; it is this
+# orchestration that is unproven.
+
+services:
+  db:
+    profiles: ["local-db"]
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: societybooks
+      POSTGRES_DB: societybooks
+      # Local only. A deployed database takes its password from a secret, not
+      # from a file in the repository.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U societybooks -d societybooks"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Runs once, applies what is pending, exits. The API waits for it, so a
+  # container never serves against a schema it has not migrated.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # Set DATABASE_URL and DIRECT_URL in the environment to migrate a hosted
+      # database; the defaults point at the local-db profile's container.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://societybooks:${POSTGRES_PASSWORD:-local-development-only}@db:5432/societybooks}
+      # Migrations take session-level locks a pooler does not hold, so this is
+      # the direct endpoint.
+      DIRECT_URL: ${DIRECT_URL:-}
+    # Waits for the database to answer, then migrates. A `depends_on: db`
+    # would be tidier and cannot be used: `db` is behind a profile, and
+    # depending on a service that is not started is an error — so this has to
+    # work whether the database is the container next door or a hosted one
+    # waking from suspend.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        url="${DIRECT_URL:-$$DATABASE_URL}"
+        for attempt in $$(seq 1 30); do
+          if pg_isready -d "$$url" -q; then break; fi
+          echo "waiting for the database ($$attempt/30)"
+          sleep 2
+        done
+        exec node server/migrate.mjs
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      HOST: 0.0.0.0
+      # The one origin allowed to call the API with cookies. With the web
+      # container in front of it this is where a browser loads the app from.
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:8080}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://societybooks:${POSTGRES_PASSWORD:-local-development-only}@db:5432/societybooks}
+      # Required: the server refuses to start in production without it.
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET, e.g. openssl rand -hex 32}
+      SECURE_COOKIES: ${SECURE_COOKIES:-true}
+      # NOT CONNECTED. 'none' makes the server decline to issue codes rather
+      # than log them, which is the only safe setting with no provider behind
+      # it. 'local-dev' is refused in production on purpose.
+      OTP_PROVIDER: none
+      EMAIL_PROVIDER: none
+      LOG_LEVEL: info
+    # Not published. The web container reaches it on the compose network, and
+    # an API on a public port with no TLS in front of it is a session cookie
+    # travelling in the clear.
+    expose:
+      - "4000"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+volumes:
+  db-data:

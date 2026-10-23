@@ -1,0 +1,30 @@
+{
+  // Typechecks the front end with the hand-written stubs in types/, for an
+  // environment with no node_modules. The real check is `tsc -p tsconfig.json`
+  // against the installed types; this one exists so that "it compiles" is a
+  // statement someone can verify here rather than a claim.
+  //
+  // strict is on, unlike the stub config this grew from: the point of running
+  // a compiler is to be told about mistakes.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noImplicitAny": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    // main.tsx imports "./App.tsx" by name, as Vite allows.
+    "allowImportingTsExtensions": true,
+    "types": []
+  },
+  "include": ["types/**/*.d.ts", "src/**/*.ts", "src/**/*.tsx"],
+  "exclude": [
+    "src/accounting/selftest.ts",
+    "src/accounting/integration.test.ts",
+    "src/accounting/persistence.test.ts"
+  ]
+}
