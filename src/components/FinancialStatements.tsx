@@ -34,14 +34,14 @@ export const FinancialStatements: React.FC<Props> = ({ statements, which, compac
 
   const Section: React.FC<{ section: StatementSection }> = ({ section }) => (
     <div className="space-y-1.5">
-      <span className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">
+      <span className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">
         {section.heading}
       </span>
       {section.rows.map((r, i) => (
         <div
           key={`${section.heading}-${i}`}
           className={`flex justify-between items-baseline gap-3 ${
-            r.emphasis ? 'font-bold text-[var(--mv-ink)] border-t border-[var(--mv-border)] pt-1.5 mt-1' : 'text-gray-600'
+            r.emphasis ? 'font-bold text-[var(--mv-ink)] border-t border-[var(--mv-border)] pt-1.5 mt-1' : 'text-[var(--mv-muted)]'
           }`}
         >
           <span className={`${amountClass} font-medium leading-snug`}>{r.label}</span>
@@ -77,7 +77,7 @@ export const FinancialStatements: React.FC<Props> = ({ statements, which, compac
           <h4 className="font-extrabold text-sm text-[var(--mv-ink)] uppercase tracking-wide leading-tight">
             {title}
           </h4>
-          <p className="text-[10px] text-[#6B7280] mt-0.5">
+          <p className="text-[10px] text-[var(--mv-muted)] mt-0.5">
             {statements.periodLabel} · derived from {statements.counts.entries} journal entries
           </p>
         </div>
@@ -85,7 +85,7 @@ export const FinancialStatements: React.FC<Props> = ({ statements, which, compac
 
       {which === 'ie' && (
         <>
-          <p className="text-[10px] text-[#6B7280] leading-snug">
+          <p className="text-[10px] text-[var(--mv-muted)] leading-snug">
             {statements.incomeAndExpenditure.basis}
           </p>
           {statements.incomeAndExpenditure.sections.map(s => (
@@ -129,7 +129,7 @@ export const FinancialStatements: React.FC<Props> = ({ statements, which, compac
 
       {which === 'rp' && (
         <>
-          <p className="text-[10px] text-[#6B7280] leading-snug">
+          <p className="text-[10px] text-[var(--mv-muted)] leading-snug">
             Cash basis — what moved through bank and cash, which is why it differs
             from Income &amp; Expenditure above.
           </p>
@@ -153,7 +153,7 @@ export const FinancialStatements: React.FC<Props> = ({ statements, which, compac
       {which === 'tb' && (
         <>
           <div className="space-y-1">
-            <div className="flex justify-between text-[9px] font-bold text-[#6B7280] uppercase tracking-wider pb-1 border-b border-[var(--mv-border)]">
+            <div className="flex justify-between text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider pb-1 border-b border-[var(--mv-border)]">
               <span>Account</span>
               <span className="flex gap-4">
                 <span className="w-20 text-right">Debit</span>
@@ -161,9 +161,9 @@ export const FinancialStatements: React.FC<Props> = ({ statements, which, compac
               </span>
             </div>
             {statements.trialBalance.rows.map(r => (
-              <div key={r.code} className="flex justify-between items-baseline gap-2 text-gray-600">
+              <div key={r.code} className="flex justify-between items-baseline gap-2 text-[var(--mv-muted)]">
                 <span className="text-[11px] font-medium leading-snug">
-                  <span className="font-mono text-[9px] text-gray-400 mr-1.5">{r.code}</span>
+                  <span className="font-mono text-[9px] text-[var(--mv-muted)] mr-1.5">{r.code}</span>
                   {r.name}
                 </span>
                 <span className="flex gap-4 font-mono text-[11px] font-bold text-[var(--mv-ink)] whitespace-nowrap">
@@ -190,7 +190,7 @@ export const FinancialStatements: React.FC<Props> = ({ statements, which, compac
 
       {/* Cross-statement checks, so nobody has to take the figures on trust. */}
       <div className="space-y-1.5 pt-1">
-        <span className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">
+        <span className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">
           Reconciliation
         </span>
         {statements.checks.map(c => (
@@ -198,7 +198,7 @@ export const FinancialStatements: React.FC<Props> = ({ statements, which, compac
             {c.passed
               ? <CheckCircle className="w-3 h-3 text-[#166534] shrink-0 mt-0.5" />
               : <AlertCircle className="w-3 h-3 text-[#991B1B] shrink-0 mt-0.5" />}
-            <span className={c.passed ? 'text-gray-600' : 'text-[#991B1B] font-semibold'}>
+            <span className={c.passed ? 'text-[var(--mv-muted)]' : 'text-[#991B1B] font-semibold'}>
               {c.name}
               {!c.passed && <span className="block font-mono text-[9px] mt-0.5">{c.detail}</span>}
             </span>
@@ -220,11 +220,11 @@ export const FinancialStatements: React.FC<Props> = ({ statements, which, compac
       )}
 
       <div className="space-y-1 p-3 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl">
-        <span className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">
+        <span className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">
           Not yet confirmed by a CA
         </span>
         {statements.pendingConfirmations.map((line, i) => (
-          <p key={i} className="text-[10px] text-[#6B7280] leading-snug">· {line}</p>
+          <p key={i} className="text-[10px] text-[var(--mv-muted)] leading-snug">· {line}</p>
         ))}
       </div>
     </div>

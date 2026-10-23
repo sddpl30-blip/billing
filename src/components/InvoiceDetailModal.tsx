@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { X, FileText, Send, Download, CheckCircle, Clock } from 'lucide-react';
 import { Invoice } from '../types';
 import { formatRupee } from '../utils';
+import { Dialog } from './Dialog';
+import { downloadInvoice } from '../invoiceExport';
 
 interface InvoiceDetailModalProps {
   invoice: Invoice | null;
@@ -35,7 +37,6 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
   const [downloadError, setDownloadError] = useState<string | null>(null);
   if (!invoice) return null;
 
-  const subtotal = invoice.maintenance + invoice.sinkingFund + invoice.waterCharges + invoice.parkingCharges + invoice.nonOccupancyCharges;
   const cgst = invoice.gst / 2;
   const sgst = invoice.gst / 2;
 
@@ -64,79 +65,36 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
     }
   };
 
-  const save = (blob: Blob, filename: string): void => {
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
   const handleDownload = () => {
-    // The real document, from the server, where there is one.
-    if (onDownloadPdf) {
-      setDownloading(true);
-      setDownloadError(null);
-      void onDownloadPdf(invoice)
-        .then(blob => save(blob, `${invoice.invoiceNo.replace(/[^A-Za-z0-9.-]/g, '-')}.pdf`))
-        .catch((err: unknown) => {
-          setDownloadError(err instanceof Error ? err.message : 'The document could not be fetched.');
-        })
-        .finally(() => setDownloading(false));
-      return;
-    }
-
-    // No server: a text summary of what is on screen. It carries no GSTIN —
-    // there was a hardcoded one here, and a tax registration number on a
-    // document is a legal assertion, not a formatting detail. It also says
-    // what it is, so nobody files it as an invoice.
-    const fileContent = `
-============================================================
-       DEMONSTRATION SUMMARY - NOT A TAX INVOICE
-       No GSTIN, because this is not a real document.
-============================================================
-INVOICE NO: ${invoice.invoiceNo}
-BILLING CYCLE: ${invoice.period}
-FLAT: ${invoice.flatNo} | OWNER: ${invoice.name}
-DUEDATE: ${invoice.dueDate}
-============================================================
-PARTICULARS                           AMOUNT (INR)
-------------------------------------------------------------
-1. Maintenance Charges                 ${invoice.maintenance.toFixed(2)}
-2. Sinking Fund Contributions          ${invoice.sinkingFund.toFixed(2)}
-3. Bulk Water Utility Allocation       ${invoice.waterCharges.toFixed(2)}
-4. Covered/Open Car Parking            ${invoice.parkingCharges.toFixed(2)}
-5. Non-Occupancy Surcharges           ${invoice.nonOccupancyCharges.toFixed(2)}
-------------------------------------------------------------
-SUBTOTAL                               ${subtotal.toFixed(2)}
-CGST (9.0%)                            ${cgst.toFixed(2)}
-SGST (9.0%)                            ${sgst.toFixed(2)}
-LATE PAYMENT INTEREST / PENALTY        ${invoice.latePenalty.toFixed(2)}
-------------------------------------------------------------
-TOTAL ACCOUNTABLE DUE                  ${invoice.total.toFixed(2)}
-============================================================
-STATUS: ${invoice.status.toUpperCase()}
-============================================================
-Generated from demonstration data held in this browser.
-    `;
-    save(new Blob([fileContent], { type: 'text/plain' }), `Summary_${invoice.invoiceNo}.txt`);
+    // The real document from the server where there is one; the
+    // demonstration's labelled summary where there is not.
+    setDownloading(true);
+    setDownloadError(null);
+    downloadInvoice(invoice, onDownloadPdf)
+      .catch((err: unknown) => {
+        setDownloadError(err instanceof Error ? err.message : 'The document could not be fetched.');
+      })
+      .finally(() => setDownloading(false));
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-      <div className="bg-white w-full max-w-[380px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] animate-fade-in animate-scale-up flex flex-col max-h-[90vh]">
+    <Dialog
+      labelledBy="invoice-modal-title"
+      onClose={onClose}
+      className="bg-[var(--mv-surface)] w-full max-w-[380px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] animate-fade-in animate-scale-up flex flex-col max-h-[90vh] outline-none"
+    >
         {/* Header */}
-        <div className="p-4 flex items-center justify-between border-b border-[var(--mv-border)] bg-white">
+        <div className="p-4 flex items-center justify-between border-b border-[var(--mv-border)] bg-[var(--mv-surface)]">
           <div className="flex items-center gap-2">
-            <FileText className="w-4 h-4 text-[var(--mv-accent)]" />
-            <span className="font-bold text-xs text-[var(--mv-ink)] tracking-tight uppercase">Tax Invoice Breakdown</span>
+            <FileText className="w-4 h-4 text-[var(--mv-accent)]" aria-hidden="true" />
+            <h2 id="invoice-modal-title" className="font-bold text-xs text-[var(--mv-ink)] tracking-tight uppercase">Invoice {invoice.invoiceNo}</h2>
           </div>
-          <button 
+          <button
             onClick={onClose}
-            className="p-1.5 hover:bg-gray-100 rounded-full transition-colors text-[#6B7280]"
+            aria-label="Close invoice"
+            className="p-1.5 hover:bg-[var(--mv-soft)] rounded-full transition-colors text-[var(--mv-muted)]"
           >
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
 
@@ -144,9 +102,9 @@ Generated from demonstration data held in this browser.
         <div className="p-5 overflow-y-auto flex-1 hide-scrollbar space-y-4">
           <div className="flex justify-between items-start text-left">
             <div>
-              <p className="text-[10px] uppercase font-bold text-[#6B7280] tracking-wider">Society GSTIN: {gstinLabel}</p>
+              <p className="text-[10px] uppercase font-bold text-[var(--mv-muted)] tracking-wider">Society GSTIN: {gstinLabel}</p>
               <h4 className="font-bold text-[var(--mv-ink)] text-sm mt-0.5">Mani Vista RWA</h4>
-              <p className="text-[10px] text-[#6B7280]">Mani Vista Residents Association</p>
+              <p className="text-[10px] text-[var(--mv-muted)]">Mani Vista Residents Association</p>
             </div>
             {renderStatus()}
           </div>
@@ -156,19 +114,19 @@ Generated from demonstration data held in this browser.
           {/* Metadata */}
           <div className="grid grid-cols-2 gap-3 text-xs text-left">
             <div>
-              <p className="text-[10px] font-semibold text-[#6B7280] uppercase tracking-tight">Invoice No</p>
+              <p className="text-[10px] font-semibold text-[var(--mv-muted)] uppercase tracking-tight">Invoice No</p>
               <p className="font-bold text-[var(--mv-ink)] font-mono mt-0.5">{invoice.invoiceNo}</p>
             </div>
             <div>
-              <p className="text-[10px] font-semibold text-[#6B7280] uppercase tracking-tight">Billing Cycle</p>
+              <p className="text-[10px] font-semibold text-[var(--mv-muted)] uppercase tracking-tight">Billing Cycle</p>
               <p className="font-bold text-[var(--mv-ink)] mt-0.5">{invoice.period}</p>
             </div>
             <div>
-              <p className="text-[10px] font-semibold text-[#6B7280] uppercase tracking-tight">Flat Number</p>
+              <p className="text-[10px] font-semibold text-[var(--mv-muted)] uppercase tracking-tight">Flat Number</p>
               <p className="font-bold text-[var(--mv-ink)] mt-0.5">{invoice.flatNo}</p>
             </div>
             <div>
-              <p className="text-[10px] font-semibold text-[#6B7280] uppercase tracking-tight">Resident Owner</p>
+              <p className="text-[10px] font-semibold text-[var(--mv-muted)] uppercase tracking-tight">Resident Owner</p>
               <p className="font-bold text-[var(--mv-ink)] mt-0.5 truncate">{invoice.name}</p>
             </div>
           </div>
@@ -178,41 +136,41 @@ Generated from demonstration data held in this browser.
           {/* Breakdown List */}
           <div className="space-y-2 text-left">
             <h5 className="text-[10px] font-bold text-[var(--mv-ink)] tracking-wider uppercase mb-1">Billing Head Allocations</h5>
-            
+
             <div className="flex justify-between items-center text-xs py-1">
-              <span className="text-[#6B7280] font-medium">1. Society Maintenance</span>
+              <span className="text-[var(--mv-muted)] font-medium">1. Society Maintenance</span>
               <span className="font-bold text-[var(--mv-ink)] font-mono">{formatRupee(invoice.maintenance)}</span>
             </div>
 
             <div className="flex justify-between items-center text-xs py-1">
-              <span className="text-[#6B7280] font-medium">2. Sinking Fund Contributions</span>
+              <span className="text-[var(--mv-muted)] font-medium">2. Sinking Fund Contributions</span>
               <span className="font-bold text-[var(--mv-ink)] font-mono">{formatRupee(invoice.sinkingFund)}</span>
             </div>
 
             <div className="flex justify-between items-center text-xs py-1">
-              <span className="text-[#6B7280] font-medium">3. Water Charges Allocation</span>
+              <span className="text-[var(--mv-muted)] font-medium">3. Water Charges Allocation</span>
               <span className="font-bold text-[var(--mv-ink)] font-mono">{formatRupee(invoice.waterCharges)}</span>
             </div>
 
             <div className="flex justify-between items-center text-xs py-1">
-              <span className="text-[#6B7280] font-medium">4. Car & Joint Parking Charges</span>
+              <span className="text-[var(--mv-muted)] font-medium">4. Car & Joint Parking Charges</span>
               <span className="font-bold text-[var(--mv-ink)] font-mono">{formatRupee(invoice.parkingCharges)}</span>
             </div>
 
             <div className="flex justify-between items-center text-xs py-1">
-              <span className="text-[#6B7280] font-medium">5. Non-Occupancy Surcharges</span>
+              <span className="text-[var(--mv-muted)] font-medium">5. Non-Occupancy Surcharges</span>
               <span className="font-bold text-[var(--mv-ink)] font-mono">{formatRupee(invoice.nonOccupancyCharges)}</span>
             </div>
 
             {(cgst > 0 || sgst > 0) && (
               <>
                 <hr className="border-[var(--mv-border)] my-1" />
-                <div className="flex justify-between items-center text-xs py-0.5 text-[#6B7280]">
-                  <span>9% CGST Payable</span>
+                <div className="flex justify-between items-center text-xs py-0.5 text-[var(--mv-muted)]">
+                  <span>CGST</span>
                   <span className="font-mono font-medium">{formatRupee(cgst)}</span>
                 </div>
-                <div className="flex justify-between items-center text-xs py-0.5 text-[#6B7280]">
-                  <span>9% SGST Payable</span>
+                <div className="flex justify-between items-center text-xs py-0.5 text-[var(--mv-muted)]">
+                  <span>SGST</span>
                   <span className="font-mono font-medium">{formatRupee(sgst)}</span>
                 </div>
               </>
@@ -234,7 +192,7 @@ Generated from demonstration data held in this browser.
             <span className="text-base font-bold text-[var(--mv-accent)] font-mono">{formatRupee(invoice.total)}</span>
           </div>
 
-          <div className="text-[10px] text-[#6B7280] bg-gray-50 p-2.5 rounded-lg border border-gray-100/50 flex flex-col gap-0.5 leading-snug text-left">
+          <div className="text-[10px] text-[var(--mv-muted)] bg-[var(--mv-page)] p-2.5 rounded-lg border border-[var(--mv-border)] flex flex-col gap-0.5 leading-snug text-left">
             <span>• Regular due date is fixed as: <strong>{invoice.dueDate}</strong></span>
             <span>• Standard RWA grace terms apply. Non-payment generates compounding overdue penalty.</span>
           </div>
@@ -245,9 +203,9 @@ Generated from demonstration data held in this browser.
           <button
             onClick={handleDownload}
             disabled={downloading}
-            className="py-2.5 px-3 bg-white border border-[var(--mv-border)] rounded-xl text-xs font-[var(--mv-ink)] font-bold hover:bg-gray-100 transition-all flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-xs disabled:opacity-60"
+            className="py-2.5 px-3 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl text-xs font-[var(--mv-ink)] font-bold hover:bg-[var(--mv-soft)] transition-all flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-xs disabled:opacity-60"
           >
-            <Download className="w-3.5 h-3.5 text-[#6B7280]" />
+            <Download className="w-3.5 h-3.5 text-[var(--mv-muted)]" />
             {downloading ? 'Fetching\u2026' : onDownloadPdf ? 'Download PDF' : 'Export summary'}
           </button>
 
@@ -265,7 +223,7 @@ Generated from demonstration data held in this browser.
           {invoice.status !== 'Paid' && role !== 'Resident' && onSendReminder && (
             <button
               onClick={() => onSendReminder(invoice)}
-              className="py-2.5 px-3 bg-[var(--mv-ink)] hover:bg-black text-white rounded-xl text-xs font-bold hover:bg-gray-800 transition-all shadow active:scale-95 cursor-pointer flex items-center justify-center gap-1.5"
+              className="py-2.5 px-3 bg-[var(--mv-ink)] hover:bg-black text-white rounded-xl text-xs font-bold transition-all shadow active:scale-95 cursor-pointer flex items-center justify-center gap-1.5"
             >
               <Send className="w-3.5 h-3.5" /> Remind Owner
             </button>
@@ -283,7 +241,6 @@ Generated from demonstration data held in this browser.
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Dialog>
   );
 };

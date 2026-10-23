@@ -1,49 +1,38 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  Home, 
-  Receipt, 
-  CreditCard, 
-  BookOpen, 
-  Menu, 
-  Bell, 
-  Lock, 
-  Unlock, 
-  Plus, 
-  Trash2, 
-  Edit3, 
-  TrendingUp, 
-  Send, 
-  CheckCircle, 
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Home,
+  Receipt,
+  CreditCard,
+  BookOpen,
+  Menu,
+  Bell,
+  Lock,
+  Unlock,
+  Plus,
+  Trash2,
+  Edit3,
+  TrendingUp,
+  Send,
+  CheckCircle,
   AlertCircle,
-  RefreshCw, 
-  User, 
-  Users, 
-  ChevronRight, 
-  Clock, 
-  Check, 
+  RefreshCw,
+  User,
+  Users,
+  ChevronRight,
+  Clock,
+  Check,
   ArrowRight,
   X,
   Download,
   Printer,
   FileText
 } from 'lucide-react';
-import { 
-  AreaChart, 
-  Area, 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer 
-} from 'recharts';
 
-import { 
-  getLocalStorageState, 
-  saveStateToLocalStorage, 
-  clearAndResetLocalStorage, 
-  formatRupee 
+import {
+  getLocalStorageState,
+  saveStateToLocalStorage,
+  clearAndResetLocalStorage,
+  formatRupee
 } from './utils';
 // The seed arrays, imported directly rather than reached through
 // getLocalStorageState(). That function returns whatever localStorage holds,
@@ -52,26 +41,35 @@ import {
 import { INITIAL_INVOICES, INITIAL_VENDOR_INVOICES } from './data';
 import { Resident, Invoice, ComplaintTicket, Vendor, VendorInvoice, JournalEntry, AuditLog } from './types';
 
-// Importing Custom Modals
-import { AdminPinModal } from './components/AdminPinModal';
-import { InvoiceDetailModal } from './components/InvoiceDetailModal';
-import { ReceiptModal } from './components/ReceiptModal';
-import { BackupHub } from './components/BackupHub';
-import { FinancialStatements } from './components/FinancialStatements';
-import { JournalLedger } from './components/JournalLedger';
+// The modals, the books screens and the charts are loaded when first shown.
+// recharts alone is most of the bundle, and a resident on a phone needs none
+// of them to see what they owe.
+const AdminPinModal = lazy(() => import('./components/AdminPinModal').then(m => ({ default: m.AdminPinModal })));
+const InvoiceDetailModal = lazy(() => import('./components/InvoiceDetailModal').then(m => ({ default: m.InvoiceDetailModal })));
+const ReceiptModal = lazy(() => import('./components/ReceiptModal').then(m => ({ default: m.ReceiptModal })));
+const BackupHub = lazy(() => import('./components/BackupHub').then(m => ({ default: m.BackupHub })));
+const FinancialStatements = lazy(() => import('./components/FinancialStatements').then(m => ({ default: m.FinancialStatements })));
+const JournalLedger = lazy(() => import('./components/JournalLedger').then(m => ({ default: m.JournalLedger })));
+const CollectionChart = lazy(() => import('./components/Charts').then(m => ({ default: m.CollectionChart })));
+const BudgetChart = lazy(() => import('./components/Charts').then(m => ({ default: m.BudgetChart })));
 import { BillingWorkflow } from './components/BillingWorkflow';
+import { Dialog } from './components/Dialog';
+import { ReceiptEntryForm, type OpenDocument } from './components/ReceiptEntryForm';
+import { Toasts, type ToastMessage } from './components/Toasts';
 import {
-  buildStatements, formatRupees, isoToDayMonthYear, periodLabel, periodToIso,
-  systemClock, toRupees,
+  A, buildStatements, dayMonthYearToIso, formatRupees, isoToDayMonthYear, periodToIso,
+  systemClock, toRupees, type Paise,
 } from './accounting';
 import { EXPENSE_ACCOUNTS } from './store/booksStore';
 import { useBooks } from './store/useBooks';
+import type { ReceiptOutcome } from './store/actions';
 import {
   apiCategoryFor, invoicesFrom, residentsFrom, ticketsFrom, vendorInvoicesFrom, vendorsFrom,
 } from './api/legacy';
-import type { SnapshotResponse, TicketResponse } from './api/client';
+import type { TicketResponse } from './api/client';
 import { LoginScreen } from './components/LoginScreen';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
+import { downloadInvoice, pdfFilename, saveBlob } from './invoiceExport';
 
 const SESSION_EMAIL_KEY = 'gm_rwa_session_email';
 
@@ -85,6 +83,45 @@ const SESSION_EMAIL_KEY = 'gm_rwa_session_email';
  * reads it.
  */
 const DEMO_RESIDENT_FLAT = 'B-204';
+
+/** What a lazily loaded panel shows for the moment it takes to arrive. */
+const PanelLoading: React.FC = () => (
+  <div className="py-10 text-center text-[10px] font-bold uppercase tracking-wider text-[var(--mv-muted)]" role="status">
+    Loading…
+  </div>
+);
+
+/**
+ * An invoice's due date as ISO. The server's are ISO already; the demo's
+ * seed has "10 Jun 2026", and some rows only a period.
+ */
+function dueIso(invoice: Invoice): string {
+  const raw = invoice.dueDate ?? '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  return dayMonthYearToIso(raw) ?? periodToIso(invoice.period) ?? '';
+}
+
+/** A due date as "due in 4 days", "due today" or "3 days overdue", from the dates. */
+function dueLabel(dueOn: string, today: string): string {
+  const due = Date.parse(`${dueOn}T00:00:00Z`);
+  const now = Date.parse(`${today}T00:00:00Z`);
+  if (Number.isNaN(due) || Number.isNaN(now)) return dueOn === '' ? 'NO DUE DATE' : `DUE ${dueOn}`;
+  const days = Math.round((due - now) / 86_400_000);
+  if (days === 0) return 'DUE TODAY';
+  if (days > 0) return `DUE IN ${days} ${days === 1 ? 'DAY' : 'DAYS'}`;
+  return `${-days} ${days === -1 ? 'DAY' : 'DAYS'} OVERDUE`;
+}
+
+/** "12:04" for a time today, otherwise the date. */
+function syncedLabel(iso: string | null): string {
+  if (iso === null) return 'NOT YET';
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return 'NOT YET';
+  const sameDay = at.toDateString() === new Date().toDateString();
+  return sameDay
+    ? at.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+    : at.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+}
 
 export default function App() {
   // --- Persistent States ---
@@ -115,7 +152,7 @@ export default function App() {
   const [currentRole, setCurrentRole] = useState<'Resident' | 'Manager' | 'Committee'>('Resident');
   const [activeTab, setActiveTab] = useState<'home' | 'bills' | 'pay' | 'books' | 'more'>('home');
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  
+
   // --- Modals Triggers ---
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authTargetRole, setAuthTargetRole] = useState<'Manager' | 'Committee'>('Manager');
@@ -123,6 +160,10 @@ export default function App() {
   const [selectedReceipt, setSelectedReceipt] = useState<Invoice | null>(null);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [showSuccessPayModal, setShowSuccessPayModal] = useState(false);
+  /** The receipt the books actually issued for the last payment, for the success dialog. */
+  const [lastReceipt, setLastReceipt] = useState<(ReceiptOutcome & { amountRupees: number }) | null>(null);
+  /** True while a write is being awaited, so a button cannot be pressed twice. */
+  const [working, setWorking] = useState(false);
 
   // --- Input Forms ---
   // Resident raise complaint
@@ -146,9 +187,9 @@ export default function App() {
   // Manager Generate Periodic Invoices Form
   const [showBillingWizard, setShowBillingWizard] = useState(false);
   const [wizardPeriod, setWizardPeriod] = useState('Jul 2026');
-  const [wizardCycle, setWizardCycle] = useState('Monthly');
-  const [wizardMaint, setWizardMaint] = useState('2500');
-  const [wizardSinking, setWizardSinking] = useState('500');
+  // A percentage of maintenance — the engine's own unit — not rupees, which is
+  // what the old label said while 500 was being read as 500%.
+  const [wizardSinking, setWizardSinking] = useState('10');
   const [wizardWater, setWizardWater] = useState('300');
   const [wizardParking, setWizardParking] = useState('0');
 
@@ -157,16 +198,45 @@ export default function App() {
   const [reportsSubState, setReportsSubState] = useState<'ie' | 'bs' | 'rp' | 'tb'>('ie');
 
   // Notifications Queue
-  const [toaster, setToaster] = useState<{ id: string; msg: string }[]>([]);
+  const [toaster, setToaster] = useState<ToastMessage[]>([]);
+  const toastSeq = useRef(0);
 
-  // Trigger Local Toast
-  const triggerToast = (msg: string) => {
-    const id = Date.now().toString();
-    setToaster(prev => [...prev, { id, msg }]);
-    setTimeout(() => {
-      setToaster(prev => prev.filter(t => t.id !== id));
-    }, 4500);
-  };
+  /**
+   * The demonstration banner's height, as a CSS variable the layouts offset
+   * themselves by. The banner is fixed and wraps on a phone, so a constant
+   * would be wrong; it used to cover the header and the theme switcher.
+   */
+  const bannerObserver = useRef<ResizeObserver | null>(null);
+  const bannerRef = useCallback((node: HTMLDivElement | null) => {
+    const root = document.documentElement;
+    bannerObserver.current?.disconnect();
+    bannerObserver.current = null;
+    if (node === null) {
+      root.style.setProperty('--mv-banner-h', '0px');
+      return;
+    }
+    const measure = () => root.style.setProperty('--mv-banner-h', `${node.offsetHeight}px`);
+    measure();
+    if (typeof ResizeObserver !== 'undefined') {
+      bannerObserver.current = new ResizeObserver(measure);
+      bannerObserver.current.observe(node);
+    }
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToaster(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  // Trigger Local Toast. Errors stay up longer: they are the ones that matter.
+  const triggerToast = useCallback((msg: string, tone: ToastMessage['tone'] = 'info') => {
+    const id = `${Date.now()}-${toastSeq.current++}`;
+    setToaster(prev => [...prev.slice(-3), { id, msg, tone }]);
+    setTimeout(() => dismissToast(id), tone === 'error' ? 8000 : 4500);
+  }, [dismissToast]);
+
+  const toastError = useCallback((err: unknown, fallback: string) => {
+    triggerToast(err instanceof Error && err.message !== '' ? err.message : fallback, 'error');
+  }, [triggerToast]);
 
   /**
    * Resolved once: the server if one answers, the local demonstration if not.
@@ -178,10 +248,14 @@ export default function App() {
   const booksSource = useBooks({
     vendorInvoices: INITIAL_VENDOR_INVOICES,
     demoFlatNo: DEMO_RESIDENT_FLAT,
+    // A refresh that failed, a record the engine refused: shown, not lost.
+    onProblem: message => triggerToast(message, 'error'),
   });
   const books = booksSource.store;
   const onServer = booksSource.kind === 'server';
   const booksVersion = booksSource.version;
+  /** Changes only when the books were reloaded, not on every busy flag. */
+  const booksLoadedAt = books?.snapshot().savedAt ?? null;
 
   /**
    * The store, for a handler.
@@ -195,6 +269,32 @@ export default function App() {
     if (books === null) throw new Error('The books are not open yet.');
     return books;
   };
+  const mustActions = (): NonNullable<typeof booksSource.actions> => {
+    if (booksSource.actions === null) throw new Error('The books are not open yet.');
+    return booksSource.actions;
+  };
+
+  /**
+   * Runs an awaited write with the busy flag held, so the button that started
+   * it cannot start it again, and any refusal ends up on screen rather than
+   * as an unhandled rejection.
+   */
+  const runWrite = async (fn: () => Promise<void>, fallback: string): Promise<void> => {
+    if (working) return;
+    setWorking(true);
+    try {
+      await fn();
+    } catch (err) {
+      toastError(err, fallback);
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  /** Members the server manages; the demo's own registry is local. */
+  const demoOnly = (what: string): string =>
+    `${what} is not available here yet: the books are on the server, and this screen only ` +
+    'edits the demonstration copy.';
 
   // --- Load the demonstration's own state on startup ---
   //
@@ -217,60 +317,52 @@ export default function App() {
   /**
    * The screens' data, from the server.
    *
-   * Runs whenever the store changes, which is after every write. The members,
-   * the invoices, the vendors and their bills all come out of the snapshot the
-   * store has already rehydrated, so what is on screen and what the ledger
-   * says are the same records rather than two lists that have to be kept in
-   * step.
+   * Runs whenever the books are reloaded, which is once after every write.
+   * The members, the invoices, the vendors and their bills all come out of
+   * the snapshot the store already fetched and rehydrated — read from it, not
+   * fetched a second time — so what is on screen and what the ledger says are
+   * the same records rather than two lists that have to be kept in step.
    */
   useEffect(() => {
-    if (!onServer || booksSource.client === null || books === null) return;
-    let cancelled = false;
+    const server = booksSource.server;
+    if (!onServer || server === null || books === null) return;
+    const snapshot = server.lastView();
+    if (snapshot === null) return;
 
-    void (async () => {
-      try {
-        const snapshot = await booksSource.client!.get<SnapshotResponse>('/api/books/snapshot');
-        if (cancelled) return;
+    const residents = residentsFrom(snapshot);
+    setMembers(residents);
+    setVendors(vendorsFrom(snapshot));
+    setVendorInvoices(vendorInvoicesFrom(snapshot));
+    setInvoices(invoicesFrom(
+      books.allDocuments(),
+      new Map(residents.map(r => [r.flatNo, r.name])),
+    ));
 
-        const residents = residentsFrom(snapshot);
-        setMembers(residents);
-        setVendors(vendorsFrom(snapshot));
-        setVendorInvoices(vendorInvoicesFrom(snapshot));
-        setInvoices(invoicesFrom(
-          books.allDocuments(),
-          new Map(residents.map(r => [r.flatNo, r.name])),
-        ));
+    // The journal screen reads this flattened list; the ledger itself is
+    // what the books screens use.
+    setJournal(books.journal().slice(-200).map(entry => ({
+      id: entry.id,
+      date: entry.date,
+      description: entry.narration,
+      debitAccount: entry.postings.find(leg => leg.debit > 0)?.accountCode ?? '',
+      creditAccount: entry.postings.find(leg => leg.credit > 0)?.accountCode ?? '',
+      amount: entry.postings.reduce((sum, leg) => sum + leg.debit, 0) / 100,
+    })));
+  }, [onServer, booksSource.server, books, booksLoadedAt]);
 
-        // The journal screen reads this flattened list; the ledger itself is
-        // what the books screens use.
-        setJournal(books.journal().slice(-200).map(entry => ({
-          id: entry.id,
-          date: entry.date,
-          description: entry.narration,
-          debitAccount: entry.postings.find(leg => leg.debit > 0)?.accountCode ?? '',
-          creditAccount: entry.postings.find(leg => leg.credit > 0)?.accountCode ?? '',
-          amount: entry.postings.reduce((sum, leg) => sum + leg.debit, 0) / 100,
-        })));
-      } catch (err) {
-        if (!cancelled) {
-          triggerToast(
-            `Could not read the books: ${err instanceof Error ? err.message : 'unknown error'}`,
-          );
-        }
-      }
-    })();
-
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onServer, booksSource.client, books, booksVersion]);
-
-  /** Tickets, and the audit trail, from their own endpoints. */
+  /**
+   * Tickets, and the audit trail, from their own endpoints — once signed in,
+   * and each only when the account may read it, rather than asking and
+   * collecting a 401 or 403 every time.
+   */
+  const mayReadTickets = booksSource.can('ticket.read.own') || booksSource.can('ticket.read.any');
+  const mayReadAudit = booksSource.can('audit.read');
   useEffect(() => {
-    if (!onServer || booksSource.client === null) return;
+    if (!onServer || booksSource.client === null || booksSource.status !== 'ready') return;
     let cancelled = false;
 
     void (async () => {
-      try {
+      if (mayReadTickets) try {
         const response = await booksSource.client!.get<{ tickets: readonly TicketResponse[] }>(
           '/api/tickets',
         );
@@ -279,7 +371,7 @@ export default function App() {
         // A resident with no helpdesk permission gets a 403 here, which is
         // not an error worth a toast — it means the screen has nothing to show.
       }
-      try {
+      if (mayReadAudit) try {
         const response = await booksSource.client!.get<{
           entries: ReadonlyArray<{ at: string; actorLabel: string; action: string }>;
         }>('/api/audit?limit=100');
@@ -298,8 +390,9 @@ export default function App() {
     })();
 
     return () => { cancelled = true; };
+    // Once per reload of the books, not once per busy flag.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onServer, booksSource.client, booksVersion]);
+  }, [onServer, booksSource.client, booksSource.status, booksLoadedAt, mayReadTickets, mayReadAudit]);
 
   /**
    * The view follows the roles the server granted.
@@ -308,15 +401,22 @@ export default function App() {
    * it. Here the server decides what the account may do, and this only picks
    * which of those views to open on.
    */
+  // Keyed on who is signed in and the view their roles open on — strings,
+  // so the effect runs when the account changes and not on every render.
+  // Depending on the session object reset the view a moment after a member
+  // with two roles had switched it.
+  const sessionEmailFromServer = booksSource.session?.email ?? null;
+  const sessionDefaultView = booksSource.session?.view ?? null;
+  const sessionViewCount = booksSource.session?.availableViews.length ?? 0;
   useEffect(() => {
-    if (!onServer || booksSource.session === null) return;
-    setIsAuthenticated(booksSource.session.availableViews.length > 1);
-    setCurrentRole(booksSource.session.view);
+    if (!onServer || sessionEmailFromServer === null || sessionDefaultView === null) return;
+    setIsAuthenticated(sessionViewCount > 1);
+    setCurrentRole(sessionDefaultView);
     // The address in the corner, from the session the server confirmed. A
     // cookie from a previous visit means there is no sign-in to go through,
     // so this is where it arrives.
-    setSessionEmail(booksSource.session.email);
-  }, [onServer, booksSource.session]);
+    setSessionEmail(sessionEmailFromServer);
+  }, [onServer, sessionEmailFromServer, sessionDefaultView, sessionViewCount]);
 
   // Sync back state properties
   const syncAndPersist = (updates: {
@@ -346,8 +446,19 @@ export default function App() {
     if (booksSource.kind === 'demo') saveStateToLocalStorage(updates);
   };
 
-  // Reset sandbox flow
+  // Reset sandbox flow. The demonstration only: on the server there is no
+  // sandbox, and loading the seed arrays into the screens would show sample
+  // flats as if they were the association's.
   const handleReset = () => {
+    const local = booksSource.local;
+    if (onServer || local === null) {
+      triggerToast(demoOnly('Resetting'), 'error');
+      return;
+    }
+    // The books too, not only the screens' arrays: the ledger is kept under
+    // its own key, and leaving it made a "reset" demo keep every payment.
+    local.resetToEmpty();
+    local.importSeedOnce('demo-invoices-v1', INITIAL_INVOICES);
     const cleared = clearAndResetLocalStorage();
     setMembers(cleared.members);
     setInvoices(cleared.invoices);
@@ -412,7 +523,7 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem(SESSION_EMAIL_KEY);
-    void booksSource.signOut();
+    booksSource.signOut().catch((err: unknown) => toastError(err, 'Signing out on the server failed.'));
     setSessionEmail(null);
     setIsAuthenticated(false);
     setCurrentRole('Resident');
@@ -427,11 +538,32 @@ export default function App() {
     triggerToast('Administrative token expired. Screen locked.');
   };
 
+  /**
+   * The flat the signed-in resident is looking at.
+   *
+   * From the session, which got it from the owner record on the server. In
+   * demo mode it is the sample flat. On the server with no flat linked to the
+   * account it is empty — and empty is the truthful answer, not a fallback to
+   * somebody else's flat.
+   *
+   * Declared before anything reads it: it used to be declared sixty lines
+   * below its first use, which threw as soon as there were invoices to filter.
+   */
+  const residentFlatNo = booksSource.session?.primaryFlatNo ?? '';
+
   // --- DYNAMIC QUANTITATIVE MATHEMATICS ---
   // 1. Resident
   const rohanInvoices = invoices.filter(inv => inv.flatNo === residentFlatNo);
-  const rohanDueInvoice = rohanInvoices.find(inv => inv.status !== 'Paid' && inv.period === 'Jun 2026');
-  const rohanTotalDueNum = rohanInvoices.filter(inv => inv.status !== 'Paid').reduce((acc, current) => acc + current.total, 0);
+  // The bill to pay next: the unpaid one falling due first, whatever month it
+  // is for. It was pinned to 'Jun 2026', so from July nothing showed as due.
+  const rohanDueInvoice = rohanInvoices
+    .filter(inv => inv.status !== 'Paid')
+    .sort((a, b) => dueIso(a).localeCompare(dueIso(b)))[0];
+  // What the flat owes per the ledger — so a part payment shows as part paid —
+  // falling back to the unpaid invoices' totals before the books are open.
+  const rohanTotalDueNum = books !== null && residentFlatNo !== ''
+    ? toRupees(books.positionOf(residentFlatNo).totalDues)
+    : rohanInvoices.filter(inv => inv.status !== 'Paid').reduce((acc, current) => acc + current.total, 0);
   const rohanTotalPaidNum = rohanInvoices.filter(inv => inv.status === 'Paid').reduce((acc, current) => acc + current.total, 0);
   const rohanOpenTicketsNum = tickets.filter(t => t.flatNo === residentFlatNo && t.status === 'Open').length;
 
@@ -468,28 +600,19 @@ export default function App() {
   useEffect(() => {
     // Only into the demonstration's own books. A production database does not
     // take sample invoices, and the server has no endpoint that would accept
-    // them — `importSeedOnce` on the server store declines and says why.
-    if (books === null || onServer) return;
-    const result = books.importSeedOnce('demo-invoices-v1', INITIAL_INVOICES);
+    // them — the server store has no such method at all.
+    const local = booksSource.local;
+    if (local === null || onServer) return;
+    const result = local.importSeedOnce('demo-invoices-v1', INITIAL_INVOICES);
     if (!result.imported && result.entriesAdded === 0) {
       // Not an error: the usual case is that it was imported on a previous
       // visit. Left on the store's problem list rather than toasted.
       return;
     }
-  }, [books, onServer]);
+  }, [booksSource.local, onServer]);
 
   /** Today, from one clock, instead of a date literal in each handler. */
   const today = systemClock.today();
-
-  /**
-   * The flat the signed-in resident is looking at.
-   *
-   * From the session, which got it from the owner record on the server. In
-   * demo mode it is the sample flat. On the server with no flat linked to the
-   * account it is empty — and empty is the truthful answer, not a fallback to
-   * somebody else's flat.
-   */
-  const residentFlatNo = booksSource.session?.primaryFlatNo ?? '';
 
   /**
    * The association's own GSTIN, as the screens should print it.
@@ -548,14 +671,59 @@ export default function App() {
   // Expenses sum
   const totalMTDExpenses = vendorInvoices.filter(v => v.status === 'Approved').reduce((sum, v) => sum + v.netPayable, 0);
 
-  // 3. Committee
-  const corpusFundBase = 4820000;
-  const sinkingFundBase = 1260000;
-  const operatingFundBase = 684500;
+  // 3. Committee — balances read off the ledger, in paise. These were three
+  // constants, shown on the server as if they were the association's funds.
+  const ledgerNow = books?.snapshot().ledger ?? null;
+  const reserveFundPaise = (ledgerNow?.balanceOf(A.GENERAL_RESERVE) ?? 0) as Paise;
+  const sinkingFundPaise = (ledgerNow?.balanceOf(A.SINKING_FUND) ?? 0) as Paise;
+  const operatingBankPaise = (ledgerNow?.balanceOf(A.BANK_OPERATING) ?? 0) as Paise;
   const pendingApprovalsCount = vendorInvoices.filter(v => v.status === 'Pending').length;
 
+  /** The resident's advance on account, from the member advance subledger. */
+  const residentAdvancePaise = (residentFlatNo === '' || ledgerNow === null
+    ? 0
+    : ledgerNow.balanceOf(A.MEMBER_ADVANCE, { party: residentFlatNo })) as Paise;
+  /** The categories of the resident's open tickets, for the tile. */
+  const residentOpenTicketCategories = Array.from(new Set(
+    tickets.filter(t => t.flatNo === residentFlatNo && t.status === 'Open').map(t => t.category),
+  ));
+
+  /** Documents a receipt can be set against, oldest first. */
+  const openDocumentsFor = (flatNo: string): readonly OpenDocument[] =>
+    registerDocuments
+      .filter(d => d.flatNo === flatNo && d.state === 'tax-invoice' && d.outstanding > 0)
+      .sort((a, b) => a.dueOn.localeCompare(b.dueOn))
+      .map(d => ({ proformaNo: d.proformaNo, label: `${d.taxInvoiceNo ?? d.proformaNo} (${d.period})`, outstanding: d.outstanding }));
+
+  /** Whether this account may record a receipt. In demo every view may. */
+  const mayRecordReceipts = !onServer || booksSource.can('payment.record');
+  const mayPayOnline = !onServer || booksSource.can('payment.record');
+
+  /** GST as the screens should state it: from the settings, never a constant. */
+  const gstSetting = onServer
+    ? booksSource.server?.context()?.settings.gst ?? null
+    : null;
+  const gstLabel = onServer
+    ? (gstSetting === null || !gstSetting.chargeGst ? 'No GST' : `${gstSetting.ratePercent}% GST`)
+    : (books?.snapshot().config.gstOnMaintenance === true
+        ? `${books.snapshot().config.gst.rate}% GST`
+        : 'No GST');
+  /** The maintenance rate the run will use, in words. */
+  const rateLabel = onServer
+    ? (() => {
+        const rate = booksSource.server?.context()?.rate ?? null;
+        return rate === null
+          ? 'No maintenance rate is on record — the server will refuse the run until one is approved.'
+          : `₹${rate.ratePerSqFt.toFixed(2)}/sq ft on ${rate.basis} area, from ${rate.effectiveFrom}` +
+            `${rate.approved ? '' : ' (not yet approved)'}`;
+      })()
+    : (() => {
+        const m = books?.snapshot().config.maintenance;
+        return m === undefined ? '' : `₹${m.ratePerSqFt.toFixed(2)}/sq ft on ${m.areaBasis} area (demonstration rate)`;
+      })();
+
   // --- ACTIONS HANDLERS ---
-  
+
   // Submit new ticket complaint
   const handleRaiseComplaint = (e: React.FormEvent) => {
     e.preventDefault();
@@ -621,10 +789,26 @@ export default function App() {
 
   // Pay invoice action trigger
   const handlePayClick = (invoice: Invoice) => {
+    if (!mayPayOnline) {
+      triggerToast(
+        'Online payment is not connected. Pay the association by UPI, NEFT or cheque and the ' +
+        'manager records the receipt against your flat.',
+        'error',
+      );
+      return;
+    }
     setPayingInvoice(invoice);
     setPartialAmountInput('');
     setCustomAdvanceInput('');
     setActiveTab('pay');
+  };
+
+  /** A line for the demonstration's local audit list. The server keeps its own. */
+  const logLocally = (user: string, action: string): void => {
+    if (onServer) return;
+    syncAndPersist({
+      audit: [{ id: `audit-${Date.now()}`, user, action, timestamp: systemClock.now() }, ...auditLog],
+    });
   };
 
   /**
@@ -640,44 +824,35 @@ export default function App() {
     e.preventDefault();
     const value = parseFloat(customAdvanceInput);
     if (!Number.isFinite(value) || value <= 0) {
-      triggerToast('Enter an advance amount greater than zero.');
+      triggerToast('Enter an advance amount greater than zero.', 'error');
+      return;
+    }
+    if (!mayPayOnline) {
+      triggerToast('Online payment is not connected. The manager records advances received.', 'error');
       return;
     }
 
     const flatNo = residentFlatNo;
-    const ref = `ADV-${Date.now().toString().slice(-8)}`;
-
-    let result;
-    try {
-      result = mustBooks().depositAdvance({
+    void runWrite(async () => {
+      const result = await mustActions().depositAdvance({
         flatNo,
         amountRupees: value,
-        receiptNo: ref,
-        method: 'UPI',
+        method: 'upi',
         by: `${currentRole} (${flatNo})`,
       });
-    } catch (err) {
-      triggerToast(err instanceof Error ? err.message : 'The advance could not be recorded.');
-      return;
-    }
-
-    const newLog: AuditLog = {
-      id: `audit-${Date.now()}`,
-      user: `${currentRole} (${flatNo})`,
-      action:
-        `Advance deposit ${ref} of ${formatRupees(fromRupeesSafe(value))}. ` +
+      logLocally(
+        `${currentRole} (${flatNo})`,
+        `Advance deposit ${result.receiptNo} of ${formatRupees(fromRupeesSafe(value) as Paise)}. ` +
         `${formatRupees(result.appliedToDues)} applied to open bills, ` +
         `${formatRupees(result.heldAsAdvance)} held on account.`,
-      timestamp: systemClock.now(),
-    };
-    syncAndPersist({ audit: [newLog, ...auditLog] });
-
-    setCustomAdvanceInput('');
-    triggerToast(
-      result.appliedToDues > 0
-        ? `Advance recorded; ${formatRupees(result.appliedToDues)} went against open bills.`
-        : `Advance of ${formatRupees(fromRupeesSafe(value))} held on account.`,
-    );
+      );
+      setCustomAdvanceInput('');
+      triggerToast(
+        result.appliedToDues > 0
+          ? `Receipt ${result.receiptNo}: ${formatRupees(result.appliedToDues)} went against open bills.`
+          : `Receipt ${result.receiptNo}: ${formatRupees(result.heldAsAdvance)} held on account.`,
+      );
+    }, 'The advance could not be recorded.');
   };
 
   /**
@@ -685,18 +860,19 @@ export default function App() {
    *
    * No messaging provider is wired in — that needs a server holding a Gupshup
    * or Twilio key — so this records the reminder and says so, rather than
-   * reporting a broadcast that did not happen.
+   * reporting a broadcast that did not happen. The demonstration only: on the
+   * server there is nothing to log it to yet.
    */
   const handleSendReminder = (invoice: Invoice) => {
-    const newLog: AuditLog = {
-      id: `audit-${Date.now()}`,
-      user: `Manager (${currentRole})`,
-      action:
-        `Reminder logged for flat ${invoice.flatNo} (${invoice.name}) on ` +
-        `${invoice.invoiceNo}, ${formatRupees(fromRupeesSafe(invoice.total))} outstanding.`,
-      timestamp: systemClock.now(),
-    };
-    syncAndPersist({ audit: [newLog, ...auditLog] });
+    if (onServer) {
+      triggerToast(demoOnly('Sending a reminder'), 'error');
+      return;
+    }
+    logLocally(
+      `Manager (${currentRole})`,
+      `Reminder logged for flat ${invoice.flatNo} (${invoice.name}) on ` +
+      `${invoice.invoiceNo}, ${formatRupees(fromRupeesSafe(invoice.total) as Paise)} outstanding.`,
+    );
     triggerToast(
       `Reminder logged for ${invoice.name} (${invoice.flatNo}). ` +
       `Demo — no WhatsApp or SMS is sent.`,
@@ -704,13 +880,14 @@ export default function App() {
   };
 
   /**
-   * Records a member's payment through the accounting engine.
+   * Records a member's payment through the books.
    *
    * What this replaces: the old handler marked the invoice `Paid` whatever was
    * tendered, and credited the receivable with the amount actually received,
    * so a part payment left the invoice list and the books disagreeing by the
    * balance. Now the receipt is allocated against the invoice, the ledger
-   * records what is still owed, and the status is read back from it.
+   * records what is still owed, and the status is read back from it — and on
+   * the server, nothing is shown as paid until the server has said so.
    */
   const handleExecutePayment = (e: React.FormEvent) => {
     e.preventDefault();
@@ -719,73 +896,94 @@ export default function App() {
     const typed = parseFloat(partialAmountInput);
     const amountRupees = Number.isFinite(typed) && typed > 0 ? typed : payingInvoice.total;
     if (amountRupees <= 0) {
-      triggerToast('Enter an amount greater than zero.');
+      triggerToast('Enter an amount greater than zero.', 'error');
       return;
     }
 
-    // The register works in proforma numbers. An invoice carried over from the
-    // seed has no register document, so one is raised and approved for it
-    // first — the alternative is a receipt with no document behind it.
-    const docRef = ensureRegisterDocument(payingInvoice);
+    // On the server an invoice's id is its proforma number. In the demo, an
+    // invoice carried over from the seed was already posted to the ledger by
+    // the seed import: the receipt is applied to that receivable, because
+    // raising a register document for it as well would post the bill twice
+    // (the engine refuses: "already posted"). One that was never posted gets
+    // a register document raised and approved first.
+    const paying = payingInvoice;
+    const local = booksSource.local;
+    const seededReceivable = !onServer && local !== null
+      && local.documentsFor(paying.flatNo).every(d => d.period !== paying.period || d.state === 'cancelled')
+      && local.snapshot().ledger.docLedger(A.MAINTENANCE_RECEIVABLE, { party: paying.flatNo }).has(paying.invoiceNo);
+    const docRef = onServer || seededReceivable ? paying.id : ensureRegisterDocument(paying);
     if (docRef === null) return;
 
-    const receiptNo = `RCT-${payingInvoice.invoiceNo}-${Date.now().toString().slice(-6)}`;
-    let result;
-    try {
-      result = mustBooks().recordMemberPayment({
-        proformaNo: docRef,
-        amountRupees,
-        receiptNo,
-        method: paymentMethod,
-        by: `${currentRole} (${payingInvoice.flatNo})`,
-      });
-    } catch (err) {
-      triggerToast(err instanceof Error ? err.message : 'The payment could not be recorded.');
-      return;
-    }
+    void runWrite(async () => {
+      const result = seededReceivable
+        ? await mustActions().recordReceipt({
+            flatNo: paying.flatNo,
+            amountRupees,
+            receivedOn: today,
+            method: paymentMethod === 'UPI' ? 'upi' : paymentMethod === 'Card' ? 'card' : 'neft',
+            by: `${currentRole} (${paying.flatNo})`,
+          })
+        : await mustActions().payDocument({
+            proformaNo: docRef,
+            amountRupees,
+            method: paymentMethod,
+            by: `${currentRole} (${paying.flatNo})`,
+          });
 
-    const view = mustBooks().snapshot().register.get(docRef);
-    const outstandingRupees = toRupees(result.outstandingAfter);
+      const view = mustBooks().allDocuments().find(d => d.proformaNo === docRef);
+      const seededOpen = seededReceivable
+        ? (mustBooks().snapshot().ledger
+            .docLedger(A.MAINTENANCE_RECEIVABLE, { party: paying.flatNo }).get(paying.invoiceNo) ?? 0)
+        : null;
+      const settled = seededOpen !== null ? seededOpen <= 0 : view?.status === 'Paid';
 
-    // The array keeps the document list the screens already render; its status
-    // now mirrors what the ledger says rather than being set independently.
-    const updatedInvoices = invoices.map(inv =>
-      inv.id === payingInvoice.id
-        ? {
-            ...inv,
-            status: (view?.status === 'Paid' ? 'Paid' : 'Pending') as Invoice['status'],
-            paidDate: isoToDayMonthYear(today),
-            paymentMethod,
-            transactionId: receiptNo,
-          }
-        : inv);
-
-    const newLog: AuditLog = {
-      id: `audit-${Date.now()}`,
-      user: `${currentRole} ${payingInvoice.name} (${payingInvoice.flatNo})`,
-      action:
-        `Receipt ${receiptNo} of ${formatRupees(fromRupeesSafe(amountRupees))} against ` +
+      // The demo's array keeps the document list the screens already render;
+      // its status mirrors what the ledger says. On the server the list is
+      // rebuilt from the refreshed snapshot instead.
+      let receiptInvoice: Invoice = paying;
+      if (!onServer) {
+        const updatedInvoices = invoices.map(inv =>
+          inv.id === paying.id
+            ? {
+                ...inv,
+                status: (settled ? 'Paid' : 'Pending') as Invoice['status'],
+                paidDate: isoToDayMonthYear(today),
+                paymentMethod,
+                transactionId: result.receiptNo,
+              }
+            : inv);
+        receiptInvoice = updatedInvoices.find(inv => inv.id === paying.id) ?? paying;
+        syncAndPersist({ invoices: updatedInvoices });
+      } else {
+        receiptInvoice = { ...paying, transactionId: result.receiptNo, paymentMethod };
+      }
+      logLocally(
+        `${currentRole} ${paying.name} (${paying.flatNo})`,
+        `Receipt ${result.receiptNo} of ${formatRupees(fromRupeesSafe(amountRupees) as Paise)} against ` +
         `${view?.taxInvoiceNo ?? docRef} via ${paymentMethod}. ` +
         `${formatRupees(result.appliedToDues)} applied to dues` +
         (result.heldAsAdvance > 0 ? `, ${formatRupees(result.heldAsAdvance)} held as advance` : '') +
-        `. Outstanding after: ${formatRupees(result.outstandingAfter)}.`,
-      timestamp: systemClock.now(),
-    };
+        (result.outstandingAfter === null ? '.' : `. Outstanding after: ${formatRupees(result.outstandingAfter)}.`),
+      );
 
-    syncAndPersist({ invoices: updatedInvoices, audit: [newLog, ...auditLog] });
+      setSelectedReceipt(receiptInvoice);
+      setLastReceipt({
+        ...result,
+        amountRupees,
+        outstandingAfter: seededOpen !== null ? (Math.max(seededOpen, 0) as Paise) : result.outstandingAfter,
+      });
+      setPayingInvoice(null);
+      setShowSuccessPayModal(true);
 
-    const receiptInvoice = updatedInvoices.find(inv => inv.id === payingInvoice.id) || payingInvoice;
-    setSelectedReceipt(receiptInvoice);
-    setPayingInvoice(null);
-    setShowSuccessPayModal(true);
-
-    triggerToast(
-      outstandingRupees > 0
-        ? `Receipt recorded. ${formatRupees(result.outstandingAfter)} still outstanding on this bill.`
-        : result.heldAsAdvance > 0
-          ? `Bill settled. ${formatRupees(result.heldAsAdvance)} held as an advance.`
-          : 'Bill settled in full.',
-    );
+      const outstanding = result.outstandingAfter ?? 0;
+      triggerToast(
+        outstanding > 0
+          ? `Receipt ${result.receiptNo} recorded. ${formatRupees(outstanding as Paise)} still outstanding on this bill.`
+          : result.heldAsAdvance > 0
+            ? `Receipt ${result.receiptNo} recorded. ${formatRupees(result.heldAsAdvance)} held as an advance.`
+            : `Receipt ${result.receiptNo} recorded.`,
+      );
+    }, 'The payment could not be recorded.');
   };
 
   /**
@@ -794,10 +992,13 @@ export default function App() {
    * The demo's invoice array predates the register, so an invoice from the
    * seed has no document. Rather than letting a receipt post against nothing,
    * a proforma is raised from the invoice's own lines and approved, which
-   * keeps the amounts identical to what the member was shown.
+   * keeps the amounts identical to what the member was shown. Demo only: the
+   * server's invoices all come from its register.
    */
   const ensureRegisterDocument = (invoice: Invoice): string | null => {
-    const existing = mustBooks().documentsFor(invoice.flatNo)
+    const local = booksSource.local;
+    if (local === null) return invoice.id;
+    const existing = local.documentsFor(invoice.flatNo)
       .find(d => d.period === invoice.period && d.state !== 'cancelled');
     if (existing) return existing.proformaNo;
 
@@ -811,27 +1012,65 @@ export default function App() {
     ].filter(l => l.amount > 0);
 
     if (lines.length === 0) {
-      triggerToast(`Invoice ${invoice.invoiceNo} has no chargeable lines, so no receipt can be applied to it.`);
+      triggerToast(`Invoice ${invoice.invoiceNo} has no chargeable lines, so no receipt can be applied to it.`, 'error');
       return null;
     }
 
     try {
-      const doc = mustBooks().snapshot().register.issueProforma({
+      const doc = local.snapshot().register.issueProforma({
         flatNo: invoice.flatNo,
         period: invoice.period,
         lines,
       });
-      mustBooks().approveDocuments([doc.proformaNo], `${currentRole} (carried forward from ${invoice.invoiceNo})`);
+      local.approveDocuments([doc.proformaNo], `${currentRole} (carried forward from ${invoice.invoiceNo})`);
       return doc.proformaNo;
     } catch (err) {
-      triggerToast(err instanceof Error ? err.message : `Could not open a document for ${invoice.invoiceNo}.`);
+      toastError(err, `Could not open a document for ${invoice.invoiceNo}.`);
       return null;
     }
   };
 
-  // Member management CRUD triggers
+  /** A receipt the manager recorded, said in the toast and in the demo's log. */
+  const handleReceiptRecorded = (outcome: ReceiptOutcome, flatNo: string) => {
+    logLocally(
+      `Manager (${currentRole})`,
+      `Receipt ${outcome.receiptNo} recorded for flat ${flatNo}: ` +
+      `${formatRupees(outcome.appliedToDues)} applied to dues` +
+      (outcome.heldAsAdvance > 0 ? `, ${formatRupees(outcome.heldAsAdvance)} held as advance.` : '.'),
+    );
+    triggerToast(
+      `Receipt ${outcome.receiptNo} recorded for ${flatNo}. ` +
+      `${formatRupees(outcome.appliedToDues)} applied to dues` +
+      (outcome.heldAsAdvance > 0 ? `, ${formatRupees(outcome.heldAsAdvance)} held as an advance.` : '.'),
+    );
+  };
+
+  /** The server's receipt PDF, saved. */
+  const downloadReceiptPdf = async (receiptNo: string): Promise<void> => {
+    const server = booksSource.server;
+    if (server === null) throw new Error('Receipts are only issued as PDFs by the server.');
+    saveBlob(await server.receiptPdf(receiptNo), pdfFilename(receiptNo));
+  };
+
+  /** The document itself: the server's PDF, or the demonstration summary. */
+  const handleDownloadInvoice = (invoice: Invoice) => {
+    const server = booksSource.server;
+    downloadInvoice(invoice, server === null ? undefined : inv => server.invoicePdf(inv.id))
+      .then(() => triggerToast(server === null
+        ? 'Demonstration summary saved. It is not a tax invoice.'
+        : `${invoice.invoiceNo} saved as a PDF.`))
+      .catch((err: unknown) => toastError(err, 'The document could not be fetched.'));
+  };
+
+  // Member management CRUD triggers. The demonstration's own registry: on the
+  // server the flats and owners are master data, and these edited only the
+  // screen's copy — a "new flat" that existed nowhere.
   const handleSaveMember = (e: React.FormEvent) => {
     e.preventDefault();
+    if (onServer) {
+      triggerToast(demoOnly('Editing the member registry'), 'error');
+      return;
+    }
     if (!formName.trim() || !formFlat.trim()) return;
 
     if (editingMemberId) {
@@ -890,6 +1129,7 @@ export default function App() {
   };
 
   const handleEditMemberClick = (m: Resident) => {
+    if (onServer) return;
     setEditingMemberId(m.id);
     setFormName(m.name);
     setFormFlat(m.flatNo);
@@ -899,6 +1139,10 @@ export default function App() {
   };
 
   const handleDeleteMember = (id: string, name: string) => {
+    if (onServer) {
+      triggerToast(demoOnly('Removing a member'), 'error');
+      return;
+    }
     const updated = members.filter(m => m.id !== id);
     const newLog: AuditLog = {
       id: `audit-${Date.now()}`,
@@ -922,70 +1166,58 @@ export default function App() {
    * paid the vendor and withheld the tax, debiting `Vendor Payable` twice and
    * crediting it nowhere, so no expense ever reached the books and the payable
    * carried a debit balance. Approval, booking and payment are now three
-   * separate steps, each with its own posting or none at all.
+   * separate steps, each with its own posting or none at all — and each is
+   * awaited before the next starts, so a booking is never sent ahead of the
+   * approval it depends on.
    */
   const handleVendorInvoiceStatus = (id: string, status: 'Approved' | 'Rejected') => {
     const target = vendorInvoices.find(vi => vi.id === id);
     if (!target) return;
 
     if (status === 'Rejected') {
-      mustBooks().rejectVendorBill(id, `Treasurer (${currentRole})`, 'Rejected on review');
-      const updated = vendorInvoices.map(vi => (vi.id === id ? { ...vi, status } : vi));
-      syncAndPersist({
-        vendorInvoices: updated,
-        audit: [{
-          id: `audit-${Date.now()}`,
-          user: `Treasurer (${currentRole})`,
-          action: `Rejected vendor bill ${id} from ${target.vendorName}. Nothing was posted.`,
-          timestamp: systemClock.now(),
-        }, ...auditLog],
-      });
-      triggerToast(`Vendor bill from ${target.vendorName} rejected. Nothing posted.`);
+      if (onServer) {
+        triggerToast(demoOnly('Rejecting a vendor bill'), 'error');
+        return;
+      }
+      void runWrite(async () => {
+        await mustActions().rejectVendorBill(id, `Treasurer (${currentRole})`, 'Rejected on review');
+        const updated = vendorInvoices.map(vi => (vi.id === id ? { ...vi, status } : vi));
+        syncAndPersist({ vendorInvoices: updated });
+        logLocally(`Treasurer (${currentRole})`, `Rejected vendor bill ${id} from ${target.vendorName}. Nothing was posted.`);
+        triggerToast(`Vendor bill from ${target.vendorName} rejected. Nothing posted.`);
+      }, `Vendor bill ${id} was not rejected.`);
       return;
     }
 
     // Approve, then book. Booking debits the expense at gross, credits the
     // payable net of tax and credits the TDS withheld; it does not touch the
     // bank. Paying is a separate action on the Payables screen.
-    mustBooks().approveVendorBill(id, `Treasurer (${currentRole})`);
-    mustBooks().bookApprovedVendorBill(
-      id,
-      `Treasurer (${currentRole})`,
-      expenseAccountForCategory(target.category),
-    );
+    void runWrite(async () => {
+      const actions = mustActions();
+      await actions.approveVendorBill(id, `Treasurer (${currentRole})`);
+      await actions.bookVendorBill(id, `Treasurer (${currentRole})`, expenseAccountForCategory(target.category));
 
-    const booked = mustBooks().snapshot().vendorBills.find(v => v.id === id);
-    if (booked?.state !== 'booked') {
-      triggerToast(
-        mustBooks().snapshot().problems[0] ??
-        `Vendor bill ${id} could not be booked.`,
+      const booked = mustBooks().snapshot().vendorBills.find(v => v.id === id);
+      if (booked?.state !== 'booked') {
+        throw new Error(`Vendor bill ${id} is ${booked?.state ?? 'missing'} after booking.`);
+      }
+      const payableNow = mustBooks().snapshot().ledger.balanceOf('2000', { party: target.vendorId });
+      if (!onServer) {
+        syncAndPersist({ vendorInvoices: vendorInvoices.map(vi => (vi.id === id ? { ...vi, status } : vi)) });
+      }
+      logLocally(
+        `Treasurer (${currentRole})`,
+        `Approved and booked vendor bill ${id} from ${target.vendorName}: ` +
+        `${formatRupees(fromRupeesSafe(target.amount) as Paise)} to expense, ` +
+        `${formatRupees(fromRupeesSafe(target.tdsAmount) as Paise)} TDS withheld, ` +
+        `${formatRupees(fromRupeesSafe(target.netPayable) as Paise)} payable. ` +
+        `Not paid — payment is a separate step.`,
       );
-      return;
-    }
-
-    const payableNow = mustBooks().snapshot().ledger.balanceOf(
-      '2000', { party: target.vendorId },
-    );
-    const updated = vendorInvoices.map(vi => (vi.id === id ? { ...vi, status } : vi));
-    syncAndPersist({
-      vendorInvoices: updated,
-      audit: [{
-        id: `audit-${Date.now()}`,
-        user: `Treasurer (${currentRole})`,
-        action:
-          `Approved and booked vendor bill ${id} from ${target.vendorName}: ` +
-          `${formatRupees(fromRupeesSafe(target.amount))} to expense, ` +
-          `${formatRupees(fromRupeesSafe(target.tdsAmount))} TDS withheld, ` +
-          `${formatRupees(fromRupeesSafe(target.netPayable))} payable. ` +
-          `Not paid — payment is a separate step.`,
-        timestamp: systemClock.now(),
-      }, ...auditLog],
-    });
-
-    triggerToast(
-      `Booked ${formatRupees(fromRupeesSafe(target.amount))} to expense for ` +
-      `${target.vendorName}. ${formatRupees(payableNow)} now payable — not yet paid.`,
-    );
+      triggerToast(
+        `Booked ${formatRupees(fromRupeesSafe(target.amount) as Paise)} to expense for ` +
+        `${target.vendorName}. ${formatRupees(payableNow)} now payable — not yet paid.`,
+      );
+    }, `Vendor bill ${id} could not be booked.`);
   };
 
   /**
@@ -998,6 +1230,7 @@ export default function App() {
       triggerToast(
         `${bill.vendorName}'s bill is ${bill.state}. It has to be booked before it can be paid, ` +
         `because until then there is no payable to settle.`,
+        'error',
       );
       return;
     }
@@ -1009,28 +1242,24 @@ export default function App() {
     }
 
     const paymentRef = `PAY-${id}-${Date.now().toString().slice(-6)}`;
-    mustBooks().payVendor({
-      id,
-      amountRupees: toRupees(payable),
-      paymentRef,
-      by: `Treasurer (${currentRole})`,
-    });
-
-    syncAndPersist({
-      audit: [{
-        id: `audit-${Date.now()}`,
-        user: `Treasurer (${currentRole})`,
-        action:
-          `Paid ${formatRupees(payable)} to ${bill.vendorName} against ${id} ` +
-          `(${paymentRef}). Recorded in the books; no bank transfer was initiated — ` +
-          `this application has no banking connection.`,
-        timestamp: systemClock.now(),
-      }, ...auditLog],
-    });
-    triggerToast(
-      `${formatRupees(payable)} recorded as paid to ${bill.vendorName}. ` +
-      `Books only — no bank transfer was made.`,
-    );
+    void runWrite(async () => {
+      await mustActions().payVendor({
+        id,
+        amountRupees: toRupees(payable),
+        paymentRef,
+        by: `Treasurer (${currentRole})`,
+      });
+      logLocally(
+        `Treasurer (${currentRole})`,
+        `Paid ${formatRupees(payable)} to ${bill.vendorName} against ${id} ` +
+        `(${paymentRef}). Recorded in the books; no bank transfer was initiated — ` +
+        `this application has no banking connection.`,
+      );
+      triggerToast(
+        `${formatRupees(payable)} recorded as paid to ${bill.vendorName}. ` +
+        `Books only — no bank transfer was made.`,
+      );
+    }, `The payment to ${bill.vendorName} was not recorded.`);
   };
 
   /** Maps a vendor's free-text category onto an expenditure account. */
@@ -1048,8 +1277,9 @@ export default function App() {
   };
 
   const handleTriggerBackup = (sheetId: string) => {
+    if (onServer) return;
     const recordCountSum = members.length + invoices.length + tickets.length + vendors.length + journal.length;
-    
+
     // There is no remote write to report on, so this records what actually
     // happened: a local snapshot was counted. 'Success' here would assert a
     // confirmation nothing ever sent or received.
@@ -1085,7 +1315,9 @@ export default function App() {
    *
    * Now the charge is the flat's area times the rate in force, GST comes from
    * the config, the period sets the dates, and a flat that already has a live
-   * document for the period is skipped and reported.
+   * document for the period is skipped and reported. On the server the run is
+   * the server's, with its own approved rate, and the figures shown are the
+   * ones it returned.
    *
    * Nothing is posted here. The run raises proformas; the receivable and the
    * GST arise when the treasurer's approval is followed by conversion.
@@ -1095,7 +1327,7 @@ export default function App() {
 
     const period = wizardPeriod.trim();
     if (periodToIso(period) === null) {
-      triggerToast(`"${period}" is not a month and year. Use a form like "Jul 2026".`);
+      triggerToast(`"${period}" is not a month and year. Use a form like "Jul 2026".`, 'error');
       return;
     }
 
@@ -1119,40 +1351,41 @@ export default function App() {
       commonCharges.push({ head: 'maintenance', amountRupees: parkingCharge, taxable: true });
     }
 
-    let result;
-    try {
-      result = mustBooks().runBillingFor({
+    void runWrite(async () => {
+      const result = await mustActions().runBilling({
         period,
         flats,
         commonCharges,
         ...(Number.isFinite(sinkingPercent) && sinkingPercent > 0
           ? { sinkingFundPercentOfMaintenance: sinkingPercent } : {}),
       });
-    } catch (err) {
-      triggerToast(err instanceof Error ? err.message : 'The billing run could not start.');
-      return;
-    }
 
-    const newLog: AuditLog = {
-      id: `audit-${Date.now()}`,
-      user: `Manager (${currentRole})`,
-      action:
-        `Billing run for ${period}: ${result.documents.length} proforma invoices raised ` +
+      logLocally(
+        `Manager (${currentRole})`,
+        `Billing run for ${period}: ${result.raised} proforma invoices raised ` +
         `totalling ${formatRupees(result.totalGross)} ` +
         `(${formatRupees(result.totalNet)} charges plus ${formatRupees(result.totalTax)} GST). ` +
         `${result.skipped.length} flats not billed. ` +
         `Awaiting treasurer approval — nothing has been posted to the books.`,
-      timestamp: systemClock.now(),
-    };
-    syncAndPersist({ audit: [newLog, ...auditLog] });
+      );
 
-    setShowBillingWizard(false);
-    triggerToast(
-      result.documents.length === 0
-        ? `No bills raised for ${period}. ${result.skipped.length} flats skipped — see the run report.`
-        : `${result.documents.length} proformas raised for ${period}, ` +
-          `${formatRupees(result.totalGross)} in total. Awaiting approval.`,
-    );
+      setShowBillingWizard(false);
+      triggerToast(
+        result.raised === 0
+          ? `No bills raised for ${period}. ${result.skipped.length} flats skipped` +
+            (result.skipped[0] === undefined ? '.' : ` — ${result.skipped[0].flatNo}: ${result.skipped[0].why}`)
+          : `${result.raised} proformas raised for ${period}, ` +
+            `${formatRupees(result.totalGross)} in total. Awaiting approval.`,
+        result.raised === 0 ? 'error' : 'info',
+      );
+    }, 'The billing run could not start.');
+  };
+
+  /** Says how a batch went, from the books' own answer. */
+  const reportBatch = (verb: string, outcome: { done: number; refused: number; notes: readonly string[] }) => {
+    const head = `${outcome.done} ${verb}` + (outcome.refused > 0 ? `; ${outcome.refused} refused` : '') + '.';
+    const detail = outcome.notes.length === 0 ? '' : ` ${outcome.notes.slice(0, 2).join(' ')}`;
+    triggerToast(`${head}${detail}`, outcome.done === 0 && outcome.refused > 0 ? 'error' : 'info');
   };
 
   /** Treasurer approval for every draft in the register. */
@@ -1162,43 +1395,33 @@ export default function App() {
       triggerToast('There are no drafts awaiting approval.');
       return;
     }
-    const result = mustBooks().approveDocuments(drafts, `Treasurer (${currentRole})`);
-    syncAndPersist({
-      audit: [{
-        id: `audit-${Date.now()}`,
-        user: `Treasurer (${currentRole})`,
-        action:
-          `Approved ${result.approved} proforma invoices for dispatch` +
-          (result.refused > 0 ? `; ${result.refused} refused` : '') + '.',
-        timestamp: systemClock.now(),
-      }, ...auditLog],
-    });
-    triggerToast(`${result.approved} proformas approved.`);
+    void runWrite(async () => {
+      const result = await mustActions().approveDocuments(drafts, `Treasurer (${currentRole})`);
+      logLocally(
+        `Treasurer (${currentRole})`,
+        `Approved ${result.done} proforma invoices for dispatch` +
+        (result.refused > 0 ? `; ${result.refused} refused` : '') + '.',
+      );
+      reportBatch('proformas approved', result);
+    }, 'The approval did not go through.');
   };
 
-  /** Releases approved proformas. Records that nothing was actually sent. */
+  /** Releases approved proformas. Records whether anything was actually sent. */
   const handleReleaseApproved = () => {
-    const approved = registerDocuments.filter(d => d.state === 'approved');
+    const approved = registerDocuments.filter(d => d.state === 'approved').map(d => d.proformaNo);
     if (approved.length === 0) {
       triggerToast('There is nothing approved and waiting to be released.');
       return;
     }
-    for (const doc of approved) {
-      mustBooks().releaseDocument(doc.proformaNo, `Treasurer (${currentRole})`);
-    }
-    syncAndPersist({
-      audit: [{
-        id: `audit-${Date.now()}`,
-        user: `Treasurer (${currentRole})`,
-        action:
-          `Released ${approved.length} proforma invoices for dispatch. No email or messaging ` +
-          `provider is configured, so nothing was sent to any member.`,
-        timestamp: systemClock.now(),
-      }, ...auditLog],
-    });
-    triggerToast(
-      `${approved.length} proformas released. Nothing was sent — no delivery channel is configured.`,
-    );
+    void runWrite(async () => {
+      const result = await mustActions().releaseDocuments(approved, `Treasurer (${currentRole})`);
+      logLocally(
+        `Treasurer (${currentRole})`,
+        `Released ${result.done} proforma invoices for dispatch. No email or messaging ` +
+        `provider is configured, so nothing was sent to any member.`,
+      );
+      reportBatch('proformas released', result);
+    }, 'The release did not go through.');
   };
 
   /**
@@ -1206,25 +1429,20 @@ export default function App() {
    * This is the step that posts the receivable and the GST.
    */
   const handleConvertDue = () => {
-    const result = mustBooks().convertDueDocuments(`Treasurer (${currentRole})`);
-    if (result.converted === 0) {
-      triggerToast(
-        mustBooks().snapshot().problems[0] ?? 'Nothing has fallen due for conversion yet.',
+    void runWrite(async () => {
+      const result = await mustActions().convertDueDocuments(`Treasurer (${currentRole})`);
+      if (result.done === 0 && result.refused === 0) {
+        triggerToast(result.notes[0] ?? 'Nothing has fallen due for conversion yet.');
+        return;
+      }
+      logLocally(
+        `Treasurer (${currentRole})`,
+        `Converted ${result.done} proformas to tax invoices on their due date, ` +
+        `posting the receivable and the GST` +
+        (result.refused > 0 ? `; ${result.refused} refused` : '') + '.',
       );
-      return;
-    }
-    syncAndPersist({
-      audit: [{
-        id: `audit-${Date.now()}`,
-        user: `Treasurer (${currentRole})`,
-        action:
-          `Converted ${result.converted} proformas to tax invoices on their due date, ` +
-          `posting the receivable and the GST` +
-          (result.refused > 0 ? `; ${result.refused} refused` : '') + '.',
-        timestamp: systemClock.now(),
-      }, ...auditLog],
-    });
-    triggerToast(`${result.converted} tax invoices issued and posted.`);
+      reportBatch('tax invoices issued and posted', result);
+    }, 'The conversion did not go through.');
   };
 
 
@@ -1236,17 +1454,29 @@ export default function App() {
   const desktopActiveInvoice = selectedInvoice && (currentRole === 'Resident' ? selectedInvoice.flatNo === residentFlatNo : true)
     ? selectedInvoice
     : (currentInvoices[0] || null);
-  
-  // Custom Analytics Data for Chart
-  const collectionTrendsData = [
-    { month: 'Jan', Collected: 310000, Outstanding: 45000 },
-    { month: 'Feb', Collected: 345000, Outstanding: 39000 },
-    { month: 'Mar', Collected: 380000, Outstanding: 30000 },
-    { month: 'Apr', Collected: 392000, Outstanding: 21000 },
-    { month: 'May', Collected: 382000, Outstanding: 115000 }, // Defaulters season
-    { month: 'Jun', Collected: mtdCollectedTotal || 386400, Outstanding: mtdOutstandingTotal || 112300 }
-  ];
 
+  // Collections by billing period, from the invoices on screen — the last six
+  // periods that have any. These were invented figures, with the real month's
+  // total swapped in for June only, and on the server they read as the
+  // association's own history.
+  const collectionTrendsData = useMemo(() => {
+    const byPeriod = new Map<string, { iso: string; Collected: number; Outstanding: number }>();
+    for (const inv of invoices) {
+      const iso = periodToIso(inv.period);
+      if (iso === null) continue;
+      const row = byPeriod.get(inv.period) ?? { iso, Collected: 0, Outstanding: 0 };
+      if (inv.status === 'Paid') row.Collected += inv.total;
+      else row.Outstanding += inv.total;
+      byPeriod.set(inv.period, row);
+    }
+    return [...byPeriod.entries()]
+      .sort((a, b) => a[1].iso.localeCompare(b[1].iso))
+      .slice(-6)
+      .map(([period, row]) => ({ month: period, Collected: row.Collected, Outstanding: row.Outstanding }));
+  }, [invoices]);
+
+  // Budget figures are demonstration values: there is no approved budget on
+  // the server, so this chart is shown in the demo only.
   const budgetPerformanceData = [
     { head: 'Maint', Budgeted: 350000, Actual: 338000 },
     { head: 'Sinking', Budgeted: 80000, Actual: 80000 },
@@ -1255,7 +1485,101 @@ export default function App() {
     { head: 'Reserve', Budgeted: 15000, Actual: 15400 }
   ];
 
+  /**
+   * The billing run's inputs, shared by the desktop and phone layouts.
+   *
+   * The maintenance charge is the rate in force times each flat's area, so it
+   * is shown, not typed: the old "Maintenance (₹)" and "cycle" inputs were
+   * read by nothing. On the server the run uses the server's own approved
+   * rate and settings, so the demo's extra charges are not offered there.
+   */
+  const renderWizardFields = (compact: boolean) => {
+    const key = compact ? 'm' : 'd';
+    const label = `text-[10px] text-[var(--mv-muted)] font-bold block mb-1 uppercase tracking-wider`;
+    const input = `w-full ${compact ? 'bg-[var(--mv-surface)] p-2' : 'bg-[var(--mv-page)] p-2.5'} rounded-xl border border-[var(--mv-border)] font-bold text-xs text-[var(--mv-ink)] outline-none`;
+    return (
+      <>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label htmlFor={`wiz-period-${key}`} className={label}>Billing period</label>
+            <input
+              id={`wiz-period-${key}`}
+              type="text"
+              value={wizardPeriod}
+              onChange={(e) => setWizardPeriod(e.target.value)}
+              placeholder="e.g. Jul 2026"
+              className={input}
+            />
+          </div>
+          <div>
+            <span className={label}>Tax</span>
+            <div className="p-2.5 bg-[var(--mv-soft)] rounded-xl text-center font-bold text-[var(--mv-ink)] leading-none">{gstLabel}</div>
+          </div>
+        </div>
+        <p className="text-[10px] text-[var(--mv-muted)] leading-snug">
+          <span className="font-bold text-[var(--mv-ink)]">Maintenance:</span> {rateLabel}
+          {onServer && (
+            <> · Sinking fund {booksSource.server?.context()?.settings.sinkingFundPercent ?? 0}% of maintenance, as set on the server.</>
+          )}
+        </p>
+        {!onServer && (
+          <div className={`grid ${compact ? 'grid-cols-2' : 'grid-cols-3'} gap-3 font-mono text-xs`}>
+            <div>
+              <label htmlFor={`wiz-sinking-${key}`} className={label}>Sinking fund (% of maint.)</label>
+              <input id={`wiz-sinking-${key}`} type="number" min="0" step="0.1" value={wizardSinking} onChange={(e) => setWizardSinking(e.target.value)} className={input} />
+            </div>
+            <div>
+              <label htmlFor={`wiz-water-${key}`} className={label}>Water, per flat (₹)</label>
+              <input id={`wiz-water-${key}`} type="number" min="0" value={wizardWater} onChange={(e) => setWizardWater(e.target.value)} className={input} />
+            </div>
+            <div>
+              <label htmlFor={`wiz-parking-${key}`} className={label}>Parking, per flat (₹)</label>
+              <input id={`wiz-parking-${key}`} type="number" min="0" value={wizardParking} onChange={(e) => setWizardParking(e.target.value)} className={input} />
+            </div>
+          </div>
+        )}
+        <button
+          type="submit"
+          disabled={working}
+          className="w-full py-3 bg-[var(--mv-accent)] text-white rounded-xl font-bold shadow-md uppercase tracking-wider text-center flex items-center justify-center gap-1 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+        >
+          <Send className="w-4 h-4" aria-hidden="true" /> {working ? 'Raising proformas…' : `Raise proformas for ${wizardPeriod || 'the period'}`}
+        </button>
+      </>
+    );
+  };
+
   // --- what to show before the books are open ------------------------------
+
+  /**
+   * The server was required and did not answer. Nothing else opens: not the
+   * sample society, and not buttons that would look as if they acted on the
+   * association's books.
+   */
+  if (booksSource.status === 'unavailable') {
+    return (
+      <div className="fixed inset-0 flex items-center justify-center bg-[var(--mv-soft)] font-sans p-6" role="alert">
+        <div className="text-center max-w-sm">
+          <div className="mv-logo-tile mx-auto"><img src="/branding/mani-vista-logo.png" alt="Mani Vista" /></div>
+          <h1 className="mt-4 text-sm font-bold text-[var(--mv-ink)]">The books cannot be opened</h1>
+          <p className="mt-2 text-xs text-[var(--mv-muted)] leading-relaxed">
+            {booksSource.note} Nothing is shown rather than sample figures that could be mistaken
+            for the association&apos;s.
+          </p>
+          {booksSource.error !== null && (
+            <p className="mt-2 text-[11px] font-mono text-[#7F1D1D] break-words">{booksSource.error}</p>
+          )}
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-4 py-2.5 px-5 bg-[var(--mv-ink)] text-white rounded-xl text-xs font-bold uppercase tracking-wider"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   /** While the app is working out where the books are. */
   if (booksSource.status === 'resolving' || books === null) {
@@ -1264,7 +1588,7 @@ export default function App() {
         <div className="text-center">
           <div className="mv-logo-tile mx-auto"><img src="/branding/mani-vista-logo.png" alt="Mani Vista" /></div>
           <p className="mt-4 text-sm font-bold text-[var(--mv-ink)]">Opening the books</p>
-          <p className="mt-1 text-xs text-gray-500 max-w-xs">{booksSource.note}</p>
+          <p className="mt-1 text-xs text-[var(--mv-muted)] max-w-xs">{booksSource.note}</p>
         </div>
       </div>
     );
@@ -1310,34 +1634,37 @@ export default function App() {
         server is an error rather than a quiet fallback.
       */}
       {!onServer && (
-        <div className="fixed top-0 inset-x-0 z-[80] bg-[var(--mv-ink)] text-white text-[10px] sm:text-[11px] font-bold px-3 py-1.5 text-center leading-tight">
+        <div ref={bannerRef} role="note" className="fixed top-0 inset-x-0 z-[80] bg-[var(--mv-ink)] text-white text-[10px] sm:text-[11px] font-bold px-3 py-1.5 text-center leading-tight">
           DEMONSTRATION DATA · {booksSource.note}
           {booksSource.error !== null && <span className="text-red-300"> · {booksSource.error}</span>}
         </div>
       )}
-      
+
+      <Toasts toasts={toaster} onDismiss={dismissToast} />
+
       {/* 1. DYNAMIC DESKTOP VIEWPORT LAYOUT */}
       {isDesktop ? (
-        <div id="desktop-view-container" className="fixed inset-0 w-full h-screen flex bg-[var(--mv-page)] text-[var(--mv-ink)] overflow-hidden font-sans z-50">
-          
+        <div id="desktop-view-container" className="fixed inset-x-0 bottom-0 w-full flex bg-[var(--mv-page)] text-[var(--mv-ink)] overflow-hidden font-sans z-50" style={{ top: 'var(--mv-banner-h)' }}>
+
           {/* DESKTOP SIDEBAR GROUP */}
-          <aside className="w-64 bg-[var(--mv-ink)] text-white flex flex-col h-screen shrink-0 border-r border-[var(--mv-dark-border)] select-none">
+          <aside className="w-64 bg-[var(--mv-ink)] text-white flex flex-col h-full shrink-0 border-r border-[var(--mv-dark-border)] select-none">
             {/* Top RWA Brand header */}
             <div className="p-5 border-b border-[var(--mv-dark-border)] flex items-center gap-2.5">
               <div className="mv-logo-tile"><img src="/branding/mani-vista-logo.png" alt="Mani Vista Residents Association" /></div>
               <div className="text-left">
                 <h2 className="text-white font-bold leading-none tracking-tight text-xs">MANI VISTA</h2>
-                <span className="text-[9px] text-white/60 font-bold block mt-0.5 uppercase tracking-wider">RESIDENTS ASSOCIATION</span>
+                <span className="text-[9px] text-white/75 font-bold block mt-0.5 uppercase tracking-wider">RESIDENTS ASSOCIATION</span>
               </div>
             </div>
 
             <div className="px-4 pt-3"><ThemeSwitcher /></div>
 
             {/* Navigation links matching mobile */}
-            <nav className="flex-1 p-4 space-y-1.5">
+            <nav aria-label="Sections" className="flex-1 p-4 space-y-1.5">
               <button
                 onClick={() => setActiveTab('home')}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'home' ? 'text-white bg-[var(--mv-accent)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                aria-current={activeTab === 'home' ? 'page' : undefined}
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'home' ? 'text-white bg-[var(--mv-accent)]' : 'text-white/70 hover:text-white hover:bg-white/5'}`}
               >
                 <div className="flex items-center gap-3">
                   <Home className="w-4 h-4" />
@@ -1347,7 +1674,8 @@ export default function App() {
 
               <button
                 onClick={() => setActiveTab('bills')}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'bills' ? 'text-white bg-[var(--mv-accent)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                aria-current={activeTab === 'bills' ? 'page' : undefined}
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'bills' ? 'text-white bg-[var(--mv-accent)]' : 'text-white/70 hover:text-white hover:bg-white/5'}`}
               >
                 <div className="flex items-center gap-3">
                   <Receipt className="w-4 h-4" />
@@ -1357,7 +1685,8 @@ export default function App() {
 
               <button
                 onClick={() => setActiveTab('pay')}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'pay' ? 'text-white bg-[var(--mv-accent)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                aria-current={activeTab === 'pay' ? 'page' : undefined}
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'pay' ? 'text-white bg-[var(--mv-accent)]' : 'text-white/70 hover:text-white hover:bg-white/5'}`}
               >
                 <div className="flex items-center gap-3">
                   <CreditCard className="w-4 h-4" />
@@ -1368,29 +1697,31 @@ export default function App() {
               <button
                 onClick={() => {
                   if (currentRole === 'Resident') {
-                    triggerToast('Access Denied: Core Accounting reports are restricted to Administrative roles. Enter PIN at dropdown to view.');
+                    triggerToast('The books are for the manager and committee views. Switch view to open them.', 'error');
                     handleRoleSwitchRequest('Manager');
                   } else {
                     setActiveTab('books');
                   }
                 }}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'books' ? 'text-white bg-[var(--mv-accent)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                aria-current={activeTab === 'books' ? 'page' : undefined}
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'books' ? 'text-white bg-[var(--mv-accent)]' : 'text-white/70 hover:text-white hover:bg-white/5'}`}
               >
                 <div className="flex items-center gap-3">
                   <div className="relative">
                     <BookOpen className="w-4 h-4" />
                     {currentRole === 'Resident' && (
-                      <Lock className="w-2.5 h-2.5 text-[var(--mv-accent)] absolute -top-1 -right-1 bg-white rounded-full p-0.5" />
+                      <Lock className="w-2.5 h-2.5 text-[var(--mv-accent)] absolute -top-1 -right-1 bg-[var(--mv-surface)] rounded-full p-0.5" />
                     )}
                   </div>
                   <span>Books Ledger</span>
                 </div>
-                {currentRole === 'Resident' && <Lock className="w-3.5 h-3.5 text-gray-500 ml-auto" />}
+                {currentRole === 'Resident' && <Lock className="w-3.5 h-3.5 text-white/75 ml-auto" aria-label="Locked" />}
               </button>
 
               <button
                 onClick={() => setActiveTab('more')}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'more' ? 'text-white bg-[var(--mv-accent)]' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+                aria-current={activeTab === 'more' ? 'page' : undefined}
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'more' ? 'text-white bg-[var(--mv-accent)]' : 'text-white/70 hover:text-white hover:bg-white/5'}`}
               >
                 <div className="flex items-center gap-3">
                   <Menu className="w-4 h-4" />
@@ -1402,26 +1733,26 @@ export default function App() {
             {/* Active profile and session status */}
             <div className="p-4 border-t border-[var(--mv-dark-border)] bg-black/40 text-left text-xs space-y-2.5">
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-gray-200">
+                <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-white" aria-hidden="true">
                   <User className="w-4.5 h-4.5" />
                 </div>
                 <div className="min-w-0">
-                  <p className="font-bold text-gray-200">{currentRole === 'Resident' ? residentName : currentRole === 'Manager' ? 'Finance Supt' : 'RWA Treasurer'}</p>
-                  <span className="text-[9px] text-[#6B7280] font-bold block uppercase leading-none mt-0.5">{currentRole} Mode</span>
-                  <span className="text-[9px] text-gray-500 block truncate leading-none mt-1" title={sessionEmail || ''}>{sessionEmail}</span>
+                  <p className="font-bold text-white">{currentRole === 'Resident' ? residentName : currentRole === 'Manager' ? 'Finance Supt' : 'RWA Treasurer'}</p>
+                  <span className="text-[9px] text-white/70 font-bold block uppercase leading-none mt-0.5">{currentRole} Mode</span>
+                  <span className="text-[9px] text-white/70 block truncate leading-none mt-1" title={sessionEmail || ''}>{sessionEmail}</span>
                 </div>
               </div>
               {isAuthenticated && currentRole !== 'Resident' && (
                 <button
                   onClick={handleLockAdminMode}
-                  className="w-full mt-2 py-1.5 bg-red-655/10 hover:bg-red-655/20 text-red-500 font-bold uppercase text-[9px] rounded-lg tracking-wider transition-colors"
+                  className="w-full mt-2 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-200 font-bold uppercase text-[9px] rounded-lg tracking-wider transition-colors"
                 >
                   Lock Admin Token
                 </button>
               )}
               <button
                 onClick={handleLogout}
-                className="w-full mt-1 py-1.5 bg-white/5 hover:bg-white/10 text-gray-300 font-bold uppercase text-[9px] rounded-lg tracking-wider transition-colors"
+                className="w-full mt-1 py-1.5 bg-white/5 hover:bg-white/10 text-white/80 font-bold uppercase text-[9px] rounded-lg tracking-wider transition-colors"
               >
                 Logout
               </button>
@@ -1429,18 +1760,18 @@ export default function App() {
           </aside>
 
           {/* DESKTOP CONTENT WORKSPACE WRAPPER */}
-          <div className="flex-1 flex flex-col min-w-0 overflow-hidden h-screen bg-[var(--mv-page)]">
+          <div className="flex-1 flex flex-col min-w-0 overflow-hidden h-full bg-[var(--mv-page)]">
             {/* STICKY TOP STRIP */}
-            <header className="h-16 border-b border-[var(--mv-border)] bg-white px-6 flex items-center justify-between shadow-xs shrink-0 select-none">
+            <header className="h-16 border-b border-[var(--mv-border)] bg-[var(--mv-surface)] px-6 flex items-center justify-between shadow-xs shrink-0 select-none">
               <div className="flex items-center gap-3">
                 <span className="font-extrabold text-[9px] text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-2.5 py-1 rounded uppercase tracking-wider">ROSTER ACTIVE</span>
-                <h1 className="text-sm font-semibold text-[var(--mv-ink)] tracking-tight">Mani Vista Residents Association</h1>
+                <h1 className="text-sm font-semibold text-[var(--mv-ink)] tracking-tight">{onServer ? societyName : 'Mani Vista Residents Association'}</h1>
               </div>
 
               <div className="flex items-center gap-4">
-                <span className="text-[10px] text-gray-400 font-mono">GSTIN: {gstinLabel}</span>
+                <span className="text-[10px] text-[var(--mv-muted)] font-mono">GSTIN: {gstinLabel}</span>
 
-                <div className="relative w-8 h-8 flex items-center justify-center bg-[var(--mv-soft)] rounded-full hover:opacity-85 transition-opacity cursor-pointer">
+                <div aria-hidden="true" className="relative w-8 h-8 flex items-center justify-center bg-[var(--mv-soft)] rounded-full">
                   <Bell className="w-4 h-4 text-[var(--mv-ink)]" />
                   <div className="absolute top-1 right-1 w-2.5 h-2.5 bg-[var(--mv-accent)] border-2 border-white rounded-full"></div>
                 </div>
@@ -1448,6 +1779,7 @@ export default function App() {
                 {/* Role dropdown switcher */}
                 <div className="relative bg-[var(--mv-accent-soft)] border border-[var(--mv-accent-border)] px-3 py-1.5 rounded-full flex items-center gap-1 cursor-pointer">
                   <select
+                    aria-label="View as"
                     value={currentRole}
                     onChange={(e) => handleRoleSwitchRequest(e.target.value as any)}
                     className="appearance-none bg-transparent text-[10px] font-bold text-[var(--mv-accent)] tracking-wider outline-none cursor-pointer uppercase pr-4"
@@ -1467,14 +1799,6 @@ export default function App() {
 
             {/* MAIN MAIN CONTENT GRID COMPONENT */}
             <main className="flex-1 overflow-y-auto p-8 space-y-6 hide-scrollbar text-left font-sans">
-              
-              {/* Toaster element stack */}
-              {toaster.map(t => (
-                <div key={t.id} className="max-w-2xl mx-auto p-3 bg-[var(--mv-ink)] text-white text-xs font-bold flex items-start gap-2.5 rounded-xl shadow-md animate-scale-up">
-                  <Check className="w-4 h-4 text-[var(--mv-accent)] shrink-0 mt-0.5" />
-                  <span className="leading-tight">{t.msg}</span>
-                </div>
-              ))}
 
               {/* -------------------- HOME TAB -------------------- */}
               {activeTab === 'home' && (
@@ -1484,7 +1808,7 @@ export default function App() {
                       {currentRole === 'Resident' ? (
                         <>
                           <h2 className="text-2xl font-bold text-[var(--mv-ink)]">{residentName}</h2>
-                          <p className="text-xs text-[#6B7280]">
+                          <p className="text-xs text-[var(--mv-muted)]">
                             {residentFlatNo === ''
                               ? 'No flat is linked to this account'
                               : `Flat ${residentFlatNo} · Allotment registry`}
@@ -1493,12 +1817,12 @@ export default function App() {
                       ) : (
                         <>
                           <h2 className="text-2xl font-bold text-[var(--mv-ink)]">{currentRole} Executive Suite</h2>
-                          <p className="text-xs text-[#6B7280]">Fully Authorized Administrative Operations Center</p>
+                          <p className="text-xs text-[var(--mv-muted)]">Fully Authorized Administrative Operations Center</p>
                         </>
                       )}
                     </div>
                     <div className="text-right text-xs font-mono">
-                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Ledger Synchronized</p>
+                      <p className="text-[10px] text-[var(--mv-muted)] font-bold uppercase tracking-wider">Ledger Synchronized</p>
                       <p className="text-[var(--mv-accent)] font-bold">STATE ONLINE · SECURE</p>
                     </div>
                   </div>
@@ -1508,18 +1832,18 @@ export default function App() {
                     <div className="grid grid-cols-4 gap-4">
                       {/* Current outstanding */}
                       <div className="bg-[var(--mv-ink)] text-white p-5 rounded-2xl flex flex-col justify-between shadow-md min-h-[120px]">
-                        <p className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Aggregate Outstanding</p>
+                        <p className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Aggregate Outstanding</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-white">{formatRupee(rohanTotalDueNum)}</p>
-                          <span className={`inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold rounded uppercase ${rohanTotalDueNum > 0 ? 'bg-red-650 text-white' : 'bg-[var(--mv-accent)] text-white'}`}>
+                          <span className={`inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold rounded uppercase ${rohanTotalDueNum > 0 ? 'bg-red-700 text-white' : 'bg-[var(--mv-accent)] text-white'}`}>
                             {rohanTotalDueNum > 0 ? 'ARREARS DUE' : 'ALL CLEAR'}
                           </span>
                         </div>
                       </div>
 
                       {/* Cumulative paid */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Deposit Paid This FY</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Deposit Paid This FY</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupee(rohanTotalPaidNum)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
@@ -1529,17 +1853,17 @@ export default function App() {
                       </div>
 
                       {/* Prepaid advance balance */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Prepaid Advances</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Prepaid Advances</p>
                         <div>
-                          <p className="text-2xl font-bold font-mono text-gray-300">₹0.00</p>
-                          <span className="text-[9px] text-[#6B7280] mt-2 block font-medium">Standard RWA account</span>
+                          <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupees(residentAdvancePaise)}</p>
+                          <span className="text-[9px] text-[var(--mv-muted)] mt-2 block font-medium">Held on account, from the ledger</span>
                         </div>
                       </div>
 
                       {/* Open complaints helpdesk */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Complaints Grievances</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Complaints Grievances</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{String(rohanOpenTicketsNum).padStart(2, '0')}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
@@ -1554,7 +1878,7 @@ export default function App() {
                     <div className="grid grid-cols-4 gap-4">
                       {/* Collected MTD */}
                       <div className="bg-[var(--mv-ink)] text-white p-5 rounded-2xl flex flex-col justify-between shadow-md min-h-[120px]">
-                        <p className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Collected MTD Accrual</p>
+                        <p className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Collected MTD Accrual</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-white">{formatRupee(mtdCollectedTotal)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-semibold bg-white/10 text-white rounded">
@@ -1564,8 +1888,8 @@ export default function App() {
                       </div>
 
                       {/* Outstanding Receivables */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Arrears Outstanding</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Arrears Outstanding</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupee(mtdOutstandingTotal)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
@@ -1575,8 +1899,8 @@ export default function App() {
                       </div>
 
                       {/* Overdue units */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Overdue Defaulters</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Overdue Defaulters</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{uniqueDefaultersCount} Flats</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-semibold bg-red-50 text-red-600 rounded">
@@ -1586,8 +1910,8 @@ export default function App() {
                       </div>
 
                       {/* Outgoing expenses MTD */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Approved Expenses MTD</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Approved Expenses MTD</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupee(totalMTDExpenses)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
@@ -1601,41 +1925,41 @@ export default function App() {
                   {currentRole === 'Committee' && (
                     <div className="grid grid-cols-4 gap-4">
                       {/* Corpus fund */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Capital Corpus Fund</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">General Reserve</p>
                         <div>
-                          <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupee(corpusFundBase)}</p>
+                          <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupees(reserveFundPaise)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
-                            RECALCULATING TRUST
+                            LEDGER BALANCE
                           </span>
                         </div>
                       </div>
 
                       {/* Sinking reserve */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Accumulated Sinking Contributions</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Accumulated Sinking Contributions</p>
                         <div>
-                          <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupee(sinkingFundBase)}</p>
+                          <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupees(sinkingFundPaise)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-semibold bg-[var(--mv-soft)] text-[var(--mv-ink)] rounded">
-                            REACTIVE TO PERIOD
+                            LEDGER BALANCE
                           </span>
                         </div>
                       </div>
 
                       {/* Liquid cash reserves */}
-                      <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
-                        <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-widest">Liquid Operating Bank Balance</p>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl flex flex-col justify-between shadow-xs min-h-[120px]">
+                        <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-widest">Liquid Operating Bank Balance</p>
                         <div>
-                          <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupee(operatingFundBase - totalMTDExpenses)}</p>
+                          <p className="text-2xl font-bold font-mono text-[var(--mv-ink)]">{formatRupees(operatingBankPaise)}</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded">
-                            RECONCILED CURRENT
+                            PER THE BOOKS
                           </span>
                         </div>
                       </div>
 
                       {/* Outstanding bills proposals */}
                       <div className="bg-[var(--mv-ink)] text-white p-5 rounded-2xl flex flex-col justify-between shadow-md min-h-[120px]">
-                        <p className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Pending Bill Proposals</p>
+                        <p className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Pending Bill Proposals</p>
                         <div>
                           <p className="text-2xl font-bold font-mono text-white">{pendingApprovalsCount} Bills</p>
                           <span className="inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold bg-white/10 text-white rounded uppercase">
@@ -1651,40 +1975,44 @@ export default function App() {
                     <div className="grid grid-cols-12 gap-6 pt-2">
                       <div className="col-span-8 flex flex-col">
                         {rohanDueInvoice ? (
-                          <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs flex-1 flex flex-col justify-between space-y-4">
+                          <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs flex-1 flex flex-col justify-between space-y-4">
                             <div>
-                              <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Unpaid active billing assessment due</span>
+                              <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Unpaid active billing assessment due</span>
                               <h3 className="font-extrabold text-lg text-[var(--mv-ink)] mt-1">Invoice Number: #{rohanDueInvoice.invoiceNo}</h3>
                             </div>
 
-                            <div className="border-y border-[var(--mv-soft)] py-5 flex justify-between items-center bg-gray-50/50 px-4 rounded-xl">
+                            <div className="border-y border-[var(--mv-soft)] py-5 flex justify-between items-center bg-[var(--mv-page)] px-4 rounded-xl">
                               <div>
-                                <p className="text-xs text-[#6B7280] font-medium">{rohanDueInvoice.period} General Maintenance Account</p>
+                                <p className="text-xs text-[var(--mv-muted)] font-medium">{rohanDueInvoice.period} General Maintenance Account</p>
                                 <p className="text-3xl font-extrabold text-[var(--mv-ink)] font-mono mt-1">{formatRupee(rohanDueInvoice.total)}</p>
                               </div>
-                              <button
-                                onClick={() => handlePayClick(rohanDueInvoice)}
-                                className="bg-[var(--mv-accent)] hover:brightness-90 text-white px-6 py-3.5 rounded-xl font-bold text-xs uppercase cursor-pointer transition-all shadow-md active:scale-95"
-                              >
-                                Clear Due Balance
-                              </button>
+                              {mayPayOnline && (
+                                <button
+                                  onClick={() => handlePayClick(rohanDueInvoice)}
+                                  className="bg-[var(--mv-accent)] hover:brightness-90 text-white px-6 py-3.5 rounded-xl font-bold text-xs uppercase cursor-pointer transition-all shadow-md active:scale-95"
+                                >
+                                  Clear Due Balance
+                                </button>
+                              )}
                             </div>
 
-                            <span className="text-[10px] text-[#6B7280] font-medium leading-relaxed block">
-                              • Demo checkout. No payment gateway is connected — paying marks the invoice settled in this browser and posts the matching journal entry. A live version needs a Razorpay or PayU account and a server to verify the callback.
+                            <span className="text-[10px] text-[var(--mv-muted)] font-medium leading-relaxed block">
+                              {onServer
+                                ? `• ${dueLabel(dueIso(rohanDueInvoice), today).toLowerCase()}. No payment gateway is connected: pay the association by UPI, NEFT or cheque and the manager records the receipt against your flat.`
+                                : '• Demo checkout. No payment gateway is connected — paying marks the invoice settled in this browser and posts the matching journal entry. A live version needs a Razorpay or PayU account and a server to verify the callback.'}
                             </span>
                           </div>
                         ) : (
-                          <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-10 shadow-xs flex-1 flex flex-col items-center justify-center text-center">
+                          <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-10 shadow-xs flex-1 flex flex-col items-center justify-center text-center">
                             <Check className="w-12 h-12 text-[var(--mv-accent)] mb-2" />
                             <h4 className="font-bold text-base text-[var(--mv-ink)]">No Active Invoices Pending</h4>
-                            <p className="text-xs text-gray-500 max-w-sm mt-1">Your resident core billing ledger has zero pending outstanding balances. Thank you for your proactive support!</p>
+                            <p className="text-xs text-[var(--mv-muted)] max-w-sm mt-1">Your resident core billing ledger has zero pending outstanding balances. Thank you for your proactive support!</p>
                           </div>
                         )}
                       </div>
 
                       {/* Mini ledger logs activity */}
-                      <div className="col-span-4 bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs flex flex-col justify-between">
+                      <div className="col-span-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs flex flex-col justify-between">
                         <div>
                           <div className="flex justify-between items-center mb-4 select-none">
                             <h3 className="font-bold text-xs uppercase tracking-tight text-[var(--mv-ink)]">Ledger accounts activity</h3>
@@ -1706,11 +2034,11 @@ export default function App() {
                                     setActiveTab('bills');
                                   }
                                 }}
-                                className="flex items-center justify-between p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] hover:bg-gray-100 transition-all cursor-pointer text-xs"
+                                className="flex items-center justify-between p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] hover:bg-[var(--mv-soft)] transition-all cursor-pointer text-xs"
                               >
                                 <div className="min-w-0 flex-1 pr-2">
                                   <p className="font-bold text-[var(--mv-ink)] truncate">{inv.period} Maintenance</p>
-                                  <p className="text-[9px] text-[#6B7280] uppercase mt-0.5 leading-none font-medium">{inv.paidDate || inv.dueDate || '15th Due'}</p>
+                                  <p className="text-[9px] text-[var(--mv-muted)] uppercase mt-0.5 leading-none font-medium">{inv.paidDate || inv.dueDate || ''}</p>
                                 </div>
                                 <div className="text-right shrink-0">
                                   <p className="font-bold text-[var(--mv-ink)] font-mono leading-none">{formatRupee(inv.total)}</p>
@@ -1730,45 +2058,41 @@ export default function App() {
                   {currentRole === 'Manager' && (
                     <div className="grid grid-cols-12 gap-6 pt-1">
                       {/* Scalable Chart */}
-                      <div className="col-span-8 bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs">
+                      <div className="col-span-8 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs">
                         <div className="flex justify-between items-center mb-4">
                           <div>
-                            <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider">RWA Overall Collections Tendency (MTD)</h4>
-                            <p className="text-[10px] text-[#6B7280]">Last 6 Months Gross Accounts Receivables vs Cleared Revenue</p>
+                            <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider">Collections by billing period</h4>
+                            <p className="text-[10px] text-[var(--mv-muted)]">Paid against still outstanding, for the last six periods billed</p>
                           </div>
                           <TrendingUp className="w-4 h-4 text-[var(--mv-accent)]" />
                         </div>
 
                         <div className="h-80 w-full pt-1 select-none">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={collectionTrendsData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="var(--mv-soft)" />
-                              <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#6B7280' }} />
-                              <YAxis tick={{ fontSize: 11, fill: '#6B7280' }} />
-                              <Tooltip formatter={(value) => formatRupee(value as number)} />
-                              <Area type="monotone" dataKey="Collected" stroke="var(--mv-accent)" fillOpacity={0.08} fill="var(--mv-accent)" strokeWidth={3} />
-                              <Area type="monotone" dataKey="Outstanding" stroke="var(--mv-ink)" fillOpacity={0.03} fill="var(--mv-ink)" strokeWidth={2} />
-                            </AreaChart>
-                          </ResponsiveContainer>
+                          {collectionTrendsData.length === 0 ? (
+                            <p className="py-24 text-center text-xs text-[var(--mv-muted)]">No invoices yet, so there is nothing to chart.</p>
+                          ) : (
+                            <Suspense fallback={<PanelLoading />}>
+                              <CollectionChart data={collectionTrendsData} />
+                            </Suspense>
+                          )}
                         </div>
                       </div>
 
                       {/* Operation launch pad */}
-                      <div className="col-span-4 bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs flex flex-col justify-between">
+                      <div className="col-span-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs flex flex-col justify-between">
                         <div>
                           <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider mb-4 border-b border-[var(--mv-border)] pb-2 text-left">Quick Admin Dispatch</h4>
-                          <p className="text-xs text-[#6B7280] leading-relaxed mb-6">Launch water supply assessments, common lift backups operations, parking space levies, and non-occupancy utility taxes across core residential registry ledgers.</p>
+                          <p className="text-xs text-[var(--mv-muted)] leading-relaxed mb-6">Launch water supply assessments, common lift backups operations, parking space levies, and non-occupancy utility taxes across core residential registry ledgers.</p>
                         </div>
                         <div className="space-y-3.5">
                           <button
                             onClick={() => {
-                              setWizardPeriod('Jul 2026');
                               setShowBillingWizard(true);
                               setActiveTab('bills');
                             }}
                             className="w-full py-3.5 px-4 bg-[var(--mv-accent)] hover:brightness-90 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer uppercase tracking-wider"
                           >
-                            <Plus className="w-4 h-4" /> Generate Jul 2026 Receivables
+                            <Plus className="w-4 h-4" aria-hidden="true" /> Run billing for {wizardPeriod}
                           </button>
                           <button
                             onClick={() => setActiveTab('pay')}
@@ -1784,36 +2108,35 @@ export default function App() {
                   {currentRole === 'Committee' && (
                     <div className="grid grid-cols-12 gap-6 pt-1">
                       {/* Budget Chart */}
-                      <div className="col-span-7 bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs text-left">
+                      <div className="col-span-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs text-left">
                         <div className="flex justify-between items-center mb-4">
                           <div>
                             <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider">Approved FY Budget vs Realized Revenue Ledger</h4>
-                            <p className="text-[10px] text-[#6B7280]">Association budget variance — subject to approved bylaws</p>
+                            <p className="text-[10px] text-[var(--mv-muted)]">{onServer ? 'Needs an approved budget' : 'Demonstration budget figures — not an approved budget'}</p>
                           </div>
                         </div>
 
                         <div className="h-80 w-full pt-1 select-none">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={budgetPerformanceData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="var(--mv-soft)" />
-                              <XAxis dataKey="head" tick={{ fontSize: 11, fill: '#6B7280' }} />
-                              <YAxis tick={{ fontSize: 11, fill: '#6B7280' }} />
-                              <Tooltip formatter={(value) => formatRupee(value as number)} />
-                              <Bar dataKey="Budgeted" fill="#9CA3AF" radius={[6, 6, 0, 0]} />
-                              <Bar dataKey="Actual" fill="var(--mv-accent)" radius={[6, 6, 0, 0]} />
-                            </BarChart>
-                          </ResponsiveContainer>
+                          {onServer ? (
+                            <p className="py-24 text-center text-xs text-[var(--mv-muted)] max-w-sm mx-auto">
+                              No approved budget is on record on the server, so there is nothing to compare against yet.
+                            </p>
+                          ) : (
+                            <Suspense fallback={<PanelLoading />}>
+                              <BudgetChart data={budgetPerformanceData} />
+                            </Suspense>
+                          )}
                         </div>
                       </div>
 
                       {/* Required vendor approvals panel */}
-                      <div className="col-span-5 bg-white border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs text-left flex flex-col justify-between">
+                      <div className="col-span-5 bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs text-left flex flex-col justify-between">
                         <div>
-                          <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider mb-4 border-b border-gray-100 pb-2">Governing Vendor Approvals</h4>
-                          
+                          <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider mb-4 border-b border-[var(--mv-border)] pb-2">Governing Vendor Approvals</h4>
+
                           <div className="space-y-3 overflow-y-auto max-h-[260px] pr-1 hide-scrollbar">
                             {vendorInvoices.filter(vi => vi.status === 'Pending').length === 0 ? (
-                              <div className="py-12 text-center text-xs text-gray-400 font-semibold uppercase tracking-wider">
+                              <div className="py-12 text-center text-xs text-[var(--mv-muted)] font-semibold uppercase tracking-wider">
                                 RWA Balance Reconciled! No pending proposals.
                               </div>
                             ) : (
@@ -1826,22 +2149,26 @@ export default function App() {
                                       </span>
                                       <h5 className="font-bold text-[var(--mv-ink)] mt-1.5">{vi.vendorName}</h5>
                                     </div>
-                                    <span className="font-mono font-bold text-gray-900">{formatRupee(vi.amount)}</span>
+                                    <span className="font-mono font-bold text-[var(--mv-ink)]">{formatRupee(vi.amount)}</span>
                                   </div>
-                                  <div className="bg-white p-2 rounded border border-gray-100 text-[9px] text-gray-500 flex justify-between items-center leading-none">
+                                  <div className="bg-[var(--mv-surface)] p-2 rounded border border-[var(--mv-border)] text-[9px] text-[var(--mv-muted)] flex justify-between items-center leading-none">
                                     <span>TDS Withheld (194C): <strong className="font-mono text-[var(--mv-ink)]">{formatRupee(vi.tdsAmount)}</strong></span>
                                     <span>Net Payable: <strong className="font-mono text-[var(--mv-ink)]">{formatRupee(vi.netPayable)}</strong></span>
                                   </div>
                                   <div className="flex gap-2 justify-end pt-1">
-                                    <button
-                                      onClick={() => handleVendorInvoiceStatus(vi.id, 'Rejected')}
-                                      className="py-1 px-3 border border-gray-350 rounded text-[9px] font-bold text-gray-650 hover:bg-white active:scale-95"
-                                    >
-                                      Reject
-                                    </button>
+                                    {!onServer && (
+                                      <button
+                                        onClick={() => handleVendorInvoiceStatus(vi.id, 'Rejected')}
+                                        disabled={working}
+                                        className="py-1 px-3 border border-[var(--mv-border)] rounded text-[9px] font-bold text-[var(--mv-muted)] hover:bg-[var(--mv-surface)] active:scale-95 disabled:opacity-60"
+                                      >
+                                        Reject
+                                      </button>
+                                    )}
                                     <button
                                       onClick={() => handleVendorInvoiceStatus(vi.id, 'Approved')}
-                                      className="py-1 px-3 bg-[var(--mv-accent)] text-white rounded text-[9px] font-bold hover:brightness-90 active:scale-95"
+                                      disabled={working}
+                                      className="py-1 px-3 bg-[var(--mv-accent)] text-white rounded text-[9px] font-bold hover:brightness-90 active:scale-95 disabled:opacity-60"
                                     >
                                       Approve
                                     </button>
@@ -1871,11 +2198,12 @@ export default function App() {
                   <div className="flex justify-between items-end border-b border-[var(--mv-border)] pb-4">
                     <div>
                       <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Receivables Ledger Directory</h2>
-                      <p className="text-xs text-[#6B7280]">Fully compliant regulatory invoices generated for Mani Vista residents</p>
+                      <p className="text-xs text-[var(--mv-muted)]">Fully compliant regulatory invoices generated for Mani Vista residents</p>
                     </div>
                     {currentRole !== 'Resident' && (
                       <button
                         onClick={() => setShowBillingWizard(!showBillingWizard)}
+                        aria-expanded={showBillingWizard}
                         className="py-2.5 px-4 bg-[var(--mv-ink)] hover:bg-black text-white text-xs font-bold uppercase rounded-xl shadow-md flex items-center gap-1.5"
                       >
                         <Plus className="w-4 h-4" /> {showBillingWizard ? 'Minimize Billing' : 'Launch New Campaign'}
@@ -1885,7 +2213,7 @@ export default function App() {
 
                   {/* The document workflow: where a proforma is in its life. */}
                   {currentRole !== 'Resident' && (
-                    <div className="p-6 bg-white border border-[var(--mv-border)] rounded-2xl shadow-xs">
+                    <div className="p-6 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl shadow-xs">
                       <BillingWorkflow
                         documents={registerDocuments}
                         problems={books.snapshot().problems}
@@ -1899,67 +2227,14 @@ export default function App() {
 
                   {/* Wizard element positioned dynamically */}
                   {showBillingWizard && currentRole !== 'Resident' && (
-                    <div className="p-6 bg-white border border-[var(--mv-border)] rounded-2xl max-w-3xl animate-scale-up space-y-4">
+                    <div className="p-6 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl max-w-3xl animate-scale-up space-y-4">
                       <div className="flex justify-between items-center border-b border-[var(--mv-border)] pb-3">
-                        <span className="font-bold text-xs uppercase tracking-wider text-[var(--mv-ink)]">Campaign Generation Panel</span>
+                        <span className="font-bold text-xs uppercase tracking-wider text-[var(--mv-ink)]">Billing run</span>
                         <button onClick={() => setShowBillingWizard(false)} className="text-[var(--mv-accent)] hover:underline text-xs font-semibold">Dismiss</button>
                       </div>
 
                       <form onSubmit={handleRunBillGeneration} className="space-y-4 text-xs font-medium">
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <label className="text-[10px] text-[#6B7280] font-bold block mb-1 uppercase tracking-wider">Assessment Cycle Period</label>
-                            <input 
-                              type="text" 
-                              value={wizardPeriod} 
-                              onChange={(e) => setWizardPeriod(e.target.value)}
-                              placeholder="e.g. Jul 2026"
-                              className="w-full bg-[var(--mv-page)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs text-[var(--mv-ink)] outline-none" 
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] text-[#6B7280] font-bold block mb-1 uppercase tracking-wider">Frequency Category</label>
-                            <select 
-                              value={wizardCycle} 
-                              onChange={(e) => setWizardCycle(e.target.value)}
-                              className="w-full bg-[var(--mv-page)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs text-[var(--mv-ink)] outline-none"
-                            >
-                              <option value="Monthly">Monthly Cycle</option>
-                              <option value="Quarterly">Quarterly Cycle</option>
-                              <option value="Annual">Annual Cycle</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-5 gap-3 font-mono text-xs">
-                          <div>
-                            <label className="text-[9px] text-[#6B7280] font-bold font-sans block mb-1 uppercase">Maintenance (₹)</label>
-                            <input type="number" value={wizardMaint} onChange={(e) => setWizardMaint(e.target.value)} className="w-full p-2.5 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] font-bold text-[var(--mv-ink)]" />
-                          </div>
-                          <div>
-                            <label className="text-[9px] text-[#6B7280] font-bold font-sans block mb-1 uppercase">Sinking (₹)</label>
-                            <input type="number" value={wizardSinking} onChange={(e) => setWizardSinking(e.target.value)} className="w-full p-2.5 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] font-bold text-[var(--mv-ink)]" />
-                          </div>
-                          <div>
-                            <label className="text-[9px] text-[#6B7280] font-bold font-sans block mb-1 uppercase">Water tankers (₹)</label>
-                            <input type="number" value={wizardWater} onChange={(e) => setWizardWater(e.target.value)} className="w-full p-2.5 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] font-bold text-[var(--mv-ink)]" />
-                          </div>
-                          <div>
-                            <label className="text-[9px] text-[#6B7280] font-bold font-sans block mb-1 uppercase">Parking Sump (₹)</label>
-                            <input type="number" value={wizardParking} onChange={(e) => setWizardParking(e.target.value)} className="w-full p-2.5 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] font-bold text-[var(--mv-ink)]" />
-                          </div>
-                          <div>
-                            <span className="text-[9px] text-[#6B7280] font-bold font-sans block mb-1 uppercase">Tax Base</span>
-                            <div className="p-2.5 bg-gray-100 rounded-xl text-center font-bold text-gray-700 leading-none h-[42px] flex items-center justify-center">18% GST</div>
-                          </div>
-                        </div>
-
-                        <button
-                          type="submit"
-                          className="w-full py-3.5 bg-[var(--mv-accent)] text-white rounded-xl font-bold shadow-md uppercase tracking-wider text-center flex items-center justify-center gap-1 cursor-pointer"
-                        >
-                          <Send className="w-4 h-4" /> Issue and Dispatch Campaign Bulk Invoices
-                        </button>
+                        {renderWizardFields(false)}
                       </form>
                     </div>
                   )}
@@ -1967,8 +2242,8 @@ export default function App() {
                   {/* MASTER DETAIL TWO-PANE GRID */}
                   <div className="grid grid-cols-12 gap-6 items-start">
                     {/* LEFT MASTER LIST */}
-                    <div className="col-span-5 bg-white border border-[var(--mv-border)] rounded-2xl shadow-xs overflow-hidden flex flex-col">
-                      <div className="p-4 border-b border-[var(--mv-border)] bg-gray-50/55 select-none font-bold text-[10px] uppercase tracking-wider text-gray-500">
+                    <div className="col-span-5 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl shadow-xs overflow-hidden flex flex-col">
+                      <div className="p-4 border-b border-[var(--mv-border)] bg-[var(--mv-page)] select-none font-bold text-[10px] uppercase tracking-wider text-[var(--mv-muted)]">
                         Select Invoice Receipts ({currentInvoices.length} Found)
                       </div>
 
@@ -1979,14 +2254,14 @@ export default function App() {
                             <div
                               key={inv.id}
                               onClick={() => setSelectedInvoice(inv)}
-                              className={`p-4 text-left cursor-pointer transition-all flex justify-between items-center ${isActive ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)]' : 'hover:bg-gray-50/50 bg-white'}`}
+                              className={`p-4 text-left cursor-pointer transition-all flex justify-between items-center ${isActive ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)]' : 'hover:bg-[var(--mv-soft)] bg-[var(--mv-surface)]'}`}
                             >
                               <div className="min-w-0 flex-1 pr-2">
-                                <span className="font-mono text-[9px] text-gray-400 font-bold tracking-tight block uppercase leading-none">Invoice No: {inv.invoiceNo}</span>
+                                <span className="font-mono text-[9px] text-[var(--mv-muted)] font-bold tracking-tight block uppercase leading-none">Invoice No: {inv.invoiceNo}</span>
                                 <h4 className="font-extrabold text-[var(--mv-ink)] mt-1.5 text-xs truncate">
                                   {inv.period} Maintenance {currentRole !== 'Resident' ? `(Flat ${inv.flatNo})` : ''}
                                 </h4>
-                                <p className="text-[9px] text-[#6B7280] font-bold mt-1 uppercase">Owner: {inv.name}</p>
+                                <p className="text-[9px] text-[var(--mv-muted)] font-bold mt-1 uppercase">Owner: {inv.name}</p>
                               </div>
                               <div className="text-right shrink-0">
                                 <p className="font-mono text-xs font-bold text-[var(--mv-ink)]">{formatRupee(inv.total)}</p>
@@ -2001,15 +2276,15 @@ export default function App() {
                     </div>
 
                     {/* RIGHT DETAIL PRESENTATION */}
-                    <div className="col-span-7 bg-white border border-[var(--mv-border)] rounded-2xl shadow-sm p-6 space-y-4 min-h-[540px] flex flex-col justify-between">
+                    <div className="col-span-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl shadow-sm p-6 space-y-4 min-h-[540px] flex flex-col justify-between">
                       {desktopActiveInvoice ? (
                         <>
                           <div className="space-y-4">
                             <div className="flex justify-between items-start">
                               <div>
-                                <span className="text-[9px] font-bold uppercase text-[#6B7280] tracking-widest leading-none">Registered Society CHS RWA</span>
+                                <span className="text-[9px] font-bold uppercase text-[var(--mv-muted)] tracking-widest leading-none">Registered Society CHS RWA</span>
                                 <h3 className="font-extrabold text-lg text-[var(--mv-ink)] mt-1.5">Mani Vista Residents Association</h3>
-                                <p className="text-[10px] text-gray-400 font-medium">{societyName} · GSTIN {gstinLabel}</p>
+                                <p className="text-[10px] text-[var(--mv-muted)] font-medium">{societyName} · GSTIN {gstinLabel}</p>
                               </div>
                               <div className="text-right">
                                 {desktopActiveInvoice.status === 'Paid' ? (
@@ -2017,7 +2292,7 @@ export default function App() {
                                     Paid reconciled
                                   </span>
                                 ) : (
-                                  <span className="px-3 py-1.5 text-[9px] font-bold rounded-lg bg-red-50 text-red-650 border border-red-200 uppercase select-none leading-none inline-block">
+                                  <span className="px-3 py-1.5 text-[9px] font-bold rounded-lg bg-red-50 text-red-700 border border-red-200 uppercase select-none leading-none inline-block">
                                     Overdue arrears
                                   </span>
                                 )}
@@ -2026,66 +2301,66 @@ export default function App() {
 
                             <hr className="border-[var(--mv-border)]" />
 
-                            <div className="grid grid-cols-4 gap-3 bg-gray-50/50 p-4 border border-[var(--mv-border)] rounded-2xl text-[10px] leading-relaxed">
+                            <div className="grid grid-cols-4 gap-3 bg-[var(--mv-page)] p-4 border border-[var(--mv-border)] rounded-2xl text-[10px] leading-relaxed">
                               <div>
-                                <p className="font-bold uppercase tracking-tight text-[#6B7280]">Tax Invoice ID</p>
+                                <p className="font-bold uppercase tracking-tight text-[var(--mv-muted)]">Tax Invoice ID</p>
                                 <p className="font-bold text-[var(--mv-ink)] font-mono mt-1">{desktopActiveInvoice.invoiceNo}</p>
                               </div>
                               <div>
-                                <p className="font-bold uppercase tracking-tight text-[#6B7280]">Cycle Period</p>
+                                <p className="font-bold uppercase tracking-tight text-[var(--mv-muted)]">Cycle Period</p>
                                 <p className="font-bold text-[var(--mv-ink)] font-mono mt-1">{desktopActiveInvoice.period}</p>
                               </div>
                               <div>
-                                <p className="font-bold uppercase tracking-tight text-[#6B7280]">Flat Reference</p>
+                                <p className="font-bold uppercase tracking-tight text-[var(--mv-muted)]">Flat Reference</p>
                                 <p className="font-bold text-[var(--mv-ink)] font-mono mt-1">{desktopActiveInvoice.flatNo}</p>
                               </div>
                               <div>
-                                <p className="font-bold uppercase tracking-tight text-[#6B7280]">Resident Owner</p>
+                                <p className="font-bold uppercase tracking-tight text-[var(--mv-muted)]">Resident Owner</p>
                                 <p className="font-bold text-[var(--mv-ink)] mt-1 truncate">{desktopActiveInvoice.name}</p>
                               </div>
                             </div>
 
                             <div className="space-y-2 pt-2 text-xs">
-                              <h5 className="font-extrabold text-[9px] uppercase tracking-wider text-gray-500 border-b border-[var(--mv-border)] pb-2">Billing Breakdown particulars</h5>
-                              
+                              <h5 className="font-extrabold text-[9px] uppercase tracking-wider text-[var(--mv-muted)] border-b border-[var(--mv-border)] pb-2">Billing Breakdown particulars</h5>
+
                               <div className="flex justify-between items-center py-1">
-                                <span className="text-gray-550 font-medium">Common Area General Maintenance</span>
+                                <span className="text-[var(--mv-muted)] font-medium">Common Area General Maintenance</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.maintenance)}</span>
                               </div>
                               <div className="flex justify-between items-center py-1">
-                                <span className="text-gray-550 font-medium font-sans">Sinking Surcharge contributions</span>
+                                <span className="text-[var(--mv-muted)] font-medium font-sans">Sinking Surcharge contributions</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.sinkingFund)}</span>
                               </div>
                               <div className="flex justify-between items-center py-1">
-                                <span className="text-gray-555 font-medium">Water Utility tank infrastructure levy</span>
+                                <span className="text-[var(--mv-muted)] font-medium">Water Utility tank infrastructure levy</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.waterCharges)}</span>
                               </div>
                               <div className="flex justify-between items-center py-1">
-                                <span className="text-gray-555 font-medium">Lock-up car parking reserve charges</span>
+                                <span className="text-[var(--mv-muted)] font-medium">Lock-up car parking reserve charges</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.parkingCharges)}</span>
                               </div>
                               <div className="flex justify-between items-center py-1">
-                                <span className="text-gray-555 font-medium">Non-Occupancy regulatory surcharge</span>
+                                <span className="text-[var(--mv-muted)] font-medium">Non-Occupancy regulatory surcharge</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.nonOccupancyCharges)}</span>
                               </div>
 
                               {desktopActiveInvoice.gst > 0 && (
                                 <>
                                   <hr className="border-[var(--mv-border)] my-2" />
-                                  <div className="flex justify-between items-center text-gray-400 py-0.5">
-                                    <span>CGST Accrual (9.0% standard levy rate)</span>
+                                  <div className="flex justify-between items-center text-[var(--mv-muted)] py-0.5">
+                                    <span>CGST (half of the GST charged)</span>
                                     <span className="font-mono font-bold">{formatRupee(desktopActiveInvoice.gst / 2)}</span>
                                   </div>
-                                  <div className="flex justify-between items-center text-gray-400 py-0.5">
-                                    <span>SGST Accrual (9.0% standard levy rate)</span>
+                                  <div className="flex justify-between items-center text-[var(--mv-muted)] py-0.5">
+                                    <span>SGST (half of the GST charged)</span>
                                     <span className="font-mono font-bold">{formatRupee(desktopActiveInvoice.gst / 2)}</span>
                                   </div>
                                 </>
                               )}
 
                               {desktopActiveInvoice.latePenalty > 0 && (
-                                <div className="flex justify-between items-center py-2 bg-red-50/60 px-3.5 rounded-lg border border-red-100 mt-2 text-red-650">
-                                  <span className="font-bold text-[10px]">Compounding late-payment interest penalty (18% pa)</span>
+                                <div className="flex justify-between items-center py-2 bg-red-50/60 px-3.5 rounded-lg border border-red-100 mt-2 text-red-700">
+                                  <span className="font-bold text-[10px]">Late-payment interest</span>
                                   <span className="font-mono font-bold text-xs">{formatRupee(desktopActiveInvoice.latePenalty)}</span>
                                 </div>
                               )}
@@ -2102,49 +2377,13 @@ export default function App() {
                           {/* Footer details action */}
                           <div className="pt-4 border-t border-[var(--mv-border)] flex justify-between items-center bg-[var(--mv-page)]/50 rounded-b-2xl p-4 -mx-6 -mb-6">
                             <button
-                              onClick={() => {
-                                const sub = desktopActiveInvoice.maintenance + desktopActiveInvoice.sinkingFund + desktopActiveInvoice.waterCharges + desktopActiveInvoice.parkingCharges + desktopActiveInvoice.nonOccupancyCharges;
-                                const content = `
-============================================================
-       MANI VISTA RESIDENTS ASSOCIATION
-                 GSTIN: ${gstinLabel}
-============================================================
-INVOICE ID: ${desktopActiveInvoice.invoiceNo}
-BILLING CYCLE: ${desktopActiveInvoice.period}
-FLAT: ${desktopActiveInvoice.flatNo} | OWNER: ${desktopActiveInvoice.name}
-DUEDATE: ${desktopActiveInvoice.dueDate}
-============================================================
-PARTICULARS                           AMOUNT (INR)
-------------------------------------------------------------
-1. Maintenance Charges                 ${desktopActiveInvoice.maintenance.toFixed(2)}
-2. Sinking Fund Contributions          ${desktopActiveInvoice.sinkingFund.toFixed(2)}
-3. Bulk Water Utility Allocation       ${desktopActiveInvoice.waterCharges.toFixed(2)}
-4. Covered/Open Car Parking            ${desktopActiveInvoice.parkingCharges.toFixed(2)}
-5. Non-Occupancy Surcharges           ${desktopActiveInvoice.nonOccupancyCharges.toFixed(2)}
-------------------------------------------------------------
-SUBTOTAL                               ${sub.toFixed(2)}
-GST (18.00%)                           ${desktopActiveInvoice.gst.toFixed(2)}
-LATE PENALTY COMPOUND INTEREST          ${desktopActiveInvoice.latePenalty.toFixed(2)}
-------------------------------------------------------------
-TOTAL ACCOUNT DUE                      ${desktopActiveInvoice.total.toFixed(2)}
-============================================================
-STATUS: ${desktopActiveInvoice.status.toUpperCase()}
-============================================================
-Tax receipt file issued by state RWA SmartSuite.
-                                `;
-                                const blob = new Blob([content], { type: 'text/plain' });
-                                const link = document.createElement('a');
-                                link.href = URL.createObjectURL(blob);
-                                link.download = `Invoice_${desktopActiveInvoice.invoiceNo}.txt`;
-                                link.click();
-                                triggerToast('Downloaded structured receipt file locally!');
-                              }}
-                              className="py-2.5 px-4 bg-white border border-[var(--mv-border)] rounded-xl text-xs font-semibold text-[var(--mv-ink)] hover:bg-gray-100 transition-all flex items-center justify-center gap-1 cursor-pointer active:scale-95 shadow-xs"
+                              onClick={() => handleDownloadInvoice(desktopActiveInvoice)}
+                              className="py-2.5 px-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl text-xs font-semibold text-[var(--mv-ink)] hover:bg-[var(--mv-soft)] transition-all flex items-center justify-center gap-1 cursor-pointer active:scale-95 shadow-xs"
                             >
-                              <Download className="w-4 h-4 text-[#6B7280]" /> Reconciled export file
+                              <Download className="w-4 h-4 text-[var(--mv-muted)]" aria-hidden="true" /> {onServer ? 'Download PDF' : 'Export summary (demo)'}
                             </button>
 
-                            {desktopActiveInvoice.status !== 'Paid' && currentRole === 'Resident' && (
+                            {desktopActiveInvoice.status !== 'Paid' && currentRole === 'Resident' && mayPayOnline && (
                               <button
                                 onClick={() => handlePayClick(desktopActiveInvoice)}
                                 className="py-2.5 px-6 bg-[var(--mv-accent)] text-white text-xs font-bold rounded-xl shadow cursor-pointer uppercase tracking-wider"
@@ -2153,7 +2392,7 @@ Tax receipt file issued by state RWA SmartSuite.
                               </button>
                             )}
 
-                            {desktopActiveInvoice.status !== 'Paid' && currentRole !== 'Resident' && (
+                            {desktopActiveInvoice.status !== 'Paid' && currentRole !== 'Resident' && !onServer && (
                               <button
                                 onClick={() => handleSendReminder(desktopActiveInvoice)}
                                 className="py-2.5 px-6 bg-[var(--mv-ink)] text-white text-xs font-bold rounded-xl shadow cursor-pointer uppercase tracking-wider flex items-center gap-1.5"
@@ -2170,10 +2409,10 @@ Tax receipt file issued by state RWA SmartSuite.
                           </div>
                         </>
                       ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center text-center py-20 text-gray-400">
-                          <FileText className="w-12 h-12 text-gray-300 mb-2" />
+                        <div className="flex-1 flex flex-col items-center justify-center text-center py-20 text-[var(--mv-muted)]">
+                          <FileText className="w-12 h-12 text-[var(--mv-muted)] mb-2" />
                           <p className="text-xs font-bold uppercase tracking-wider">No active accounts selected</p>
-                          <p className="text-[11px] text-[#6B7280] max-w-sm mt-1">Select an active resident accounts tax invoice from the master index layout on the left to review allocations.</p>
+                          <p className="text-[11px] text-[var(--mv-muted)] max-w-sm mt-1">Select an active resident accounts tax invoice from the master index layout on the left to review allocations.</p>
                         </div>
                       )}
                     </div>
@@ -2188,14 +2427,14 @@ Tax receipt file issued by state RWA SmartSuite.
                     <>
                       <div>
                         <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Reconcile Core Ledger Account</h2>
-                        <p className="text-xs text-[#6B7280]">Authorize water tankers infrastructure clearing, UPI transactions, and unearned advance predepositions</p>
+                        <p className="text-xs text-[var(--mv-muted)]">Authorize water tankers infrastructure clearing, UPI transactions, and unearned advance predepositions</p>
                       </div>
 
                       <div className="grid grid-cols-12 gap-6 items-start">
                         {payingInvoice ? (
-                          <div className="col-span-7 bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
+                          <div className="col-span-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
                             <div className="flex justify-between items-center border-b border-[var(--mv-border)] pb-2">
-                              <span className="font-extrabold text-[10px] uppercase text-[#6B7280] tracking-wider font-mono">Checkout — demo, no gateway</span>
+                              <span className="font-extrabold text-[10px] uppercase text-[var(--mv-muted)] tracking-wider font-mono">Checkout — no gateway connected</span>
                               <button onClick={() => setPayingInvoice(null)} className="text-xs font-bold text-[var(--mv-accent)] hover:underline">Dismiss</button>
                             </div>
 
@@ -2209,9 +2448,9 @@ Tax receipt file issued by state RWA SmartSuite.
                             </div>
 
                             <form onSubmit={handleExecutePayment} className="space-y-4 text-xs font-medium">
-                              <span className="text-[10px] uppercase font-bold text-gray-400">Choose clearance mode</span>
-                              
-                              <div className="grid grid-cols-4 gap-3">
+                              <span className="text-[10px] uppercase font-bold text-[var(--mv-muted)]" id="pmethod-desk-label">Payment method</span>
+
+                              <div className="grid grid-cols-4 gap-3" role="radiogroup" aria-labelledby="pmethod-desk-label">
                                 {[
                                   { id: 'UPI', label: 'UPI / BHIM' },
                                   { id: 'Net Banking', label: 'Net Banking' },
@@ -2220,14 +2459,14 @@ Tax receipt file issued by state RWA SmartSuite.
                                 ].map(item => (
                                   <label
                                     key={item.id}
-                                    className={`cursor-pointer p-3 border rounded-xl flex flex-col items-center justify-center text-center gap-2 transition-all ${paymentMethod === item.id ? 'border-[var(--mv-accent)] bg-[var(--mv-accent-soft)]/40 text-[var(--mv-accent)] font-bold' : 'border-[var(--mv-border)] bg-white hover:bg-gray-50 text-gray-500'}`}
+                                    className={`cursor-pointer p-3 border rounded-xl flex flex-col items-center justify-center text-center gap-2 transition-all ${paymentMethod === item.id ? 'border-[var(--mv-accent)] bg-[var(--mv-accent-soft)]/40 text-[var(--mv-accent)] font-bold' : 'border-[var(--mv-border)] bg-[var(--mv-surface)] hover:bg-[var(--mv-soft)] text-[var(--mv-muted)]'}`}
                                   >
                                     <input
                                       type="radio"
                                       name="pmethod-desk"
                                       checked={paymentMethod === item.id}
                                       onChange={() => setPaymentMethod(item.id as any)}
-                                      className="hidden"
+                                      className="sr-only"
                                     />
                                     <span>{item.label}</span>
                                   </label>
@@ -2235,32 +2474,34 @@ Tax receipt file issued by state RWA SmartSuite.
                               </div>
 
                               <div className="space-y-1">
-                                <label className="text-[10px] font-bold text-[#6B7280] block uppercase">Partial Clearing Amount (INR)</label>
+                                <label htmlFor="pay-amount-desk" className="text-[10px] font-bold text-[var(--mv-muted)] block uppercase">Amount to pay (INR)</label>
                                 <input
+                                  id="pay-amount-desk"
                                   type="number"
                                   value={partialAmountInput}
                                   onChange={(e) => setPartialAmountInput(e.target.value)}
                                   placeholder={`e.g. ${payingInvoice.total}`}
                                   className="w-full bg-[var(--mv-page)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold font-mono outline-none"
                                 />
-                                <span className="text-[9px] text-[#6B7280] block font-medium">Leave completely blank to clear full aggregate assessment index of {formatRupee(payingInvoice.total)} instantly.</span>
+                                <span className="text-[9px] text-[var(--mv-muted)] block font-medium">Leave completely blank to clear full aggregate assessment index of {formatRupee(payingInvoice.total)} instantly.</span>
                               </div>
 
                               <button
                                 type="submit"
-                                className="w-full py-3.5 bg-[var(--mv-accent)] hover:brightness-90 text-white rounded-xl shadow font-bold text-xs uppercase text-center cursor-pointer"
+                                disabled={working}
+                                className="w-full py-3.5 bg-[var(--mv-accent)] hover:brightness-90 text-white rounded-xl shadow font-bold text-xs uppercase text-center cursor-pointer disabled:opacity-60 disabled:cursor-wait"
                               >
-                                Reconcile & Clear Receivables balance
+                                {working ? 'Recording…' : 'Record payment'}
                               </button>
                             </form>
                           </div>
                         ) : (
-                          <div className="col-span-7 bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
-                            <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider block border-b border-[var(--mv-border)] pb-2">Overdue pending receivables assessments</span>
-                            
+                          <div className="col-span-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
+                            <span className="text-[10px] uppercase font-bold text-[var(--mv-muted)] tracking-wider block border-b border-[var(--mv-border)] pb-2">Overdue pending receivables assessments</span>
+
                             <div className="divide-y divide-[var(--mv-border)]">
                               {invoices.filter(inv => inv.flatNo === residentFlatNo && inv.status !== 'Paid').length === 0 ? (
-                                <p className="py-12 text-center text-xs font-semibold font-mono text-gray-400">Your accounts ledger has zero active arrears! Standard accounts in green state.</p>
+                                <p className="py-12 text-center text-xs font-semibold font-mono text-[var(--mv-muted)]">Your accounts ledger has zero active arrears! Standard accounts in green state.</p>
                               ) : (
                                 invoices
                                   .filter(inv => inv.flatNo === residentFlatNo && inv.status !== 'Paid')
@@ -2268,16 +2509,18 @@ Tax receipt file issued by state RWA SmartSuite.
                                     <div key={inv.id} className="py-3 flex justify-between items-center text-xs font-medium">
                                       <div>
                                         <p className="font-extrabold text-[var(--mv-ink)]">{inv.period} Maintenance invoice assessment</p>
-                                        <p className="text-[9px] text-gray-400 font-bold uppercase mt-1">Invoice ID: {inv.invoiceNo}</p>
+                                        <p className="text-[9px] text-[var(--mv-muted)] font-bold uppercase mt-1">Invoice ID: {inv.invoiceNo}</p>
                                       </div>
                                       <div className="text-right flex items-center gap-3">
-                                        <span className="font-mono font-bold text-red-650">{formatRupee(inv.total)}</span>
-                                        <button
-                                          onClick={() => handlePayClick(inv)}
-                                          className="py-1.5 px-3 bg-[var(--mv-accent)] hover:brightness-90 text-white text-[10px] font-bold rounded-lg uppercase"
-                                        >
-                                          Reconcile Clear
-                                        </button>
+                                        <span className="font-mono font-bold text-red-700">{formatRupee(inv.total)}</span>
+                                        {mayPayOnline && (
+                                          <button
+                                            onClick={() => handlePayClick(inv)}
+                                            className="py-1.5 px-3 bg-[var(--mv-accent)] hover:brightness-90 text-white text-[10px] font-bold rounded-lg uppercase"
+                                          >
+                                            Pay
+                                          </button>
+                                        )}
                                       </div>
                                     </div>
                                   ))
@@ -2287,14 +2530,22 @@ Tax receipt file issued by state RWA SmartSuite.
                         )}
 
                         {/* Predeposition advance right panel */}
-                        <div className="col-span-5 bg-white border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4 text-xs font-medium">
-                          <span className="text-[10px] uppercase font-bold text-[var(--mv-ink)] tracking-wider block border-b border-gray-105 pb-2">Prepay advances reserve</span>
-                          <p className="text-gray-500 leading-relaxed">Residents may predispatch lump-sum advances. Standard RWA double-entry protocols automatically offset incoming monthly assessments ledger from advance assets.</p>
+                        <div className="col-span-5 bg-[var(--mv-surface)] border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4 text-xs font-medium">
+                          <span className="text-[10px] uppercase font-bold text-[var(--mv-ink)] tracking-wider block border-b border-[var(--mv-border)] pb-2">Prepay advances reserve</span>
+                          <p className="text-[var(--mv-muted)] leading-relaxed">Residents may predispatch lump-sum advances. Standard RWA double-entry protocols automatically offset incoming monthly assessments ledger from advance assets.</p>
 
+                          {!mayPayOnline ? (
+                            <p className="text-[11px] text-[var(--mv-muted)] leading-relaxed">
+                              No payment gateway is connected. Pay the association by UPI, NEFT or cheque and the
+                              manager records it; anything beyond your dues is held here as an advance
+                              ({formatRupees(residentAdvancePaise)} now).
+                            </p>
+                          ) : (
                           <form onSubmit={handleExecuteAdvance} className="space-y-4 pt-1">
                             <div className="space-y-1">
-                              <label className="text-[10px] text-gray-500 uppercase block">Deposit Sum (INR)</label>
+                              <label htmlFor="advance-desk" className="text-[10px] text-[var(--mv-muted)] uppercase block">Deposit Sum (INR)</label>
                               <input
+                                id="advance-desk"
                                 type="number"
                                 value={customAdvanceInput}
                                 onChange={(e) => setCustomAdvanceInput(e.target.value)}
@@ -2302,10 +2553,11 @@ Tax receipt file issued by state RWA SmartSuite.
                                 className="w-full bg-[var(--mv-page)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold font-mono outline-none"
                               />
                             </div>
-                            <button type="submit" className="w-full py-2.5 bg-[var(--mv-ink)] text-white font-bold rounded-xl active:scale-95 transition-all uppercase text-center cursor-pointer">
-                              Deposit Advance reserve Fund
+                            <button type="submit" disabled={working} className="w-full py-2.5 bg-[var(--mv-ink)] text-white font-bold rounded-xl active:scale-95 transition-all uppercase text-center cursor-pointer disabled:opacity-60">
+                              Deposit advance
                             </button>
                           </form>
+                          )}
                         </div>
                       </div>
                     </>
@@ -2313,20 +2565,22 @@ Tax receipt file issued by state RWA SmartSuite.
                     <>
                       <div>
                         <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Receivables Ageing Room</h2>
-                        <p className="text-xs text-[#6B7280]">Review arrears and log reminders against each flat. Sending them over SMS or WhatsApp needs a messaging account, so reminders are only recorded here.</p>
+                        <p className="text-xs text-[var(--mv-muted)]">{onServer
+                          ? 'Arrears by flat, and receipts for money that has reached the bank. Reminders are not sent from here yet.'
+                          : 'Review arrears and log reminders against each flat. Sending them over SMS or WhatsApp needs a messaging account, so reminders are only recorded here.'}</p>
                       </div>
 
                       <div className="grid grid-cols-12 gap-6 items-start">
                         {/* Overdue table list */}
-                        <div className="col-span-7 bg-white border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs space-y-3">
+                        <div className="col-span-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs space-y-3">
                           <div className="flex justify-between items-center border-b border-[var(--mv-border)] pb-2">
-                            <span className="text-[10px] font-bold uppercase text-gray-500 tracking-wider">Flats with outstanding accounts ({overdueInvoices.length})</span>
+                            <span className="text-[10px] font-bold uppercase text-[var(--mv-muted)] tracking-wider">Flats with outstanding accounts ({overdueInvoices.length})</span>
                             <span className="text-[9px] font-bold text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded uppercase font-mono">AR OVERDUE</span>
                           </div>
 
                           <div className="space-y-2.5 overflow-y-auto max-h-[380px] pr-1 hide-scrollbar">
                             {overdueInvoices.length === 0 ? (
-                              <p className="py-12 text-center text-xs font-semibold text-gray-400">All member accounts fully clear! Active collections settled.</p>
+                              <p className="py-12 text-center text-xs font-semibold text-[var(--mv-muted)]">All member accounts fully clear! Active collections settled.</p>
                             ) : (
                               overdueInvoices.map(inv => (
                                 <div key={inv.id} className="p-3.5 bg-[var(--mv-page)] rounded-xl flex justify-between items-center text-xs border border-[var(--mv-border)]">
@@ -2335,17 +2589,20 @@ Tax receipt file issued by state RWA SmartSuite.
                                       <span className="font-extrabold text-[var(--mv-ink)] text-sm">{inv.flatNo}</span>
                                       <span className="text-[10px] font-bold text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded-md truncate">{inv.name}</span>
                                     </div>
-                                    <span className="text-[10px] text-gray-405 block mt-1">Period Cycle: {inv.period} · Standard 30 days grace elapsed</span>
+                                    <span className="text-[10px] text-[var(--mv-muted)] block mt-1">Period Cycle: {inv.period} · Standard 30 days grace elapsed</span>
                                   </div>
                                   <div className="text-right flex items-center gap-3 shrink-0">
-                                    <span className="font-bold font-mono text-red-650 text-xs">{formatRupee(inv.total)}</span>
-                                    <button
-                                      onClick={() => handleSendReminder(inv)}
-                                      className="w-8 h-8 rounded-lg bg-[var(--mv-accent-soft)] hover:bg-[var(--mv-accent-border)] text-[var(--mv-accent)] flex items-center justify-center cursor-pointer shadow-xs transition-colors"
-                                      title="Dispatch SMS / Email overdue alerts"
-                                    >
-                                      <Send className="w-3.5 h-3.5" />
-                                    </button>
+                                    <span className="font-bold font-mono text-red-700 text-xs">{formatRupee(inv.total)}</span>
+                                    {!onServer && (
+                                      <button
+                                        onClick={() => handleSendReminder(inv)}
+                                        className="w-8 h-8 rounded-lg bg-[var(--mv-accent-soft)] hover:bg-[var(--mv-accent-border)] text-[var(--mv-accent)] flex items-center justify-center cursor-pointer shadow-xs transition-colors"
+                                        title={`Log a reminder for ${inv.flatNo}`}
+                                        aria-label={`Log a reminder for flat ${inv.flatNo}`}
+                                      >
+                                        <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
                               ))
@@ -2353,21 +2610,29 @@ Tax receipt file issued by state RWA SmartSuite.
                           </div>
                         </div>
 
-                        {/* Live reconcile logs feed */}
-                        <div className="col-span-5 bg-white border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs space-y-4 select-none">
-                          <div className="flex justify-between items-center border-b border-gray-120 pb-2">
-                            <span className="text-[10px] font-bold uppercase text-gray-500 tracking-wider">Live Bank Feed settlement Reconciler</span>
-                            <span className="px-2 py-0.5 rounded bg-[var(--mv-accent)] text-white text-[8px] font-bold font-mono">STATE ACTIVE</span>
-                          </div>
-
-                          <div className="space-y-3 pt-1 text-xs leading-relaxed font-mono">
-                            <div className="p-3.5 bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)]/40 rounded-xl text-[11px]">
-                              <strong>[SAMPLE ACTIVITY]</strong> An illustrative reconciliation of an IMPS / NEFT settlement batch of <strong>₹3,79,500</strong> across two flats. This entry is part of the demonstration narrative, not a transaction in the books.
-                            </div>
-                            <div className="p-3 bg-[var(--mv-page)] text-gray-550 border border-[var(--mv-border)] rounded-xl text-[11px]">
-                              <strong>[LEDGER LOGGED]</strong> Decryption system checked. Sector audit logs successfully logged 3 matching dual-ledger entries for monthly GST and water utility reserves.
-                            </div>
-                          </div>
+                        {/* Receipt entry: money already in the bank, against a flat. */}
+                        <div className="col-span-5 bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs">
+                          {mayRecordReceipts ? (
+                            <ReceiptEntryForm
+                            flats={members.map(m => ({ flatNo: m.flatNo, name: m.name }))}
+                            openDocumentsFor={openDocumentsFor}
+                            actions={mustActions()}
+                            today={today}
+                            by={`${currentRole} (${sessionEmail ?? 'local'})`}
+                            onRecorded={handleReceiptRecorded}
+                            onError={message => triggerToast(message, 'error')}
+                            {...(onServer ? { onDownloadReceipt: downloadReceiptPdf } : {})}
+                            note={onServer
+                              ? 'For money already in the association\'s bank. The server numbers the receipt and allocates it oldest invoice first unless you name one; anything over the dues is held as an advance. No bank or gateway is contacted.'
+                              : 'Demonstration: recorded in this browser only. No bank or gateway is contacted.'}
+                            
+                          />
+                          ) : (
+                            <p className="text-xs text-[var(--mv-muted)] leading-relaxed">
+                              Receipts are recorded by the manager. This account does not hold the
+                              payment.record permission.
+                            </p>
+                          )}
                         </div>
                       </div>
                     </>
@@ -2380,32 +2645,32 @@ Tax receipt file issued by state RWA SmartSuite.
                 <div className="space-y-6 max-w-7xl mx-auto animate-scale-up text-left">
                   <div>
                     <h2 className="text-2xl font-bold text-[var(--mv-ink)]">RWA Double-Entry Financial Books & Audits</h2>
-                    <p className="text-xs text-[#6B7280]">Fully compliant regulatory audits, comparative assets, and live double-entry general journal ledger balances</p>
+                    <p className="text-xs text-[var(--mv-muted)]">Fully compliant regulatory audits, comparative assets, and live double-entry general journal ledger balances</p>
                   </div>
 
                   {/* Books sub-navigation */}
                   <div className="grid grid-cols-4 gap-2 bg-[var(--mv-soft)] p-1.5 rounded-xl text-xs font-bold uppercase text-center max-w-xl select-none">
                     <button
                       onClick={() => setBooksSubTab('reports')}
-                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'reports' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[#6B7280] hover:text-[#0b0b0f]'}`}
+                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'reports' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[var(--mv-muted)] hover:text-[#0b0b0f]'}`}
                     >
                       Audit Reports
                     </button>
                     <button
                       onClick={() => setBooksSubTab('ledger')}
-                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'ledger' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[#6B7280] hover:text-[#0b0b0f]'}`}
+                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'ledger' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[var(--mv-muted)] hover:text-[#0b0b0f]'}`}
                     >
                       Journal Ledger
                     </button>
                     <button
                       onClick={() => setBooksSubTab('budget')}
-                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'budget' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[#6B7280] hover:text-[#0b0b0f]'}`}
+                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'budget' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[var(--mv-muted)] hover:text-[#0b0b0f]'}`}
                     >
                       Budget Variance
                     </button>
                     <button
                       onClick={() => setBooksSubTab('audit')}
-                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'audit' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[#6B7280] hover:text-[#0b0b0f]'}`}
+                      className={`py-2 px-3 rounded-lg transition-all cursor-pointer ${booksSubTab === 'audit' ? 'bg-[var(--mv-ink)] text-white shadow' : 'text-[var(--mv-muted)] hover:text-[#0b0b0f]'}`}
                     >
                       Audit Trails
                     </button>
@@ -2415,65 +2680,69 @@ Tax receipt file issued by state RWA SmartSuite.
                   {booksSubTab === 'reports' && (
                     <div className="grid grid-cols-12 gap-6 items-start">
                       {/* Substate categories sidebar */}
-                      <div className="col-span-4 bg-white border border-[var(--mv-border)] rounded-2xl shadow-xs overflow-hidden flex flex-col">
-                        <div className="p-4 border-b border-[var(--mv-border)] bg-gray-50/55 select-none font-bold text-[10px] uppercase tracking-wider text-gray-500">
+                      <div className="col-span-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl shadow-xs overflow-hidden flex flex-col">
+                        <div className="p-4 border-b border-[var(--mv-border)] bg-[var(--mv-page)] select-none font-bold text-[10px] uppercase tracking-wider text-[var(--mv-muted)]">
                           Statements Menu directory
                         </div>
 
                         <div className="divide-y divide-[var(--mv-border)] text-xs font-medium">
-                          <div 
+                          <div
                             onClick={() => setReportsSubState('ie')}
-                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'ie' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-gray-50 bg-white text-gray-650'}`}
+                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'ie' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-[var(--mv-soft)] bg-[var(--mv-surface)] text-[var(--mv-muted)]'}`}
                           >
                             <p className="font-bold">Income & Expenditure Statement</p>
-                            <span className="text-[10px] text-gray-400 block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Provisional surplus</span>
+                            <span className="text-[10px] text-[var(--mv-muted)] block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Provisional surplus</span>
                           </div>
-                          <div 
+                          <div
                             onClick={() => setReportsSubState('bs')}
-                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'bs' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-gray-50 bg-white text-gray-650'}`}
+                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'bs' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-[var(--mv-soft)] bg-[var(--mv-surface)] text-[var(--mv-muted)]'}`}
                           >
                             <p className="font-bold">Balance Sheet</p>
-                            <span className="text-[10px] text-gray-400 block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Assets, liabilities and funds</span>
+                            <span className="text-[10px] text-[var(--mv-muted)] block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Assets, liabilities and funds</span>
                           </div>
                           <div
                             onClick={() => setReportsSubState('rp')}
-                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'rp' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-gray-50 bg-white text-gray-650'}`}
+                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'rp' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-[var(--mv-soft)] bg-[var(--mv-surface)] text-[var(--mv-muted)]'}`}
                           >
                             <p className="font-bold">Receipts &amp; Payments</p>
-                            <span className="text-[10px] text-gray-400 block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Cash basis</span>
+                            <span className="text-[10px] text-[var(--mv-muted)] block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Cash basis</span>
                           </div>
                           <div
                             onClick={() => setReportsSubState('tb')}
-                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'tb' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-gray-50 bg-white text-gray-650'}`}
+                            className={`p-4 text-left cursor-pointer transition-colors ${reportsSubState === 'tb' ? 'bg-[var(--mv-accent-soft)]/40 border-l-4 border-[var(--mv-accent)] font-bold text-[var(--mv-accent)]' : 'hover:bg-[var(--mv-soft)] bg-[var(--mv-surface)] text-[var(--mv-muted)]'}`}
                           >
                             <p className="font-bold">Trial Balance</p>
-                            <span className="text-[10px] text-gray-400 block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Every account</span>
+                            <span className="text-[10px] text-[var(--mv-muted)] block mt-1 font-mono tracking-tight font-semibold uppercase leading-none">Every account</span>
                           </div>
                         </div>
                       </div>
 
                       {/* Detail report sheet */}
-                      <div className="col-span-8 bg-white border border-[var(--mv-border)] rounded-2xl shadow-sm p-6 space-y-4">
-                        <FinancialStatements statements={statements} which={reportsSubState} />
+                      <div className="col-span-8 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl shadow-sm p-6 space-y-4">
+                        <Suspense fallback={<PanelLoading />}>
+                          <FinancialStatements statements={statements} which={reportsSubState} />
+                        </Suspense>
                       </div>
                     </div>
                   )}
 
                   {/* 2. GENERAL JOURNAL LEDGER */}
                   {booksSubTab === 'ledger' && (
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
-                      <JournalLedger statements={statements} />
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
+                      <Suspense fallback={<PanelLoading />}>
+                        <JournalLedger statements={statements} />
+                      </Suspense>
                     </div>
                   )}
 
                   {/* 3. BUDGET VARIANCE */}
                   {booksSubTab === 'budget' && (
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs text-left space-y-3">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs text-left space-y-3">
                       <div className="border-b border-[var(--mv-border)] pb-2">
-                        <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider block">
+                        <span className="text-[10px] uppercase font-bold text-[var(--mv-muted)] tracking-wider block">
                           Budget against actuals
                         </span>
-                        <p className="text-[9px] text-gray-400 mt-0.5 leading-snug">
+                        <p className="text-[9px] text-[var(--mv-muted)] mt-0.5 leading-snug">
                           Budgeted figures are demo values standing in for an approved budget.
                           The realised column and the variance are computed from the ledger.
                         </p>
@@ -2491,7 +2760,7 @@ Tax receipt file issued by state RWA SmartSuite.
                                 </span>
                               )}
                             </div>
-                            <div className="flex justify-between text-[10px] text-gray-500 font-mono">
+                            <div className="flex justify-between text-[10px] text-[var(--mv-muted)] font-mono">
                               <span>Budget {b.budgeted}</span>
                               <span className="font-bold text-[var(--mv-ink)]">Actual {b.actual}</span>
                             </div>
@@ -2510,16 +2779,16 @@ Tax receipt file issued by state RWA SmartSuite.
                   {/* 4. COMPLIANCE AUDIT TRAILS */}
                   {booksSubTab === 'audit' && (
                     <div className="space-y-3 text-left animate-scale-up text-xs font-medium">
-                      <span className="text-[10px] font-bold uppercase text-gray-400 block border-b border-[var(--mv-border)] pb-2">Governing action audit ledger</span>
-                      
+                      <span className="text-[10px] font-bold uppercase text-[var(--mv-muted)] block border-b border-[var(--mv-border)] pb-2">Governing action audit ledger</span>
+
                       <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1 hide-scrollbar">
                         {auditLog.map(log => (
-                          <div key={log.id} className="p-4 bg-white rounded-xl border border-[var(--mv-border)] flex flex-col gap-1 shadow-xs">
-                            <div className="flex justify-between text-[9px] font-bold font-mono text-gray-400 uppercase">
+                          <div key={log.id} className="p-4 bg-[var(--mv-surface)] rounded-xl border border-[var(--mv-border)] flex flex-col gap-1 shadow-xs">
+                            <div className="flex justify-between text-[9px] font-bold font-mono text-[var(--mv-muted)] uppercase">
                               <span>🤖 AUTHOR: {log.user}</span>
                               <span className="font-mono font-medium">{log.timestamp}</span>
                             </div>
-                            <p className="font-bold text-[#000000] leading-snug mt-1 text-xs">{log.action}</p>
+                            <p className="font-bold text-[var(--mv-ink)] leading-snug mt-1 text-xs">{log.action}</p>
                           </div>
                         ))}
                       </div>
@@ -2533,19 +2802,20 @@ Tax receipt file issued by state RWA SmartSuite.
                 <div className="space-y-6 max-w-7xl mx-auto animate-scale-up text-left">
                   <div>
                     <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Co-operative RWA Admin Panels</h2>
-                    <p className="text-xs text-[#6B7280]">Configure resident flat allocations, ticketing helpdesk, and backup parameters</p>
+                    <p className="text-xs text-[var(--mv-muted)]">Configure resident flat allocations, ticketing helpdesk, and backup parameters</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-6 items-start">
                     {/* HELP DESK UTILITY */}
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs space-y-4">
                       <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider border-b border-[var(--mv-border)] pb-2">RWA Helpdesk Complaints Portal</h4>
 
                       {currentRole === 'Resident' ? (
                         <form onSubmit={handleRaiseComplaint} className="space-y-4 text-xs font-medium">
                           <div className="space-y-1">
-                            <label className="text-[10px] text-gray-500 uppercase block">Utility Category</label>
+                            <label htmlFor="ticket-category-desk" className="text-[10px] text-[var(--mv-muted)] uppercase block">Utility Category</label>
                             <select
+                              id="ticket-category-desk"
                               value={ticketCategory}
                               onChange={(e) => setTicketCategory(e.target.value as any)}
                               className="w-full bg-[var(--mv-page)] border border-[var(--mv-border)] p-3 rounded-xl text-xs font-bold outline-none"
@@ -2559,8 +2829,9 @@ Tax receipt file issued by state RWA SmartSuite.
                           </div>
 
                           <div className="space-y-1">
-                            <label className="text-[10px] text-gray-500 uppercase block">Utility malfunction details</label>
+                            <label htmlFor="ticket-description-desk" className="text-[10px] text-[var(--mv-muted)] uppercase block">Utility malfunction details</label>
                             <textarea
+                              id="ticket-description-desk"
                               rows={4}
                               required
                               value={ticketDescription}
@@ -2579,14 +2850,14 @@ Tax receipt file issued by state RWA SmartSuite.
                         </form>
                       ) : (
                         <div className="space-y-3.5">
-                          <span className="text-[10px] font-bold text-gray-500 uppercase block font-mono">Active complaints ledger logs ({tickets.length} tickets)</span>
-                          
+                          <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase block font-mono">Active complaints ledger logs ({tickets.length} tickets)</span>
+
                           <div className="space-y-2.5 max-h-[220px] overflow-y-auto pr-1 hide-scrollbar">
                             {tickets.map(t => (
                               <div key={t.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                                 <div className="min-w-0 flex-1 pr-2 space-y-1">
                                   <span className="font-extrabold text-[var(--mv-ink)] block">Flat {t.flatNo} • {t.category}</span>
-                                  <p className="text-[10px] text-[#6B7280] leading-relaxed font-semibold">{t.description}</p>
+                                  <p className="text-[10px] text-[var(--mv-muted)] leading-relaxed font-semibold">{t.description}</p>
                                 </div>
                                 <div className="shrink-0 text-right">
                                   <span className={`px-2 py-0.5 text-[8px] font-bold rounded uppercase ${t.status === 'Open' ? 'bg-[var(--mv-accent-soft)] text-[var(--mv-accent)]' : 'bg-[var(--mv-accent)] text-white'}`}>
@@ -2602,10 +2873,10 @@ Tax receipt file issued by state RWA SmartSuite.
 
                     {/* REGISTRY GRIDS */}
                     {currentRole === 'Manager' ? (
-                      <div className="bg-white border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4">
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4">
                         <div className="flex justify-between items-baseline border-b border-[var(--mv-border)] pb-2">
-                          <span className="text-[10px] font-bold uppercase text-gray-500 tracking-wider">Residents allotment registry</span>
-                          <button
+                          <span className="text-[10px] font-bold uppercase text-[var(--mv-muted)] tracking-wider">Residents allotment registry</span>
+                          {!onServer && <button
                             onClick={() => {
                               setEditingMemberId(null);
                               setFormName('');
@@ -2617,43 +2888,53 @@ Tax receipt file issued by state RWA SmartSuite.
                             className="text-[10px] text-[var(--mv-accent)] font-bold uppercase flex items-center gap-1 cursor-pointer"
                           >
                             {memberFormOpen ? 'Minimize Form' : '+ Register Allotment'}
-                          </button>
+                          </button>}
                         </div>
 
-                        {memberFormOpen && (
+                        {onServer && (
+                          <p className="text-[10px] text-[var(--mv-muted)] leading-snug">
+                            The flats and owners on the server, read only here. Adding, editing or removing a
+                            member is not available on this screen yet.
+                          </p>
+                        )}
+
+                        {memberFormOpen && !onServer && (
                           <form onSubmit={handleSaveMember} className="space-y-3.5 text-xs bg-[var(--mv-page)] p-4 rounded-xl border border-[var(--mv-border)] animate-scale-up font-medium">
                             <div className="grid grid-cols-2 gap-3">
                               <div className="space-y-1">
-                                <label className="text-[9px] font-bold text-gray-550 block">Resident Full Name</label>
+                                <label htmlFor="member-name-desk" className="text-[9px] font-bold text-[var(--mv-muted)] block">Resident Full Name</label>
                                 <input
+                                  id="member-name-desk"
                                   type="text"
                                   required
                                   value={formName}
                                   onChange={(e) => setFormName(e.target.value)}
                                   placeholder="e.g. Ramesh Desai"
-                                  className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none"
+                                  className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none"
                                 />
                               </div>
                               <div className="space-y-1">
-                                <label className="text-[9px] font-bold text-gray-550 block">Flat Code</label>
+                                <label htmlFor="member-flat-desk" className="text-[9px] font-bold text-[var(--mv-muted)] block">Flat Code</label>
                                 <input
+                                  id="member-flat-desk"
                                   type="text"
                                   required
                                   value={formFlat}
                                   onChange={(e) => setFormFlat(e.target.value)}
                                   placeholder="e.g. C-303"
-                                  className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none"
+                                  className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none"
                                 />
                               </div>
                             </div>
 
                             <div className="grid grid-cols-2 gap-3">
                               <div className="space-y-1">
-                                  <label className="text-[9px] font-bold text-gray-555 block">Allotted Wing</label>
+                                  <label htmlFor="member-wing-desk" className="text-[9px] font-bold text-[var(--mv-muted)] block">Allotted Wing</label>
                                   <select
+                                    id="member-wing-desk"
                                     value={formWing}
                                     onChange={(e) => setFormWing(e.target.value as any)}
-                                    className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none font-sans"
+                                    className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold outline-none font-sans"
                                   >
                                     <option value="A">Wing A</option>
                                     <option value="B">Wing B</option>
@@ -2662,13 +2943,14 @@ Tax receipt file issued by state RWA SmartSuite.
                                   </select>
                               </div>
                               <div className="space-y-1">
-                                <label className="text-[9px] font-bold text-gray-555 block">Mobile Contact Line</label>
+                                <label htmlFor="member-contact-desk" className="text-[9px] font-bold text-[var(--mv-muted)] block">Mobile Contact Line</label>
                                 <input
+                                  id="member-contact-desk"
                                   type="text"
                                   value={formContact}
                                   onChange={(e) => setFormContact(e.target.value)}
                                   placeholder="e.g. +91 98"
-                                  className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-mono outline-none"
+                                  className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-mono outline-none"
                                 />
                               </div>
                             </div>
@@ -2684,31 +2966,37 @@ Tax receipt file issued by state RWA SmartSuite.
                             <div key={m.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                               <div className="text-left">
                                 <span className="font-extrabold text-[var(--mv-ink)] block">Flat {m.flatNo} · {m.name}</span>
-                                <span className="text-[9px] text-[#6B7280] font-bold block font-mono">Wing {m.wing} · Contact: {m.contact}</span>
+                                <span className="text-[9px] text-[var(--mv-muted)] font-bold block font-mono">Wing {m.wing}{m.contact === '' ? '' : ` · Contact: ${m.contact}`}</span>
                               </div>
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => handleEditMemberClick(m)}
-                                  className="w-7 h-7 bg-white border border-[var(--mv-border)] hover:bg-gray-50 text-gray-400 hover:text-[var(--mv-ink)] rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
-                                >
-                                  <Edit3 className="w-3.5 h-3.5" />
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteMember(m.id, m.name)}
-                                  className="w-7 h-7 bg-white border border-[var(--mv-border)] hover:bg-red-50 text-red-650 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
+                              {!onServer && (
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => handleEditMemberClick(m)}
+                                    aria-label={`Edit ${m.name}, flat ${m.flatNo}`}
+                                    title="Edit"
+                                    className="w-7 h-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] hover:bg-[var(--mv-soft)] text-[var(--mv-muted)] hover:text-[var(--mv-ink)] rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" aria-hidden="true" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteMember(m.id, m.name)}
+                                    aria-label={`Remove ${m.name}, flat ${m.flatNo}`}
+                                    title="Remove"
+                                    className="w-7 h-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] hover:bg-red-50 text-red-700 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
                       </div>
                     ) : (
-                      <div className="bg-white border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4">
-                        <div className="flex justify-between items-center pb-2 border-b border-gray-125 select-none">
-                          <span className="text-[10px] font-bold uppercase text-gray-500 tracking-wider">Vendor Contracts registry</span>
-                          <span className="text-[8px] font-bold bg-gray-200 text-gray-700 px-2 py-0.5 rounded border border-gray-300 font-mono">194C AUDIT</span>
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-6 rounded-2xl shadow-xs space-y-4">
+                        <div className="flex justify-between items-center pb-2 border-b border-[var(--mv-border)] select-none">
+                          <span className="text-[10px] font-bold uppercase text-[var(--mv-muted)] tracking-wider">Vendor Contracts registry</span>
+                          <span className="text-[8px] font-bold bg-[var(--mv-soft)] text-[var(--mv-muted)] px-2 py-0.5 rounded border border-[var(--mv-border)] font-mono">194C AUDIT</span>
                         </div>
 
                         <div className="space-y-2.5 max-h-[280px] overflow-y-auto pr-1 hide-scrollbar font-medium">
@@ -2716,12 +3004,12 @@ Tax receipt file issued by state RWA SmartSuite.
                             <div key={v.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                               <div className="min-w-0 flex-1 pr-1 bg-transparent text-left space-y-0.5">
                                 <h5 className="font-extrabold text-[var(--mv-ink)] truncate">{v.name}</h5>
-                                <span className="text-[9px] font-bold text-gray-400 block uppercase tracking-wider leading-none">{v.category}</span>
-                                <span className="text-[9px] text-[var(--mv-accent)] font-bold block">Contract Renewal: <span className="font-semibold text-gray-500">{v.contractRenewal}</span></span>
+                                <span className="text-[9px] font-bold text-[var(--mv-muted)] block uppercase tracking-wider leading-none">{v.category}</span>
+                                <span className="text-[9px] text-[var(--mv-accent)] font-bold block">Contract Renewal: <span className="font-semibold text-[var(--mv-muted)]">{v.contractRenewal}</span></span>
                               </div>
                               <div className="text-right shrink-0">
                                 <span className="font-mono text-xs font-extrabold text-[var(--mv-ink)] block">{formatRupee(v.balance)}</span>
-                                <span className="text-[9px] text-[#6B7280] block uppercase leading-none font-bold">Unpaid total</span>
+                                <span className="text-[9px] text-[var(--mv-muted)] block uppercase leading-none font-bold">Unpaid total</span>
                               </div>
                             </div>
                           ))}
@@ -2732,25 +3020,31 @@ Tax receipt file issued by state RWA SmartSuite.
 
                   {/* Spreadsheets block */}
                   {currentRole !== 'Resident' && (
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
-                      <BackupHub 
-                        backupHistory={backupHistory}
-                        onTriggerBackup={handleTriggerBackup}
-                        onResetData={handleReset}
-                      />
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
+                      <Suspense fallback={<PanelLoading />}>
+                        <BackupHub
+                          backupHistory={backupHistory}
+                          onTriggerBackup={handleTriggerBackup}
+                          onResetData={handleReset}
+                          onServer={onServer}
+                          exportJson={() => mustBooks().exportJson()}
+                        />
+                      </Suspense>
                     </div>
                   )}
 
                   {/* Code policy block disclosures */}
-                  <div className="bg-white border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs text-xs font-semibold space-y-2 relative leading-relaxed">
+                  <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-5 rounded-2xl shadow-xs text-xs font-semibold space-y-2 relative leading-relaxed">
                     <span className="text-[9px] font-bold text-[var(--mv-accent)] uppercase tracking-wider bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded inline-block">Co-operative Regulatory Compliance code disclosures</span>
-                    <p className="text-[10px] text-[#6B7280] leading-relaxed pt-1">Association billing rules and statutory registrations must be verified against the approved Mani Vista bylaws and applicable West Bengal regulations before live use. GSTIN: {gstinLabel}.</p>
-                    <button
-                      onClick={handleReset}
-                      className="text-[10px] font-bold text-[var(--mv-accent)] block py-1.5 hover:underline cursor-pointer uppercase mt-2 border-t border-gray-100 pt-2 w-full text-center"
-                    >
-                      Reset sandbox database default seed data
-                    </button>
+                    <p className="text-[10px] text-[var(--mv-muted)] leading-relaxed pt-1">Association billing rules and statutory registrations must be verified against the approved Mani Vista bylaws and applicable West Bengal regulations before live use. GSTIN: {gstinLabel}.</p>
+                    {!onServer && (
+                      <button
+                        onClick={handleReset}
+                        className="text-[10px] font-bold text-[var(--mv-accent)] block py-1.5 hover:underline cursor-pointer uppercase mt-2 border-t border-[var(--mv-border)] pt-2 w-full text-center"
+                      >
+                        Reset sandbox database default seed data
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -2762,13 +3056,13 @@ Tax receipt file issued by state RWA SmartSuite.
 
       {/* 2. LEGACY MOBILE PHONE FRAME WRAPPER */}
       {!isDesktop ? (
-        <div id="phone-frame-container" className="w-full max-w-[480px] h-[100dvh] bg-white overflow-hidden flex flex-col relative">
+        <div id="phone-frame-container" className="w-full max-w-[480px] bg-[var(--mv-surface)] overflow-hidden flex flex-col relative" style={{ height: 'calc(100dvh - var(--mv-banner-h))', marginTop: 'var(--mv-banner-h)' }}>
 
         {/* --- STICKY SOCIETY TOP HEADER (White styled, high density) --- */}
-        <header className="sticky top-0 bg-white border-b border-[var(--mv-border)] pt-6 pb-2 px-4 flex items-center justify-between gap-3 z-30">
-          <img src="/branding/mani-vista-logo.png" alt="Mani Vista" className="h-11 w-11 object-contain bg-white rounded-lg border border-[var(--mv-accent-border)] shrink-0" />
+        <header className="sticky top-0 bg-[var(--mv-surface)] border-b border-[var(--mv-border)] pt-6 pb-2 px-4 flex items-center justify-between gap-3 z-30">
+          <img src="/branding/mani-vista-logo.png" alt="Mani Vista" className="h-11 w-11 object-contain bg-[var(--mv-surface)] rounded-lg border border-[var(--mv-accent-border)] shrink-0" />
           <div className="flex flex-col flex-1 min-w-0 text-left">
-            <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Residents Association</p>
+            <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Residents Association</p>
             <h1 className="text-sm font-bold truncate text-[var(--mv-ink)]" title="Mani Vista Residents Association">
               Mani Vista Residents Association
             </h1>
@@ -2777,7 +3071,7 @@ Tax receipt file issued by state RWA SmartSuite.
           <div className="flex items-center gap-2">
             <ThemeSwitcher />
             {/* Notification bell styled exact to theme */}
-            <div className="relative w-8 h-8 flex items-center justify-center bg-[var(--mv-soft)] rounded-full hover:opacity-80 transition-opacity cursor-pointer">
+            <div aria-hidden="true" className="relative w-8 h-8 flex items-center justify-center bg-[var(--mv-soft)] rounded-full">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--mv-ink)]">
                 <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path>
                 <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path>
@@ -2788,6 +3082,7 @@ Tax receipt file issued by state RWA SmartSuite.
             {/* Role switch pill selector styled exact to theme */}
             <div className="relative bg-[var(--mv-accent-soft)] border border-[var(--mv-accent-border)] px-2 py-1 rounded-full flex items-center gap-1 cursor-pointer">
               <select
+                aria-label="View as"
                 value={currentRole}
                 onChange={(e) => handleRoleSwitchRequest(e.target.value as any)}
                 className="appearance-none bg-transparent text-[10px] font-bold text-[var(--mv-accent)] tracking-wider outline-none cursor-pointer uppercase pr-3.5"
@@ -2809,7 +3104,7 @@ Tax receipt file issued by state RWA SmartSuite.
         {isAuthenticated && currentRole !== 'Resident' && (
           <div className="bg-[var(--mv-ink)] text-white text-[10px] font-bold px-4 py-1.5 flex justify-between items-center z-10 border-b border-white/10 uppercase tracking-widest">
             <span>🛡️ MODE: SECURE ADMIN ({currentRole})</span>
-            <button 
+            <button
               onClick={handleLockAdminMode}
               className="underline hover:opacity-80 font-bold"
             >
@@ -2819,15 +3114,7 @@ Tax receipt file issued by state RWA SmartSuite.
         )}
 
         {/* --- MAIN SCROLL CONTENT SCREEN --- */}
-        <main className="flex-1 overflow-y-auto px-4 py-4 bg-white pb-24 hide-scrollbar">
-          
-          {/* TOASTER BOX BANNER */}
-          {toaster.map(t => (
-            <div key={t.id} className="mb-3.5 p-3 rounded-2xl bg-[var(--mv-ink)] text-white text-xs font-bold flex items-start gap-2.5 shadow-md animate-fade-in">
-              <Check className="w-4 h-4 text-[var(--mv-accent)] shrink-0 mt-0.5" />
-              <span className="leading-snug">{t.msg}</span>
-            </div>
-          ))}
+        <main className="flex-1 overflow-y-auto px-4 py-4 bg-[var(--mv-surface)] pb-24 hide-scrollbar">
 
           {/* =========================================
               VIEW: TAB 'HOME' DESIRED CONTROLLERS
@@ -2840,22 +3127,22 @@ Tax receipt file issued by state RWA SmartSuite.
                   <div className="flex items-baseline justify-between transition-all">
                     <div>
                       <h2 className="text-xl font-bold text-[var(--mv-ink)]">Hi, {residentName}</h2>
-                      <p className="text-sm text-[#6B7280]">
+                      <p className="text-sm text-[var(--mv-muted)]">
                         {residentFlatNo === ''
                           ? 'No flat is linked to this account yet'
                           : `Flat ${residentFlatNo}`}
                       </p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Last Sync</p>
-                      <p className="text-[10px] text-[var(--mv-accent)] font-bold">JUST NOW</p>
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">{onServer ? 'Last Sync' : 'Kept in'}</p>
+                      <p className="text-[10px] text-[var(--mv-accent)] font-bold">{onServer ? syncedLabel(booksLoadedAt) : 'THIS BROWSER'}</p>
                     </div>
                   </div>
 
                   {/* 2x2 Metric tile blocks */}
                   <div className="grid grid-cols-2 grid-rows-2 gap-3 transition-all">
                     <div className="aspect-square bg-[var(--mv-ink)] p-4 rounded-2xl flex flex-col justify-between shadow-lg ring-4 ring-black/5">
-                      <p className="text-[10px] font-bold text-white/60 uppercase tracking-wider">Current Due</p>
+                      <p className="text-[10px] font-bold text-white/75 uppercase tracking-wider">Current Due</p>
                       <div className="space-y-1">
                         <p className="text-2xl font-bold text-white font-mono">{formatRupee(rohanTotalDueNum)}</p>
                         {rohanTotalDueNum > 0 ? (
@@ -2866,8 +3153,8 @@ Tax receipt file issued by state RWA SmartSuite.
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Paid This FY</p>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Paid This FY</p>
                       <div className="space-y-1">
                         <p className="text-2xl font-bold text-[var(--mv-ink)] font-mono">{formatRupee(rohanTotalPaidNum)}</p>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-[var(--mv-accent)] text-[9px] font-bold text-white">
@@ -2876,53 +3163,62 @@ Tax receipt file issued by state RWA SmartSuite.
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Advance Bal</p>
-                      <p className="text-2xl font-bold text-[#9CA3AF] font-mono">₹0</p>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Advance Bal</p>
+                      <p className="text-2xl font-bold text-[var(--mv-ink)] font-mono">{formatRupees(residentAdvancePaise)}</p>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Open Tickets</p>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Open Tickets</p>
                       <div className="space-y-1">
                         <p className="text-2xl font-bold text-[var(--mv-ink)] font-mono">
                           {String(rohanOpenTicketsNum).padStart(2, '0')}
                         </p>
-                        <p className="text-[10px] font-medium text-[var(--mv-accent)] uppercase">PLUMBING · B-WING</p>
+                        <p className="text-[10px] font-medium text-[var(--mv-accent)] uppercase truncate">
+                          {residentOpenTicketCategories.length === 0 ? 'NONE OPEN' : residentOpenTicketCategories.join(' · ')}
+                        </p>
                       </div>
                     </div>
                   </div>
 
                   {/* Latest outstanding invoice banner */}
                   {rohanDueInvoice && (
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 shadow-sm space-y-4 text-left transition-all">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 shadow-sm space-y-4 text-left transition-all">
                       <div className="flex justify-between items-start">
                         <div>
-                          <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Active Invoice</p>
+                          <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Active Invoice</p>
                           <h3 className="font-bold text-[var(--mv-ink)]">#{rohanDueInvoice.invoiceNo}</h3>
                         </div>
                         <div className="bg-[var(--mv-accent-soft)] px-2 py-1 rounded-full">
-                          <span className="text-[10px] font-bold text-[var(--mv-accent)] uppercase">DUE IN 4 DAYS</span>
+                          <span className="text-[10px] font-bold text-[var(--mv-accent)] uppercase">{dueLabel(dueIso(rohanDueInvoice), today)}</span>
                         </div>
                       </div>
                       <div className="flex items-center justify-between border-y border-[var(--mv-soft)] py-3">
                         <div className="space-y-1">
-                          <p className="text-xs text-[#6B7280]">{rohanDueInvoice.period} Maintenance + Sinking</p>
+                          <p className="text-xs text-[var(--mv-muted)]">{rohanDueInvoice.period} Maintenance + Sinking</p>
                           <p className="text-2xl font-bold text-[var(--mv-ink)] font-mono">{formatRupee(rohanDueInvoice.total)}</p>
                         </div>
-                        <button
-                          onClick={() => handlePayClick(rohanDueInvoice)}
-                          className="bg-[var(--mv-accent)] text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-all cursor-pointer"
-                        >
-                          Pay Now
-                        </button>
+                        {mayPayOnline && (
+                          <button
+                            onClick={() => handlePayClick(rohanDueInvoice)}
+                            className="bg-[var(--mv-accent)] text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-all cursor-pointer"
+                          >
+                            Pay Now
+                          </button>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2 text-[11px] text-[#6B7280]">
+                      <div className="flex items-center gap-2 text-[11px] text-[var(--mv-muted)]">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mt-0.5 shrink-0">
                           <circle cx="12" cy="12" r="10"></circle>
                           <line x1="12" y1="16" x2="12" y2="12"></line>
                           <line x1="12" y1="8" x2="12.01" y2="8"></line>
                         </svg>
-                        <span>Includes GST @ 18% as per society norms</span>
+                        <span>
+                          {rohanDueInvoice.gst > 0
+                            ? `Includes ${formatRupee(rohanDueInvoice.gst)} GST.`
+                            : 'No GST on this bill.'}
+                          {mayPayOnline ? '' : ' Pay the association by UPI, NEFT or cheque; the manager records the receipt.'}
+                        </span>
                       </div>
                     </div>
                   )}
@@ -2938,8 +3234,8 @@ Tax receipt file issued by state RWA SmartSuite.
 
                     <div className="space-y-2">
                       {rohanInvoices.slice(0, 4).map(inv => (
-                        <div 
-                          key={inv.id} 
+                        <div
+                          key={inv.id}
                           onClick={() => {
                             if (inv.status === 'Paid') {
                               setSelectedReceipt(inv);
@@ -2951,10 +3247,10 @@ Tax receipt file issued by state RWA SmartSuite.
                           className="flex items-center justify-between p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] hover:bg-[var(--mv-soft)] transition-all cursor-pointer"
                         >
                           <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-[var(--mv-border)] font-bold text-[var(--mv-accent)]">₹</div>
+                            <div className="w-10 h-10 bg-[var(--mv-surface)] rounded-lg flex items-center justify-center border border-[var(--mv-border)] font-bold text-[var(--mv-accent)]">₹</div>
                             <div className="text-left">
                               <p className="text-sm font-bold text-[var(--mv-ink)]">{inv.period} Maintenance</p>
-                              <p className="text-[10px] text-[#6B7280] uppercase">{inv.paidDate || inv.dueDate || '15 MAR 2024'}</p>
+                              <p className="text-[10px] text-[var(--mv-muted)] uppercase">{inv.paidDate || inv.dueDate || ''}</p>
                             </div>
                           </div>
                           <div className="text-right">
@@ -2978,18 +3274,18 @@ Tax receipt file issued by state RWA SmartSuite.
                   <div className="flex items-baseline justify-between transition-all">
                     <div>
                       <h2 className="text-xl font-bold text-[var(--mv-ink)]">Manager Console</h2>
-                      <p className="text-sm text-[#6B7280]">Finance Superintendent · Active Session</p>
+                      <p className="text-sm text-[var(--mv-muted)]">Finance Superintendent · Active Session</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">System State</p>
-                      <p className="text-[10px] text-[var(--mv-accent)] font-bold">SECURED PIN</p>
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Books</p>
+                      <p className="text-[10px] text-[var(--mv-accent)] font-bold">{onServer ? `SYNCED ${syncedLabel(booksLoadedAt)}` : 'DEMONSTRATION'}</p>
                     </div>
                   </div>
 
                   {/* 2x2 Metric tiles */}
                   <div className="grid grid-cols-2 grid-rows-2 gap-3 transition-all">
                     <div className="aspect-square bg-[var(--mv-ink)] p-4 rounded-2xl flex flex-col justify-between shadow-lg ring-4 ring-black/5">
-                      <span className="text-[10px] font-bold text-white/60 uppercase tracking-wider">Collected MTD</span>
+                      <span className="text-[10px] font-bold text-white/75 uppercase tracking-wider">Collected MTD</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-white font-mono block leading-none">{formatRupee(mtdCollectedTotal)}</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-white/10 text-[9px] font-semibold text-white">
@@ -2998,8 +3294,8 @@ Tax receipt file issued by state RWA SmartSuite.
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Outstanding</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Outstanding</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{formatRupee(mtdOutstandingTotal)}</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-[var(--mv-accent-soft)] text-[9px] font-semibold text-[var(--mv-accent)]">
@@ -3008,8 +3304,8 @@ Tax receipt file issued by state RWA SmartSuite.
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Defaulters</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Defaulters</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{uniqueDefaultersCount} Flats</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-red-50 text-[9px] font-bold text-red-600">
@@ -3018,8 +3314,8 @@ Tax receipt file issued by state RWA SmartSuite.
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Expenses MTD</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Expenses MTD</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{formatRupee(totalMTDExpenses)}</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-[var(--mv-soft)] text-[9px] font-semibold text-[var(--mv-ink)]">
@@ -3030,25 +3326,23 @@ Tax receipt file issued by state RWA SmartSuite.
                   </div>
 
                   {/* Trend charts area */}
-                  <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
+                  <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
                     <div className="flex justify-between items-center">
                       <div>
-                        <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-tight">Collection Tendency</h4>
-                        <p className="text-[10px] text-gray-400 mt-0.5">Last 6 Months Gross RWA Ledger</p>
+                        <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-tight">Collections</h4>
+                        <p className="text-[10px] text-[var(--mv-muted)] mt-0.5">Paid, by billing period</p>
                       </div>
                       <TrendingUp className="w-4 h-4 text-[var(--mv-accent)]" />
                     </div>
 
                     <div className="h-[140px] w-full pt-2 flex items-center justify-center relative">
-                      {/* Robust area chart widget */}
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={collectionTrendsData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                          <XAxis dataKey="month" tick={{ fontSize: 9, fill: '#6B7280' }} />
-                          <YAxis tick={{ fontSize: 9, fill: '#6B7280' }} />
-                          <Tooltip formatter={(value) => formatRupee(value as number)} />
-                          <Area type="monotone" dataKey="Collected" stroke="var(--mv-accent)" fillOpacity={0.08} fill="var(--mv-accent)" strokeWidth={2.5} />
-                        </AreaChart>
-                      </ResponsiveContainer>
+                      {collectionTrendsData.length === 0 ? (
+                        <p className="text-xs text-[var(--mv-muted)]">No invoices yet.</p>
+                      ) : (
+                        <Suspense fallback={<PanelLoading />}>
+                          <CollectionChart data={collectionTrendsData} compact />
+                        </Suspense>
+                      )}
                     </div>
                   </div>
 
@@ -3056,12 +3350,12 @@ Tax receipt file issued by state RWA SmartSuite.
                   <div className="flex gap-2.5 pt-1">
                     <button
                       onClick={() => {
-                        setWizardPeriod('Jul 2026');
                         setShowBillingWizard(true);
+                        setActiveTab('bills');
                       }}
                       className="flex-1 py-3 px-4 bg-[var(--mv-accent)] hover:brightness-90 text-white rounded-xl text-xs font-bold shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                     >
-                      <Plus className="w-4 h-4" /> Issue July Invoices
+                      <Plus className="w-4 h-4" aria-hidden="true" /> Run billing
                     </button>
                     <button
                       onClick={() => setActiveTab('pay')}
@@ -3078,50 +3372,50 @@ Tax receipt file issued by state RWA SmartSuite.
                   <div className="flex items-baseline justify-between transition-all">
                     <div>
                       <h2 className="text-xl font-bold text-[var(--mv-ink)]">Treasurer Console</h2>
-                      <p className="text-sm text-[#6B7280]">Reserve Fund Operations · Cabinet</p>
+                      <p className="text-sm text-[var(--mv-muted)]">Reserve Fund Operations · Cabinet</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Auth Status</p>
-                      <p className="text-[10px] text-[var(--mv-accent)] font-bold">GOLD ACTIVE</p>
+                      <p className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Books</p>
+                      <p className="text-[10px] text-[var(--mv-accent)] font-bold">{onServer ? `SYNCED ${syncedLabel(booksLoadedAt)}` : 'DEMONSTRATION'}</p>
                     </div>
                   </div>
 
                   {/* 2x2 Metric tiles */}
                   <div className="grid grid-cols-2 grid-rows-2 gap-3 transition-all">
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Corpus Fund</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">General Reserve</span>
                       <div className="space-y-1">
-                        <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{formatRupee(corpusFundBase)}</span>
+                        <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{formatRupees(reserveFundPaise)}</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-[var(--mv-accent-soft)] text-[9px] font-semibold text-[var(--mv-accent)]">
-                          RESTRICTED
+                          LEDGER
                         </div>
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Sinking Fund</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Sinking Fund</span>
                       <div className="space-y-1">
-                        <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{formatRupee(sinkingFundBase)}</span>
+                        <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">{formatRupees(sinkingFundPaise)}</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-[var(--mv-soft)] text-[9px] font-semibold text-[var(--mv-ink)]">
-                          RESERVE ACCRUAL
+                          LEDGER
                         </div>
                       </div>
                     </div>
 
-                    <div className="aspect-square bg-white border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
-                      <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Operating Bal.</span>
+                    <div className="aspect-square bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl flex flex-col justify-between shadow-sm">
+                      <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Operating Bal.</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-[var(--mv-ink)] font-mono block leading-none">
-                          {formatRupee(operatingFundBase - totalMTDExpenses)}
+                          {formatRupees(operatingBankPaise)}
                         </span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-[var(--mv-accent-soft)] text-[9px] font-semibold text-[var(--mv-accent)]">
-                          LIQUID RESERVE
+                          PER THE BOOKS
                         </div>
                       </div>
                     </div>
 
                     <div className="aspect-square bg-[var(--mv-ink)] p-4 rounded-2xl flex flex-col justify-between shadow-lg ring-4 ring-black/5">
-                      <span className="text-[10px] font-bold text-white/60 uppercase tracking-wider">Pending Appr.</span>
+                      <span className="text-[10px] font-bold text-white/75 uppercase tracking-wider">Pending Appr.</span>
                       <div className="space-y-1">
                         <span className="text-2xl font-bold text-white font-mono block leading-none">{pendingApprovalsCount} Bills</span>
                         <div className="inline-flex items-center px-1.5 py-0.5 rounded bg-white/10 text-[9px] font-semibold text-white">
@@ -3132,39 +3426,37 @@ Tax receipt file issued by state RWA SmartSuite.
                   </div>
 
                   {/* Budget Performance Chart (Budget vs Actual) */}
-                  <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
+                  <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
                     <div className="flex justify-between items-center">
                       <div>
                         <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-tight">Receipt Budget Performance</h4>
-                        <p className="text-[10px] text-gray-400 mt-0.5">Approved FY Budget vs Realized Revenue</p>
+                        <p className="text-[10px] text-[var(--mv-muted)] mt-0.5">{onServer ? 'Needs an approved budget' : 'Demonstration budget figures'}</p>
                       </div>
                     </div>
 
                     <div className="h-[140px] w-full pt-2 flex items-center justify-center relative">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={budgetPerformanceData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                          <XAxis dataKey="head" tick={{ fontSize: 9, fill: '#6B7280' }} />
-                          <YAxis tick={{ fontSize: 9, fill: '#6B7280' }} />
-                          <Tooltip formatter={(value) => formatRupee(value as number)} />
-                          <Bar dataKey="Budgeted" fill="#6B7280" radius={[4, 4, 0, 0]} />
-                          <Bar dataKey="Actual" fill="var(--mv-accent)" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
+                      {onServer ? (
+                        <p className="text-xs text-[var(--mv-muted)] text-center">No approved budget is on record on the server.</p>
+                      ) : (
+                        <Suspense fallback={<PanelLoading />}>
+                          <BudgetChart data={budgetPerformanceData} compact />
+                        </Suspense>
+                      )}
                     </div>
                   </div>
 
                   {/* Pending Approvals Quick Controller Workflow */}
                   <div className="space-y-3 pt-1">
                     <h4 className="font-extrabold text-xs text-[var(--mv-ink)] tracking-wider uppercase">Required Approvals</h4>
-                    
+
                     {vendorInvoices.filter(vi => vi.status === 'Pending').length === 0 ? (
-                      <div className="py-4 bg-gray-55 text-center text-xs text-gray-400 rounded-2xl">
+                      <div className="py-4 bg-[var(--mv-page)] text-center text-xs text-[var(--mv-muted)] rounded-2xl">
                         Clean desk! No outstanding vendor proposals on file.
                       </div>
                     ) : (
                       <div className="space-y-2.5">
                         {vendorInvoices.filter(vi => vi.status === 'Pending').map(vi => (
-                          <div key={vi.id} className="p-3 border border-[var(--mv-border)] rounded-3xl bg-white space-y-2">
+                          <div key={vi.id} className="p-3 border border-[var(--mv-border)] rounded-3xl bg-[var(--mv-surface)] space-y-2">
                             <div className="flex justify-between items-baseline">
                               <div>
                                 <span className="text-[8px] font-extrabold text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-1.5 py-0.5 rounded uppercase tracking-wide">
@@ -3172,24 +3464,28 @@ Tax receipt file issued by state RWA SmartSuite.
                                 </span>
                                 <h5 className="font-bold text-xs text-[var(--mv-ink)] mt-1">{vi.vendorName}</h5>
                               </div>
-                              <span className="font-mono text-xs font-bold text-gray-900">{formatRupee(vi.amount)}</span>
+                              <span className="font-mono text-xs font-bold text-[var(--mv-ink)]">{formatRupee(vi.amount)}</span>
                             </div>
 
-                            <div className="bg-gray-50 p-2 rounded-xl text-[10px] text-gray-550 border border-gray-100 flex justify-between items-center leading-snug">
-                              <span>Withholding TDS 2% (u/s 194C): <strong className="font-mono text-gray-900">{formatRupee(vi.tdsAmount)}</strong></span>
-                              <span>Net: <strong className="font-mono text-gray-900">{formatRupee(vi.netPayable)}</strong></span>
+                            <div className="bg-[var(--mv-page)] p-2 rounded-xl text-[10px] text-[var(--mv-muted)] border border-[var(--mv-border)] flex justify-between items-center leading-snug">
+                              <span>Withholding TDS 2% (u/s 194C): <strong className="font-mono text-[var(--mv-ink)]">{formatRupee(vi.tdsAmount)}</strong></span>
+                              <span>Net: <strong className="font-mono text-[var(--mv-ink)]">{formatRupee(vi.netPayable)}</strong></span>
                             </div>
 
                             <div className="flex gap-2 justify-end">
-                              <button
-                                onClick={() => handleVendorInvoiceStatus(vi.id, 'Rejected')}
-                                className="py-1 px-3 border border-gray-300 rounded-lg text-[10px] font-bold text-gray-600 hover:bg-gray-50 active:scale-95"
-                              >
-                                Reject
-                              </button>
+                              {!onServer && (
+                                <button
+                                  onClick={() => handleVendorInvoiceStatus(vi.id, 'Rejected')}
+                                  disabled={working}
+                                  className="py-1 px-3 border border-[var(--mv-border)] rounded-lg text-[10px] font-bold text-[var(--mv-muted)] hover:bg-[var(--mv-soft)] active:scale-95 disabled:opacity-60"
+                                >
+                                  Reject
+                                </button>
+                              )}
                               <button
                                 onClick={() => handleVendorInvoiceStatus(vi.id, 'Approved')}
-                                className="py-1 px-3 bg-[var(--mv-accent)] hover:brightness-90 text-white rounded-lg text-[10px] font-bold active:scale-95 shadow-sm"
+                                disabled={working}
+                                className="py-1 px-3 bg-[var(--mv-accent)] hover:brightness-90 text-white rounded-lg text-[10px] font-bold active:scale-95 shadow-sm disabled:opacity-60"
                               >
                                 Approve
                               </button>
@@ -3217,12 +3513,12 @@ Tax receipt file issued by state RWA SmartSuite.
              ========================================= */}
           {activeTab === 'bills' && (
             <div className="space-y-4">
-              
+
               {/* Header section with generate button triggers */}
               <div className="flex justify-between items-baseline">
                 <div>
                   <h2 className="text-xl font-bold text-[var(--mv-ink)]">Ledger Invoices</h2>
-                  <p className="text-xs text-[#6B7280]">Historical and active transactions</p>
+                  <p className="text-xs text-[var(--mv-muted)]">Historical and active transactions</p>
                 </div>
                 {currentRole !== 'Resident' && (
                   <button
@@ -3235,7 +3531,7 @@ Tax receipt file issued by state RWA SmartSuite.
               </div>
 
               {currentRole !== 'Resident' && (
-                <div className="p-4 bg-white border border-[var(--mv-border)] rounded-2xl">
+                <div className="p-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl">
                   <BillingWorkflow
                     documents={registerDocuments}
                     problems={books.snapshot().problems}
@@ -3253,88 +3549,16 @@ Tax receipt file issued by state RWA SmartSuite.
                 <div className="p-4 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-2xl animate-scale-up space-y-3.5 text-left">
                   <div className="flex justify-between items-center border-b border-[var(--mv-border)] pb-2">
                     <span className="font-bold text-xs uppercase tracking-tight text-[var(--mv-ink)]">Billing Generation Wizard</span>
-                    <button 
+                    <button
                       onClick={() => setShowBillingWizard(false)}
-                      className="text-[10px] font-bold text-[var(--mv-accent)] uppercase py-0.5 px-1.5 bg-white border border-[var(--mv-border)] rounded-lg"
+                      className="text-[10px] font-bold text-[var(--mv-accent)] uppercase py-0.5 px-1.5 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-lg"
                     >
                       Close
                     </button>
                   </div>
-                  
+
                   <form onSubmit={handleRunBillGeneration} className="space-y-3 text-xs">
-                    <div className="grid grid-cols-2 gap-2.5">
-                      <div>
-                        <label className="text-[10px] text-[#6B7280] font-bold block mb-0.5 uppercase">Billing Period</label>
-                        <input 
-                          type="text" 
-                          value={wizardPeriod} 
-                          onChange={(e) => setWizardPeriod(e.target.value)}
-                          placeholder="e.g. Jul 2026"
-                          className="w-full bg-white p-2 rounded-xl border border-[var(--mv-border)] font-bold text-[var(--mv-ink)] outline-none" 
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-[#6B7280] font-bold block mb-0.5 uppercase">Billing Cycle</label>
-                        <select 
-                          value={wizardCycle} 
-                          onChange={(e) => setWizardCycle(e.target.value)}
-                          className="w-full bg-white p-2 rounded-xl border border-[var(--mv-border)] font-bold text-[var(--mv-ink)] outline-none"
-                        >
-                          <option value="Monthly">Monthly</option>
-                          <option value="Quarterly">Quarterly</option>
-                          <option value="Annual">Annual</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2.5">
-                      <div>
-                        <label className="text-[10px] text-[#6B7280] font-bold block mb-0.5 uppercase">Maintenance (₹)</label>
-                        <input 
-                          type="number" 
-                          value={wizardMaint} 
-                          onChange={(e) => setWizardMaint(e.target.value)}
-                          className="w-full bg-white p-2 rounded-xl border border-[var(--mv-border)] font-mono font-bold text-[var(--mv-ink)] outline-none" 
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-[#6B7280] font-bold block mb-0.5 uppercase">Sinking Fund (₹)</label>
-                        <input 
-                          type="number" 
-                          value={wizardSinking} 
-                          onChange={(e) => setWizardSinking(e.target.value)}
-                          className="w-full bg-white p-2 rounded-xl border border-[var(--mv-border)] font-mono font-bold text-[var(--mv-ink)] outline-none" 
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2.5">
-                      <div>
-                        <label className="text-[10px] text-[#6B7280] font-bold block mb-0.5 uppercase">Water (₹)</label>
-                        <input 
-                          type="number" 
-                          value={wizardWater} 
-                          onChange={(e) => setWizardWater(e.target.value)}
-                          className="w-full bg-white p-2 rounded-xl border border-[var(--mv-border)] font-mono font-bold text-[var(--mv-ink)] outline-none" 
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-[#6B7280] font-bold block mb-0.5 uppercase">Parking (₹)</label>
-                        <input 
-                          type="number" 
-                          value={wizardParking} 
-                          onChange={(e) => setWizardParking(e.target.value)}
-                          className="w-full bg-white p-2 rounded-xl border border-[var(--mv-border)] font-mono font-bold text-[var(--mv-ink)] outline-none" 
-                        />
-                      </div>
-                    </div>
-
-                    <button
-                      type="submit"
-                      className="w-full py-2.5 bg-[var(--mv-accent)] text-white font-bold rounded-xl text-center shadow-md active:scale-98 cursor-pointer"
-                    >
-                      Preview & Dispatch July Bills (Q2)
-                    </button>
+                    {renderWizardFields(true)}
                   </form>
                 </div>
               )}
@@ -3352,10 +3576,10 @@ Tax receipt file issued by state RWA SmartSuite.
                       <div
                         key={inv.id}
                         onClick={viewDetails}
-                        className="flex items-center justify-between p-3 bg-white rounded-xl border border-[var(--mv-border)] hover:bg-[var(--mv-page)] cursor-pointer transition-all text-left"
+                        className="flex items-center justify-between p-3 bg-[var(--mv-surface)] rounded-xl border border-[var(--mv-border)] hover:bg-[var(--mv-page)] cursor-pointer transition-all text-left"
                       >
                         <div className="flex items-center gap-3 flex-1 min-w-0 pr-2">
-                          <div className="w-10 h-10 bg-gray-50 rounded-lg flex items-center justify-center border border-[var(--mv-border)] font-mono text-[9px] font-bold text-[#6B7280] shrink-0">
+                          <div className="w-10 h-10 bg-[var(--mv-page)] rounded-lg flex items-center justify-center border border-[var(--mv-border)] font-mono text-[9px] font-bold text-[var(--mv-muted)] shrink-0">
                             {inv.invoiceNo.replace('INV-', '')}
                           </div>
                           <div className="min-w-0 flex-1">
@@ -3363,7 +3587,7 @@ Tax receipt file issued by state RWA SmartSuite.
                               {inv.period} Maintenance {currentRole !== 'Resident' ? `(${inv.flatNo})` : ''}
                             </p>
                             <p className="text-[10px] text-[var(--mv-accent)] font-bold uppercase truncate">
-                              Owner: <span className="text-gray-500 font-semibold">{inv.name}</span>
+                              Owner: <span className="text-[var(--mv-muted)] font-semibold">{inv.name}</span>
                             </p>
                           </div>
                         </div>
@@ -3388,23 +3612,23 @@ Tax receipt file issued by state RWA SmartSuite.
              ========================================= */}
           {activeTab === 'pay' && (
             <div className="space-y-4">
-              
+
               {/* Resident Pay flow segment */}
               {currentRole === 'Resident' && (
                 <>
                   <div className="flex items-baseline justify-between transition-all">
                     <div>
-                      <h2 className="text-xl font-bold text-[var(--mv-ink)]">Payments (demo)</h2>
-                      <p className="text-sm text-[#6B7280]">UPI, Net Banking & deposits</p>
+                      <h2 className="text-xl font-bold text-[var(--mv-ink)]">{onServer ? 'Payments' : 'Payments (demo)'}</h2>
+                      <p className="text-sm text-[var(--mv-muted)]">{mayPayOnline ? 'UPI, Net Banking & deposits' : 'What is due, and how to pay it'}</p>
                     </div>
                   </div>
 
                   {payingInvoice ? (
-                    <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-4 shadow-sm animate-scale-up text-left">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 space-y-4 shadow-sm animate-scale-up text-left">
                       <div className="flex justify-between items-center">
-                        <span className="font-bold text-[10px] uppercase text-[#6B7280] tracking-wider">Checkout bill summary</span>
-                        <button 
-                          onClick={() => setPayingInvoice(null)} 
+                        <span className="font-bold text-[10px] uppercase text-[var(--mv-muted)] tracking-wider">Checkout bill summary</span>
+                        <button
+                          onClick={() => setPayingInvoice(null)}
                           className="text-[10px] font-bold text-[var(--mv-accent)] uppercase"
                         >
                           Cancel
@@ -3422,69 +3646,74 @@ Tax receipt file issued by state RWA SmartSuite.
 
                       {/* Payment Methods */}
                       <form onSubmit={handleExecutePayment} className="space-y-4">
-                        <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">Choose Clearing Method</span>
-                        
-                        <div className="grid grid-cols-2 gap-2 text-xs">
+                        <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block" id="pmethod-mobile-label">Payment method</span>
+
+                        <div className="grid grid-cols-2 gap-2 text-xs" role="radiogroup" aria-labelledby="pmethod-mobile-label">
                           {[
                             { id: 'UPI', label: 'UPI / BHIM app' },
                             { id: 'Net Banking', label: 'Net Banking' },
                             { id: 'Card', label: 'Debit/Credit Card' },
                             { id: 'Wallet', label: 'Digital Wallets' }
                           ].map(item => (
-                            <label
+                            <button
+                              type="button"
+                              role="radio"
+                              aria-checked={paymentMethod === item.id}
                               key={item.id}
                               onClick={() => setPaymentMethod(item.id as any)}
                               className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between cursor-pointer text-left ${
                                 paymentMethod === item.id
                                   ? 'bg-[var(--mv-ink)] text-white border-black shadow'
-                                  : 'bg-white text-[var(--mv-ink)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
+                                  : 'bg-[var(--mv-surface)] text-[var(--mv-ink)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
                               }`}
                             >
                               <span className="font-bold block leading-tight">{item.label}</span>
-                              <span className={`text-[8px] mt-2 block uppercase font-mono ${paymentMethod === item.id ? 'text-white/60' : 'text-[#6B7280]'}`}>
-                                Instant settlement
+                              <span className={`text-[8px] mt-2 block uppercase font-mono ${paymentMethod === item.id ? 'text-white/70' : 'text-[var(--mv-muted)]'}`}>
+                                No gateway — recorded only
                               </span>
-                            </label>
+                            </button>
                           ))}
                         </div>
 
                         {/* Partial payment modifier */}
                         <div className="space-y-1.5 text-left">
-                          <label className="text-[10px] font-bold text-[#6B7280] uppercase block">Partial Payment Modification</label>
-                          <input 
-                            type="number" 
+                          <label htmlFor="pay-amount-mobile" className="text-[10px] font-bold text-[var(--mv-muted)] uppercase block">Amount to pay</label>
+                          <input
+                            id="pay-amount-mobile"
+                            type="number"
                             placeholder={`Clear full amount of ${formatRupee(payingInvoice.total)}`}
                             value={partialAmountInput}
                             onChange={(e) => setPartialAmountInput(e.target.value)}
                             max={payingInvoice.total}
-                            className="bg-white border border-[var(--mv-border)] rounded-xl p-2.5 font-mono text-xs w-full text-gray-800 outline-none focus:border-[var(--mv-accent)]"
+                            className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl p-2.5 font-mono text-xs w-full text-[var(--mv-ink)] outline-none focus:border-[var(--mv-accent)]"
                           />
-                          <span className="text-[9px] text-[#6B7280] block font-medium leading-tight">
+                          <span className="text-[9px] text-[var(--mv-muted)] block font-medium leading-tight">
                             Partial payment leaves outstanding arrears on this ledger period.
                           </span>
                         </div>
 
                         <button
                           type="submit"
-                          className="w-full py-3 bg-[var(--mv-accent)] text-white font-bold text-sm rounded-xl text-center shadow-md active:scale-95 transition-all cursor-pointer"
+                          disabled={working}
+                          className="w-full py-3 bg-[var(--mv-accent)] text-white font-bold text-sm rounded-xl text-center shadow-md active:scale-95 transition-all cursor-pointer disabled:opacity-60 disabled:cursor-wait"
                         >
-                          Clear & Generate PDF Receipt
+                          {working ? 'Recording…' : 'Record payment'}
                         </button>
                       </form>
                     </div>
                   ) : (
                     <div className="space-y-3.5 pb-24 text-left">
-                      
+
                       {/* Outstanding bills available to pay list */}
-                      <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3 shadow-xs">
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl space-y-3 shadow-xs">
                         <div className="flex justify-between items-center">
-                          <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">
+                          <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">
                             Pending Clearance
                           </span>
                         </div>
-                        
+
                         {rohanInvoices.filter(inv => inv.status !== 'Paid').length === 0 ? (
-                          <div className="py-4 text-center text-xs text-gray-400 font-semibold">
+                          <div className="py-4 text-center text-xs text-[var(--mv-muted)] font-semibold">
                             🎉 No outstanding dues on Flat {residentFlatNo}! Clean slate.
                           </div>
                         ) : (
@@ -3492,17 +3721,20 @@ Tax receipt file issued by state RWA SmartSuite.
                             {rohanInvoices.filter(inv => inv.status !== 'Paid').map(inv => (
                               <div key={inv.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                                 <div>
-                                  <span className="font-mono text-[9px] font-bold text-gray-400">{inv.invoiceNo}</span>
+                                  <span className="font-mono text-[9px] font-bold text-[var(--mv-muted)]">{inv.invoiceNo}</span>
                                   <h5 className="font-bold text-[var(--mv-ink)] mt-0.5">{inv.period} Maintenance Bill</h5>
                                 </div>
                                 <div className="text-right flex items-center gap-2">
                                   <span className="font-mono font-bold text-[var(--mv-ink)]">{formatRupee(inv.total)}</span>
-                                  <button
-                                    onClick={() => handlePayClick(inv)}
-                                    className="py-1 px-3 bg-[var(--mv-accent)] text-white font-bold rounded-lg text-[10px] shadow active:scale-95 cursor-pointer"
-                                  >
-                                    Pay
-                                  </button>
+                                  {mayPayOnline && (
+                                    <button
+                                      onClick={() => handlePayClick(inv)}
+                                      aria-label={`Pay ${inv.period} bill`}
+                                      className="py-1 px-3 bg-[var(--mv-accent)] text-white font-bold rounded-lg text-[10px] shadow active:scale-95 cursor-pointer"
+                                    >
+                                      Pay
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             ))}
@@ -3511,31 +3743,42 @@ Tax receipt file issued by state RWA SmartSuite.
                       </div>
 
                       {/* Advance Payment trigger */}
-                      <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3 shadow-xs">
+                      <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl space-y-3 shadow-xs">
                         <div>
-                          <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">Deposit Advance Funds</span>
-                          <span className="text-[10px] text-gray-450 mt-0.5 block leading-snug">
+                          <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Deposit Advance Funds</span>
+                          <span className="text-[10px] text-[var(--mv-muted)] mt-0.5 block leading-snug">
                             Over-credit counts toward subsequent quarterly maintenance invoices.
                           </span>
                         </div>
 
+                        {!mayPayOnline ? (
+                          <p className="text-[11px] text-[var(--mv-muted)] leading-snug">
+                            No payment gateway is connected. Pay the association by UPI, NEFT or cheque and the
+                            manager records it; anything beyond your dues is held as an advance
+                            ({formatRupees(residentAdvancePaise)} now).
+                          </p>
+                        ) : (
                         <form onSubmit={handleExecuteAdvance} className="space-y-2">
+                          <label htmlFor="advance-mobile" className="sr-only">Advance amount</label>
                           <div className="flex gap-2">
                             <input
+                              id="advance-mobile"
                               type="number"
                               value={customAdvanceInput}
                               onChange={(e) => setCustomAdvanceInput(e.target.value)}
                               placeholder="Deposit amount, e.g. 5000"
-                              className="flex-1 bg-white border border-[var(--mv-border)] rounded-xl p-2 px-3 text-xs font-mono font-bold text-gray-800 outline-none focus:border-[var(--mv-accent)]"
+                              className="flex-1 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl p-2 px-3 text-xs font-mono font-bold text-[var(--mv-ink)] outline-none focus:border-[var(--mv-accent)]"
                             />
                             <button
                               type="submit"
-                              className="py-2.5 px-4 bg-[var(--mv-ink)] text-white hover:bg-black text-xs font-bold rounded-xl active:scale-95 transition-all text-center cursor-pointer shadow"
+                              disabled={working}
+                              className="py-2.5 px-4 bg-[var(--mv-ink)] text-white hover:bg-black text-xs font-bold rounded-xl active:scale-95 transition-all text-center cursor-pointer shadow disabled:opacity-60"
                             >
                               Deposit
                             </button>
                           </div>
                         </form>
+                        )}
                       </div>
                     </div>
                   )}
@@ -3548,15 +3791,15 @@ Tax receipt file issued by state RWA SmartSuite.
                   <div className="flex items-baseline justify-between transition-all">
                     <div>
                       <h2 className="text-xl font-bold text-[var(--mv-ink)]">Defaulter Control</h2>
-                      <p className="text-sm text-[#6B7280]">Aging outstanding accounts receivable ledger</p>
+                      <p className="text-sm text-[var(--mv-muted)]">Aging outstanding accounts receivable ledger</p>
                     </div>
                   </div>
 
                   <div className="space-y-4 pb-24 text-left">
                     {/* Defaulter Registry cards list */}
-                    <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-xs">
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-xs">
                       <div className="flex justify-between items-center pb-2 border-b border-[var(--mv-border)]">
-                        <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Unpaid Overdue Units ({overdueInvoices.length})</span>
+                        <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Unpaid Overdue Units ({overdueInvoices.length})</span>
                         <span className="text-[9px] font-bold text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded uppercase">
                           AR Ledger
                         </span>
@@ -3564,7 +3807,7 @@ Tax receipt file issued by state RWA SmartSuite.
 
                       <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 hide-scrollbar">
                         {overdueInvoices.length === 0 ? (
-                          <div className="py-4 text-center text-xs text-gray-400 font-semibold font-mono">
+                          <div className="py-4 text-center text-xs text-[var(--mv-muted)] font-semibold font-mono">
                             Excellent! No overdue flat arrears on general records.
                           </div>
                         ) : (
@@ -3577,17 +3820,20 @@ Tax receipt file issued by state RWA SmartSuite.
                                     {inv.name}
                                   </span>
                                 </div>
-                                <span className="text-[9px] text-[#6B7280] block mt-1 font-medium">Period: {inv.period} • Grace period expired</span>
+                                <span className="text-[9px] text-[var(--mv-muted)] block mt-1 font-medium">Period: {inv.period} • Grace period expired</span>
                               </div>
                               <div className="text-right flex items-center gap-2 font-mono text-xs">
                                 <span className="font-extrabold text-[var(--mv-ink)]">{formatRupee(inv.total)}</span>
-                                <button
-                                  onClick={() => handleSendReminder(inv)}
-                                  className="w-7 h-7 bg-[var(--mv-accent-soft)] hover:bg-[var(--mv-accent-border)] text-[var(--mv-accent)] rounded-lg transition-all flex items-center justify-center shadow"
-                                  title="Send Reminder warning"
-                                >
-                                  <Send className="w-3.5 h-3.5" />
-                                </button>
+                                {!onServer && (
+                                  <button
+                                    onClick={() => handleSendReminder(inv)}
+                                    className="w-7 h-7 bg-[var(--mv-accent-soft)] hover:bg-[var(--mv-accent-border)] text-[var(--mv-accent)] rounded-lg transition-all flex items-center justify-center shadow"
+                                    title={`Log a reminder for ${inv.flatNo}`}
+                                    aria-label={`Log a reminder for flat ${inv.flatNo}`}
+                                  >
+                                    <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                                  </button>
+                                )}
                               </div>
                             </div>
                           ))
@@ -3595,23 +3841,29 @@ Tax receipt file issued by state RWA SmartSuite.
                       </div>
                     </div>
 
-                    {/* Auto bank reconciliation ledger segment */}
-                    <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3 shadow-xs">
-                      <div className="flex justify-between items-center">
-                        <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Bank Reconciliation Feed</span>
-                        <span className="inline-block px-2 py-0.5 bg-[var(--mv-accent)] text-white text-[9px] rounded font-bold uppercase tracking-wider">
-                          LIVE ACTIVE
-                        </span>
-                      </div>
-
-                      <div className="space-y-2 text-[10px] leading-snug">
-                        <div className="p-2.5 bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] rounded-xl border border-[var(--mv-accent-border)]/40 font-mono">
-                          <strong>[SUCCESS LINK]</strong> Reconciled incoming UPI bank NACH of <strong>₹3,79,500</strong> from Sector Core Accounts.
-                        </div>
-                        <div className="p-2.5 bg-[var(--mv-page)] text-gray-550 rounded-xl border border-[var(--mv-border)] font-mono">
-                          <strong>[SAMPLE ACTIVITY]</strong> An illustrative ledger check across one wing. Part of the demonstration narrative, not a transaction in the books.
-                        </div>
-                      </div>
+                    {/* Receipt entry: money already in the bank, against a flat. */}
+                    <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl shadow-xs">
+                      {mayRecordReceipts ? (
+                        <ReceiptEntryForm
+                          flats={members.map(m => ({ flatNo: m.flatNo, name: m.name }))}
+                          openDocumentsFor={openDocumentsFor}
+                          actions={mustActions()}
+                          today={today}
+                          by={`${currentRole} (${sessionEmail ?? 'local'})`}
+                          onRecorded={handleReceiptRecorded}
+                          onError={message => triggerToast(message, 'error')}
+                          {...(onServer ? { onDownloadReceipt: downloadReceiptPdf } : {})}
+                          note={onServer
+                            ? 'For money already in the association\'s bank. The server numbers the receipt and allocates it oldest invoice first unless you name one. No bank or gateway is contacted.'
+                            : 'Demonstration: recorded in this browser only. No bank or gateway is contacted.'}
+                          compact
+                        />
+                      ) : (
+                        <p className="text-xs text-[var(--mv-muted)] leading-relaxed">
+                          Receipts are recorded by the manager. This account does not hold the
+                          payment.record permission.
+                        </p>
+                      )}
                     </div>
                   </div>
                 </>
@@ -3624,11 +3876,11 @@ Tax receipt file issued by state RWA SmartSuite.
              ========================================= */}
           {activeTab === 'books' && currentRole !== 'Resident' && (
             <div className="space-y-4 animate-scale-up">
-              
+
                <div className="flex justify-between items-baseline text-left">
                 <div>
                   <h2 className="text-xl font-bold text-[var(--mv-ink)]">Financial Books</h2>
-                  <p className="text-xs text-[#6B7280]">Double-entry ledger accuracy</p>
+                  <p className="text-xs text-[var(--mv-muted)]">Double-entry ledger accuracy</p>
                 </div>
                 <BookOpen className="w-4 h-4 text-[var(--mv-accent)]" />
               </div>
@@ -3637,25 +3889,25 @@ Tax receipt file issued by state RWA SmartSuite.
               <div className="grid grid-cols-4 gap-1 bg-[var(--mv-soft)] p-1 rounded-xl text-[10px] uppercase font-bold text-center">
                 <button
                   onClick={() => setBooksSubTab('reports')}
-                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'reports' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[#6B7280]'}`}
+                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'reports' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[var(--mv-muted)]'}`}
                 >
                   Reports
                 </button>
                 <button
                   onClick={() => setBooksSubTab('ledger')}
-                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'ledger' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[#6B7280]'}`}
+                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'ledger' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[var(--mv-muted)]'}`}
                 >
                   Ledger
                 </button>
                 <button
                   onClick={() => setBooksSubTab('budget')}
-                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'budget' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[#6B7280]'}`}
+                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'budget' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[var(--mv-muted)]'}`}
                 >
                   Budget
                 </button>
                 <button
                   onClick={() => setBooksSubTab('audit')}
-                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'audit' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[#6B7280]'}`}
+                  className={`py-1 rounded-lg transition-all cursor-pointer ${booksSubTab === 'audit' ? 'bg-[var(--mv-ink)] text-white shadow-sm' : 'text-[var(--mv-muted)]'}`}
                 >
                   Audit
                 </button>
@@ -3670,7 +3922,7 @@ Tax receipt file issued by state RWA SmartSuite.
                       className={`px-3 py-1 rounded-lg border font-bold transition-all cursor-pointer ${
                         reportsSubState === 'ie'
                           ? 'bg-[var(--mv-ink)] text-white border-black shadow'
-                          : 'bg-white text-[#6B7280] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
+                          : 'bg-[var(--mv-surface)] text-[var(--mv-muted)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
                       }`}
                     >
                       Income & Expense
@@ -3680,7 +3932,7 @@ Tax receipt file issued by state RWA SmartSuite.
                       className={`px-3 py-1 rounded-lg border font-bold transition-all cursor-pointer ${
                         reportsSubState === 'bs'
                           ? 'bg-[var(--mv-ink)] text-white border-black shadow'
-                          : 'bg-white text-[#6B7280] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
+                          : 'bg-[var(--mv-surface)] text-[var(--mv-muted)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
                       }`}
                     >
                       Balance Sheet
@@ -3690,7 +3942,7 @@ Tax receipt file issued by state RWA SmartSuite.
                       className={`px-3 py-1 rounded-lg border font-bold transition-all cursor-pointer ${
                         reportsSubState === 'rp'
                           ? 'bg-[var(--mv-ink)] text-white border-black shadow'
-                          : 'bg-white text-[#6B7280] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
+                          : 'bg-[var(--mv-surface)] text-[var(--mv-muted)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
                       }`}
                     >
                       Receipts &amp; Payments
@@ -3700,32 +3952,36 @@ Tax receipt file issued by state RWA SmartSuite.
                       className={`px-3 py-1 rounded-lg border font-bold transition-all cursor-pointer ${
                         reportsSubState === 'tb'
                           ? 'bg-[var(--mv-ink)] text-white border-black shadow'
-                          : 'bg-white text-[#6B7280] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
+                          : 'bg-[var(--mv-surface)] text-[var(--mv-muted)] border-[var(--mv-border)] hover:bg-[var(--mv-page)]'
                       }`}
                     >
                       Trial Balance
                     </button>
                   </div>
 
-                  <FinancialStatements statements={statements} which={reportsSubState} compact />
+                  <Suspense fallback={<PanelLoading />}>
+                    <FinancialStatements statements={statements} which={reportsSubState} compact />
+                  </Suspense>
                 </div>
               )}
 
               {/* TAB Books -> Sub Journal ledgers */}
               {booksSubTab === 'ledger' && (
-                <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
-                  <JournalLedger statements={statements} compact />
+                <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs">
+                  <Suspense fallback={<PanelLoading />}>
+                    <JournalLedger statements={statements} compact />
+                  </Suspense>
                 </div>
               )}
 
               {/* TAB Books -> Head budgets variance */}
               {booksSubTab === 'budget' && (
-                <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs text-left space-y-3">
+                <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-5 shadow-xs text-left space-y-3">
                   <div className="border-b border-[var(--mv-border)] pb-2">
-                    <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider block">
+                    <span className="text-[10px] uppercase font-bold text-[var(--mv-muted)] tracking-wider block">
                       Budget against actuals
                     </span>
-                    <p className="text-[9px] text-gray-400 mt-0.5 leading-snug">
+                    <p className="text-[9px] text-[var(--mv-muted)] mt-0.5 leading-snug">
                       Budgeted figures are demo values standing in for an approved budget.
                       The realised column and the variance are computed from the ledger.
                     </p>
@@ -3743,7 +3999,7 @@ Tax receipt file issued by state RWA SmartSuite.
                             </span>
                           )}
                         </div>
-                        <div className="flex justify-between text-[10px] text-gray-500 font-mono">
+                        <div className="flex justify-between text-[10px] text-[var(--mv-muted)] font-mono">
                           <span>Budget {b.budgeted}</span>
                           <span className="font-bold text-[var(--mv-ink)]">Actual {b.actual}</span>
                         </div>
@@ -3762,12 +4018,12 @@ Tax receipt file issued by state RWA SmartSuite.
               {/* TAB Books -> Security Audit trail logs */}
               {booksSubTab === 'audit' && (
                 <div className="space-y-3 pb-24 text-left">
-                  <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">Security Audit Log</span>
-                  
+                  <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Security Audit Log</span>
+
                   <div className="space-y-2 max-h-[340px] overflow-y-auto pr-1 hide-scrollbar">
                     {auditLog.map((log) => (
-                      <div key={log.id} className="p-3 bg-white rounded-xl text-xs leading-relaxed border border-[var(--mv-border)] flex flex-col gap-1 shadow-xs">
-                        <div className="flex justify-between text-[8px] font-bold text-[#6B7280] uppercase">
+                      <div key={log.id} className="p-3 bg-[var(--mv-surface)] rounded-xl text-xs leading-relaxed border border-[var(--mv-border)] flex flex-col gap-1 shadow-xs">
+                        <div className="flex justify-between text-[8px] font-bold text-[var(--mv-muted)] uppercase">
                           <span>👤 {log.user}</span>
                           <span className="font-mono font-medium">{log.timestamp}</span>
                         </div>
@@ -3786,27 +4042,28 @@ Tax receipt file issued by state RWA SmartSuite.
              ========================================= */}
           {activeTab === 'more' && (
             <div className="space-y-4 animate-scale-up pb-24 text-left">
-              
+
               {/* Profile & reset utility option */}
               <div className="flex justify-between items-baseline pb-1">
                 <div>
                   <h2 className="text-xl font-bold text-[var(--mv-ink)]">More Modules</h2>
-                  <p className="text-xs text-[#6B7280]">Systems, configurations, and sandboxes</p>
+                  <p className="text-xs text-[var(--mv-muted)]">Systems, configurations, and sandboxes</p>
                 </div>
               </div>
 
               {/* HELPDESK Raising Ticketing Portal */}
-              <div className="bg-white border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
-                <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider block">RWA Support Helpdesk</span>
+              <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
+                <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">RWA Support Helpdesk</span>
 
                 {currentRole === 'Resident' ? (
                   <form onSubmit={handleRaiseComplaint} className="space-y-3.5">
                     <div className="space-y-1">
-                      <label className="text-[10px] text-[#6B7280] font-bold uppercase tracking-wider block">Grievance Category</label>
+                      <label htmlFor="ticket-category-mobile" className="text-[10px] text-[var(--mv-muted)] font-bold uppercase tracking-wider block">Grievance Category</label>
                       <select
+                        id="ticket-category-mobile"
                         value={ticketCategory}
                         onChange={(e) => setTicketCategory(e.target.value as any)}
-                        className="w-full bg-white border border-[var(--mv-border)] p-2.5 rounded-xl text-xs font-bold outline-none focus:border-[var(--mv-accent)]"
+                        className="w-full bg-[var(--mv-surface)] border border-[var(--mv-border)] p-2.5 rounded-xl text-xs font-bold outline-none focus:border-[var(--mv-accent)]"
                       >
                         <option value="Plumbing">🚰 Plumbing</option>
                         <option value="Lift">🛗 Lift Maintenance</option>
@@ -3817,13 +4074,14 @@ Tax receipt file issued by state RWA SmartSuite.
                     </div>
 
                     <div className="space-y-1">
-                      <label className="text-[10px] text-[#6B7280] font-bold uppercase tracking-wider block">Grievance Description</label>
+                      <label htmlFor="ticket-description-mobile" className="text-[10px] text-[var(--mv-muted)] font-bold uppercase tracking-wider block">Grievance Description</label>
                       <textarea
+                        id="ticket-description-mobile"
                         rows={3}
                         value={ticketDescription}
                         onChange={(e) => setTicketDescription(e.target.value)}
                         placeholder="e.g. Balcony pipeline leakage or elevator noises..."
-                        className="w-full bg-white border border-[var(--mv-border)] p-2.5 rounded-xl text-xs font-medium outline-none focus:border-[var(--mv-accent)] leading-snug"
+                        className="w-full bg-[var(--mv-surface)] border border-[var(--mv-border)] p-2.5 rounded-xl text-xs font-medium outline-none focus:border-[var(--mv-accent)] leading-snug"
                       />
                     </div>
 
@@ -3836,14 +4094,14 @@ Tax receipt file issued by state RWA SmartSuite.
                   </form>
                 ) : (
                   <div className="space-y-2.5">
-                    <span className="text-[10px] font-bold text-[#6B7280] uppercase block">Active Grievance Log ({tickets.length})</span>
-                    
+                    <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase block">Active Grievance Log ({tickets.length})</span>
+
                     <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1 hide-scrollbar">
                       {tickets.map(t => (
                         <div key={t.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                           <div className="min-w-0 flex-1 pr-1.5 space-y-1">
                             <span className="font-extrabold text-[var(--mv-ink)] block">{t.flatNo} • {t.category}</span>
-                            <p className="text-[10px] text-[#6B7280] truncate leading-tight font-medium">{t.description}</p>
+                            <p className="text-[10px] text-[var(--mv-muted)] truncate leading-tight font-medium">{t.description}</p>
                           </div>
                           <div>
                             <span className={`px-2 py-0.5 text-[8px] font-bold rounded uppercase ${
@@ -3861,10 +4119,10 @@ Tax receipt file issued by state RWA SmartSuite.
 
                {/* MEMBER MANAGEMENT CRUD (Manager only) */}
               {currentRole === 'Manager' && (
-                <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-sm text-left">
+                <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-sm text-left">
                   <div className="flex justify-between items-baseline border-b border-[var(--mv-border)] pb-2">
-                    <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Resident Roster CRUD</span>
-                    <button
+                    <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">{onServer ? 'Flats on record' : 'Resident Roster'}</span>
+                    {!onServer && <button
                       onClick={() => {
                         setEditingMemberId(null);
                         setFormName('');
@@ -3876,43 +4134,52 @@ Tax receipt file issued by state RWA SmartSuite.
                       className="text-[10px] text-[var(--mv-accent)] font-bold uppercase flex items-center gap-0.5 cursor-pointer"
                     >
                       {memberFormOpen ? 'Minimize Form' : '+ Register flat'}
-                    </button>
+                    </button>}
                   </div>
 
-                  {memberFormOpen && (
+                  {onServer && (
+                    <p className="text-[10px] text-[var(--mv-muted)] leading-snug">
+                      Read only here. Adding, editing or removing a member is not available on this screen yet.
+                    </p>
+                  )}
+
+                  {memberFormOpen && !onServer && (
                     <form onSubmit={handleSaveMember} className="space-y-3.5 text-xs bg-[var(--mv-page)] p-3.5 rounded-xl border border-[var(--mv-border)] animate-scale-up">
                       <div className="grid grid-cols-2 gap-2.5">
                         <div className="space-y-1">
-                          <label className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">Resident Full Name</label>
+                          <label htmlFor="member-name-mobile" className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Resident Full Name</label>
                           <input
+                            id="member-name-mobile"
                             type="text"
                             required
                             value={formName}
                             onChange={(e) => setFormName(e.target.value)}
                             placeholder="e.g. Ramesh Desai"
-                            className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none focus:border-[var(--mv-accent)]"
+                            className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none focus:border-[var(--mv-accent)]"
                           />
                         </div>
                         <div className="space-y-1">
-                          <label className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">Flat Number</label>
+                          <label htmlFor="member-flat-mobile" className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Flat Number</label>
                           <input
+                            id="member-flat-mobile"
                             type="text"
                             required
                             value={formFlat}
                             onChange={(e) => setFormFlat(e.target.value)}
                             placeholder="e.g. C-303"
-                            className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none focus:border-[var(--mv-accent)]"
+                            className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none focus:border-[var(--mv-accent)]"
                           />
                         </div>
                       </div>
 
                       <div className="grid grid-cols-2 gap-2.5">
                         <div className="space-y-1">
-                          <label className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">Sector Wing</label>
+                          <label htmlFor="member-wing-mobile" className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Sector Wing</label>
                           <select
+                            id="member-wing-mobile"
                             value={formWing}
                             onChange={(e) => setFormWing(e.target.value as any)}
-                            className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none"
+                            className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold text-xs outline-none"
                           >
                             <option value="A">Wing A</option>
                             <option value="B">Wing B</option>
@@ -3921,13 +4188,14 @@ Tax receipt file issued by state RWA SmartSuite.
                           </select>
                         </div>
                         <div className="space-y-1">
-                          <label className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider block">Contact Line</label>
+                          <label htmlFor="member-contact-mobile" className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider block">Contact Line</label>
                           <input
+                            id="member-contact-mobile"
                             type="text"
                             value={formContact}
                             onChange={(e) => setFormContact(e.target.value)}
                             placeholder="e.g. +91 988"
-                            className="w-full bg-white p-2.5 rounded-xl border border-[var(--mv-border)] font-bold font-mono text-xs outline-none focus:border-[var(--mv-accent)]"
+                            className="w-full bg-[var(--mv-surface)] p-2.5 rounded-xl border border-[var(--mv-border)] font-bold font-mono text-xs outline-none focus:border-[var(--mv-accent)]"
                           />
                         </div>
                       </div>
@@ -3947,24 +4215,28 @@ Tax receipt file issued by state RWA SmartSuite.
                       <div key={m.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                         <div>
                           <span className="font-extrabold text-[var(--mv-ink)] block">{m.flatNo} • {m.name}</span>
-                          <span className="text-[9px] text-[#6B7280] block font-mono">{m.contact}</span>
+                          <span className="text-[9px] text-[var(--mv-muted)] block font-mono">{m.contact}</span>
                         </div>
-                        <div className="flex gap-1.5">
-                          <button
-                            onClick={() => handleEditMemberClick(m)}
-                            className="w-7 h-7 bg-white border border-[var(--mv-border)] hover:bg-gray-50 text-[#6B7280] hover:text-[var(--mv-ink)] rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
-                            title="Edit"
-                          >
-                            <Edit3 className="w-3 h-3" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteMember(m.id, m.name)}
-                            className="w-7 h-7 bg-white border border-[var(--mv-border)] hover:bg-red-50 text-red-650 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
-                            title="Deallot flat"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        </div>
+                        {!onServer && (
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={() => handleEditMemberClick(m)}
+                              className="w-7 h-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] hover:bg-[var(--mv-soft)] text-[var(--mv-muted)] hover:text-[var(--mv-ink)] rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
+                              title="Edit"
+                              aria-label={`Edit ${m.name}, flat ${m.flatNo}`}
+                            >
+                              <Edit3 className="w-3 h-3" aria-hidden="true" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteMember(m.id, m.name)}
+                              className="w-7 h-7 bg-[var(--mv-surface)] border border-[var(--mv-border)] hover:bg-red-50 text-red-700 rounded-lg transition-all flex items-center justify-center cursor-pointer shadow-xs"
+                              title="Remove"
+                              aria-label={`Remove ${m.name}, flat ${m.flatNo}`}
+                            >
+                              <Trash2 className="w-3 h-3" aria-hidden="true" />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -3974,9 +4246,9 @@ Tax receipt file issued by state RWA SmartSuite.
 
               {/* VENDOR LEDGER & CONTRACTS OUTLINE (Committee / manager accessible) */}
               {currentRole !== 'Resident' && (
-                <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-sm text-left">
+                <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl space-y-3.5 shadow-sm text-left">
                   <div className="flex justify-between items-center pb-1 border-b border-[var(--mv-border)]">
-                    <span className="text-[10px] font-bold text-[#6B7280] uppercase tracking-wider">Vendor Ledgers & Contracts</span>
+                    <span className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Vendor Ledgers & Contracts</span>
                     <span className="text-[8px] font-bold text-[var(--mv-ink)] bg-[var(--mv-soft)] px-1.5 py-0.5 rounded-md font-mono">Sec 194C Compliant</span>
                   </div>
 
@@ -3985,16 +4257,16 @@ Tax receipt file issued by state RWA SmartSuite.
                       <div key={v.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                         <div className="min-w-0 flex-1 pr-1 bg-transparent">
                           <h5 className="font-bold text-[var(--mv-ink)] truncate">{v.name}</h5>
-                          <span className="text-[9px] font-bold text-[#6B7280] block mt-0.5 uppercase tracking-wide">
+                          <span className="text-[9px] font-bold text-[var(--mv-muted)] block mt-0.5 uppercase tracking-wide">
                             {v.category}
                           </span>
                           <span className="text-[9px] text-[var(--mv-accent)] font-bold mt-1.5 block">
-                            Renewal: <span className="text-gray-500 font-semibold">{v.contractRenewal}</span>
+                            Renewal: <span className="text-[var(--mv-muted)] font-semibold">{v.contractRenewal}</span>
                           </span>
                         </div>
                         <div className="text-right">
                           <span className="font-mono text-xs font-bold text-[var(--mv-ink)] block leading-tight">{formatRupee(v.balance)}</span>
-                          <span className="text-[9px] text-[#6B7280] font-bold uppercase tracking-tight block mt-1">Due Balance</span>
+                          <span className="text-[9px] text-[var(--mv-muted)] font-bold uppercase tracking-tight block mt-1">Due Balance</span>
                         </div>
                       </div>
                     ))}
@@ -4004,22 +4276,26 @@ Tax receipt file issued by state RWA SmartSuite.
 
               {/* CLOUD GOOGLE SHEETS BACKUP MODULE INTEGRATION FOR ALL ROLES */}
               {currentRole !== 'Resident' && (
-                <BackupHub 
-                  backupHistory={backupHistory}
-                  onTriggerBackup={handleTriggerBackup}
-                  onResetData={handleReset}
-                />
+                <Suspense fallback={<PanelLoading />}>
+                  <BackupHub
+                    backupHistory={backupHistory}
+                    onTriggerBackup={handleTriggerBackup}
+                    onResetData={handleReset}
+                    onServer={onServer}
+                    exportJson={() => mustBooks().exportJson()}
+                  />
+                </Suspense>
               )}
 
               {/* Basic quick switch user suggestion details / manual info cards */}
-              <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl text-left space-y-2 relative shadow-xs">
+              <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl text-left space-y-2 relative shadow-xs">
                 <span className="text-[9px] font-bold text-[var(--mv-accent)] uppercase tracking-wider bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded-md inline-block">
                   Co-op Housing Regulatory Code
                 </span>
-                <p className="text-[10px] text-[#6B7280] leading-relaxed pt-0.5 font-medium">
+                <p className="text-[10px] text-[var(--mv-muted)] leading-relaxed pt-0.5 font-medium">
                   Billing and statutory treatment require review against Mani Vista bylaws and the applicable laws before production use. GSTIN {gstinLabel}.
                 </p>
-                {currentRole === 'Resident' && (
+                {currentRole === 'Resident' && !onServer && (
                   <button
                     onClick={handleReset}
                     className="mt-2 text-[10px] font-bold text-[var(--mv-accent)] block py-1 cursor-pointer hover:underline"
@@ -4030,8 +4306,8 @@ Tax receipt file issued by state RWA SmartSuite.
               </div>
 
               {/* Logged-in member + logout */}
-              <div className="bg-white border border-[var(--mv-border)] p-4 rounded-2xl text-left shadow-xs">
-                <p className="text-[9px] font-bold text-[#6B7280] uppercase tracking-wider">Logged in as</p>
+              <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] p-4 rounded-2xl text-left shadow-xs">
+                <p className="text-[9px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Logged in as</p>
                 <p className="text-xs font-bold text-[var(--mv-ink)] truncate mt-0.5" title={sessionEmail || ''}>{sessionEmail}</p>
                 <button
                   onClick={handleLogout}
@@ -4047,25 +4323,27 @@ Tax receipt file issued by state RWA SmartSuite.
         </main>
 
         {/* --- STICKY BOTTOM NAV BAR (ALWAYS VISIBLE - BLACK THEMED) --- */}
-        <nav className="absolute bottom-0 left-0 right-0 bg-[var(--mv-ink)] text-white border-t border-gray-800 py-3.5 px-3 flex justify-around items-center z-30 shadow-2xl rounded-t-3xl min-h-[64px]">
-          
-          <button 
+        <nav aria-label="Sections" className="absolute bottom-0 left-0 right-0 bg-[var(--mv-ink)] text-white border-t border-[var(--mv-dark-border)] py-3.5 px-3 flex justify-around items-center z-30 shadow-2xl rounded-t-3xl min-h-[64px]">
+
+          <button
             onClick={() => setActiveTab('home')}
-            className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'home' ? 'text-[var(--mv-accent)]' : 'text-gray-400 hover:text-white'}`}
+            aria-current={activeTab === 'home' ? 'page' : undefined}
+            className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'home' ? 'text-[var(--mv-accent-on-dark)]' : 'text-white/70 hover:text-white'}`}
           >
             <Home className="w-5 h-5" />
             <span className="text-[9px] font-bold uppercase tracking-wider">Home</span>
           </button>
 
-          <button 
+          <button
             onClick={() => setActiveTab('bills')}
-            className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'bills' ? 'text-[var(--mv-accent)]' : 'text-gray-400 hover:text-white'}`}
+            aria-current={activeTab === 'bills' ? 'page' : undefined}
+            className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'bills' ? 'text-[var(--mv-accent-on-dark)]' : 'text-white/70 hover:text-white'}`}
           >
             <Receipt className="w-5 h-5" />
             <span className="text-[9px] font-bold uppercase tracking-wider">Bills</span>
           </button>
 
-          <button 
+          <button
             onClick={() => {
               if (currentRole === 'Resident') {
                 setActiveTab('pay');
@@ -4073,28 +4351,30 @@ Tax receipt file issued by state RWA SmartSuite.
                 setActiveTab('pay'); // Also opens Manager room
               }
             }}
-            className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'pay' ? 'text-[var(--mv-accent)]' : 'text-gray-400 hover:text-white'}`}
+            aria-current={activeTab === 'pay' ? 'page' : undefined}
+            className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'pay' ? 'text-[var(--mv-accent-on-dark)]' : 'text-white/70 hover:text-white'}`}
           >
             <CreditCard className="w-5 h-5" />
             <span className="text-[9px] font-bold uppercase tracking-wider">Pay Rooms</span>
           </button>
 
-          <button 
+          <button
             onClick={() => {
               if (currentRole === 'Resident') {
                 // Resident cannot open books screen - show prompt!
-                triggerToast('Access Denied: Core Accounting reports are restricted to Administrative roles. Enter PIN at dropdown to view.');
+                triggerToast('The books are for the manager and committee views. Switch view to open them.', 'error');
                 handleRoleSwitchRequest('Manager'); // Direct trigger to authenticating
               } else {
                 setActiveTab('books');
               }
             }}
-            className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'books' ? 'text-[var(--mv-accent)]' : 'text-gray-400 hover:text-white'}`}
+            aria-current={activeTab === 'books' ? 'page' : undefined}
+            className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'books' ? 'text-[var(--mv-accent-on-dark)]' : 'text-white/70 hover:text-white'}`}
           >
             <div className="relative">
               <BookOpen className="w-5 h-5" />
               {currentRole === 'Resident' && (
-                <Lock className="w-2.5 h-2.5 text-[var(--mv-accent)] absolute -top-1 -right-1 bg-white rounded-full p-0.5" />
+                <Lock className="w-2.5 h-2.5 text-[var(--mv-accent)] absolute -top-1 -right-1 bg-[var(--mv-surface)] rounded-full p-0.5" aria-label="Locked" />
               )}
             </div>
             <span className="text-[9px] font-bold uppercase tracking-wider flex items-center justify-center">
@@ -4102,9 +4382,10 @@ Tax receipt file issued by state RWA SmartSuite.
             </span>
           </button>
 
-          <button 
+          <button
             onClick={() => setActiveTab('more')}
-            className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'more' ? 'text-[var(--mv-accent)]' : 'text-gray-400 hover:text-white'}`}
+            aria-current={activeTab === 'more' ? 'page' : undefined}
+            className={`flex flex-col items-center gap-1 cursor-pointer transition-colors ${activeTab === 'more' ? 'text-[var(--mv-accent-on-dark)]' : 'text-white/70 hover:text-white'}`}
           >
             <Menu className="w-5 h-5" />
             <span className="text-[9px] font-bold uppercase tracking-wider">More</span>
@@ -4116,26 +4397,31 @@ Tax receipt file issued by state RWA SmartSuite.
       ) : null}
 
       {/* --- DYNAMIC FLOATING OVERLAYS MODALS (shared across desktop & mobile) --- */}
-
+      {/* Each is rendered only while open, so its code is fetched only then. */}
+      <Suspense fallback={null}>
         {/* 1. Administrative access credentials validation PIN modal */}
-        <AdminPinModal 
-          isOpen={showAuthModal}
-          targetRole={authTargetRole}
-          onClose={() => setShowAuthModal(false)}
-          onSuccess={handleAuthSuccess}
-        />
+        {showAuthModal && (
+          <AdminPinModal
+            isOpen={showAuthModal}
+            targetRole={authTargetRole}
+            onClose={() => setShowAuthModal(false)}
+            onSuccess={handleAuthSuccess}
+          />
+        )}
 
         {/* 2. Invoice Details Breakdown Modal (mobile only — desktop uses inline master-detail panel) */}
-        {!isDesktop && (
+        {!isDesktop && selectedInvoice !== null && (
           <InvoiceDetailModal
             invoice={selectedInvoice}
             role={currentRole}
             onClose={() => setSelectedInvoice(null)}
-            onPayNow={(inv) => {
-              setSelectedInvoice(null);
-              handlePayClick(inv);
-            }}
-            onSendReminder={handleSendReminder}
+            {...(mayPayOnline ? {
+              onPayNow: (inv: Invoice) => {
+                setSelectedInvoice(null);
+                handlePayClick(inv);
+              },
+            } : {})}
+            {...(onServer ? {} : { onSendReminder: handleSendReminder })}
             gstinLabel={gstinLabel}
             {...(booksSource.server !== null
               ? { onDownloadPdf: (inv: Invoice) => booksSource.server!.invoicePdf(inv.id) }
@@ -4143,55 +4429,81 @@ Tax receipt file issued by state RWA SmartSuite.
           />
         )}
 
-        {/* 3. Success Checkout Clear Modal */}
-        {showSuccessPayModal && selectedReceipt && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-            <div className="bg-white w-full max-w-[340px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] p-5 text-center space-y-4 animate-scale-up">
-              <div className="w-12 h-12 bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded-full flex items-center justify-center mx-auto">
-                <Check className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="font-extrabold text-sm text-[var(--mv-ink)]">Clearing Succeeded!</h3>
-                <p className="text-xs text-gray-500 mt-1">Bank instant auto-reconcile cleared the receivables.</p>
-              </div>
-
-              <div className="bg-gray-50 p-3 rounded-2xl border border-gray-100 text-xs font-mono">
-                <p className="text-gray-400 text-[10px]">TRANSACTION REFERENCE</p>
-                <p className="font-extrabold text-gray-800 mt-0.5">{selectedReceipt.transactionId || 'RECON9981'}</p>
-                <p className="font-extrabold text-gray-900 mt-1.5">{formatRupee(selectedReceipt.total)}</p>
-              </div>
-
-              <div className="flex gap-2.5">
-                <button
-                  onClick={() => {
-                    setShowSuccessPayModal(false);
-                    setShowReceiptModal(true);
-                  }}
-                  className="flex-1 py-2 px-3 bg-[var(--mv-accent)] text-white rounded-xl text-xs font-bold"
-                >
-                  Download Receipt File
-                </button>
-                <button
-                  onClick={() => setShowSuccessPayModal(false)}
-                  className="py-2 px-3 bg-white border border-gray-300 rounded-xl text-xs font-semibold text-gray-600"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* 4. Receipt Download view Modal */}
-        <ReceiptModal
-          isOpen={showReceiptModal}
-          invoice={selectedReceipt}
-          onClose={() => {
-            setShowReceiptModal(false);
-            setSelectedReceipt(null);
-          }}
-          gstinLabel={gstinLabel}
-        />
+        {showReceiptModal && selectedReceipt !== null && (
+          <ReceiptModal
+            isOpen={showReceiptModal}
+            invoice={selectedReceipt}
+            onClose={() => {
+              setShowReceiptModal(false);
+              setSelectedReceipt(null);
+            }}
+            gstinLabel={gstinLabel}
+            demonstration={!onServer}
+            {...(booksSource.server !== null && selectedReceipt.transactionId !== undefined
+              ? { onDownloadPdf: (inv: Invoice) => booksSource.server!.receiptPdf(inv.transactionId ?? '') }
+              : {})}
+          />
+        )}
+      </Suspense>
+
+      {/* 3. Payment recorded. What the books said, and nothing more: the receipt
+          number is the one they issued, and no bank is claimed to have been
+          involved — there is no gateway. */}
+      {showSuccessPayModal && selectedReceipt && lastReceipt && (
+        <Dialog
+          labelledBy="payment-recorded-title"
+          onClose={() => setShowSuccessPayModal(false)}
+          className="bg-[var(--mv-surface)] w-full max-w-[340px] rounded-3xl overflow-hidden shadow-2xl border border-[var(--mv-border)] p-5 text-center space-y-4 animate-scale-up outline-none"
+        >
+          <div className="w-12 h-12 bg-[var(--mv-accent-soft)] text-[var(--mv-accent)] border border-[var(--mv-accent-border)] rounded-full flex items-center justify-center mx-auto">
+            <Check className="w-6 h-6" aria-hidden="true" />
+          </div>
+          <div>
+            <h3 id="payment-recorded-title" className="font-extrabold text-sm text-[var(--mv-ink)]">Payment recorded</h3>
+            <p className="text-xs text-[var(--mv-muted)] mt-1">
+              {formatRupees(lastReceipt.appliedToDues)} applied to dues
+              {lastReceipt.heldAsAdvance > 0 ? `, ${formatRupees(lastReceipt.heldAsAdvance)} held as an advance` : ''}.
+              {lastReceipt.outstandingAfter !== null && lastReceipt.outstandingAfter > 0
+                ? ` ${formatRupees(lastReceipt.outstandingAfter)} still outstanding.`
+                : ''}
+            </p>
+            {lastReceipt.note !== null && (
+              <p className="text-[10px] text-[var(--mv-muted)] mt-1">{lastReceipt.note}</p>
+            )}
+          </div>
+
+          <div className="bg-[var(--mv-page)] p-3 rounded-2xl border border-[var(--mv-border)] text-xs font-mono">
+            <p className="text-[var(--mv-muted)] text-[10px]">RECEIPT NUMBER</p>
+            <p className="font-extrabold text-[var(--mv-ink)] mt-0.5 break-all">{lastReceipt.receiptNo}</p>
+            <p className="font-extrabold text-[var(--mv-ink)] mt-1.5">{formatRupee(lastReceipt.amountRupees)}</p>
+          </div>
+
+          <div className="flex gap-2.5">
+            <button
+              data-autofocus
+              onClick={() => {
+                setShowSuccessPayModal(false);
+                if (onServer) {
+                  downloadReceiptPdf(lastReceipt.receiptNo)
+                    .catch((err: unknown) => toastError(err, 'The receipt could not be fetched.'));
+                } else {
+                  setShowReceiptModal(true);
+                }
+              }}
+              className="flex-1 py-2 px-3 bg-[var(--mv-accent)] text-white rounded-xl text-xs font-bold"
+            >
+              {onServer ? 'Download receipt PDF' : 'View receipt'}
+            </button>
+            <button
+              onClick={() => setShowSuccessPayModal(false)}
+              className="py-2 px-3 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl text-xs font-semibold text-[var(--mv-muted)]"
+            >
+              Close
+            </button>
+          </div>
+        </Dialog>
+      )}
 
     </div>
   );
