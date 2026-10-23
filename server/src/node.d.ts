@@ -36,6 +36,11 @@ declare function clearTimeout(handle: unknown): void;
 declare function setInterval(fn: (...a: unknown[]) => void, ms?: number): { unref(): void };
 declare function clearInterval(handle: unknown): void;
 declare function queueMicrotask(fn: () => void): void;
+/** Node's global fetch, as far as the Google sign-in token exchange uses it. */
+declare function fetch(url: string, init?: {
+  method?: string; headers?: Record<string, string>; body?: string; signal?: unknown;
+}): Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+declare const AbortSignal: { timeout(ms: number): unknown };
 
 declare class URL {
   constructor(input: string, base?: string);

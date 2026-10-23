@@ -17,6 +17,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createServer as createHttpServer } from 'node:http';
 
 const build = '../.server-build/server/src';
 const { buildApp } = await import(`${build}/app.js`);
@@ -153,6 +154,25 @@ process.env.EMAIL_PROVIDER = 'none';
 process.env.LOG_LEVEL = 'error';
 process.env.RATE_LIMIT_LOGIN_PER_HOUR = '8';
 process.env.SETUP_TOKEN = `setup-token-${stamp}-0123456789`;
+
+// A stand-in for Google's token endpoint, so the sign-in flow runs end to end
+// without the network. It answers with an ID token whose claims each check
+// sets, and records what it was sent.
+const fakeGoogle = { claims: null, lastBody: null };
+const googleServer = createHttpServer((req, res) => {
+  let body = '';
+  req.on('data', (c) => { body += c; });
+  req.on('end', () => {
+    fakeGoogle.lastBody = new URLSearchParams(body);
+    const part = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ id_token: `${part({ alg: 'RS256' })}.${part(fakeGoogle.claims ?? {})}.sig` }));
+  });
+});
+await new Promise((resolve) => googleServer.listen(0, '127.0.0.1', resolve));
+process.env.GOOGLE_CLIENT_ID = `test-client-${stamp}.apps.googleusercontent.com`;
+process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
+process.env.GOOGLE_OAUTH_TOKEN_URL = `http://127.0.0.1:${googleServer.address().port}/token`;
 
 const seedPool = new PgPool(connectionFromEnv(process.env));
 const fixture = await seed(seedPool, { name: societyName, password: PASSWORD, emailDomain: domain });
@@ -500,6 +520,76 @@ await check('sign-in from another site is refused', async () => {
   }, { Origin: 'https://attacker.example' });
   equal(r.status, 403, 'status');
   equal(r.body.error, 'csrf_failed', 'error');
+});
+
+// --- Sign in with Google ---------------------------------------------------
+
+/** Runs start, then a callback with the given claims; returns the callback's response. */
+const googleSignIn = async (claims, { tamperState = false } = {}) => {
+  const start = await fetch(`${base}/api/auth/google/start`, { redirect: 'manual' });
+  const location = new URL(start.headers.get('location'));
+  const cookie = start.headers.getSetCookie().find(c => c.startsWith('sb_google=')).split(';')[0];
+  const state = tamperState ? 'not-the-state' : location.searchParams.get('state');
+  fakeGoogle.claims = claims;
+  const callback = await fetch(
+    `${base}/api/auth/google/callback?code=test-code&state=${encodeURIComponent(state)}`,
+    { redirect: 'manual', headers: { Cookie: cookie } },
+  );
+  return { start, location, callback };
+};
+const googleClaims = (email, extra = {}) => ({
+  iss: 'https://accounts.google.com', aud: process.env.GOOGLE_CLIENT_ID,
+  exp: Math.floor(Date.now() / 1000) + 600, email, email_verified: true, ...extra,
+});
+
+await check('Google sign-in is offered when configured', async () => {
+  const r = await anonymous.get('/api/auth/google/status');
+  equal(r.body.enabled, true, 'enabled');
+});
+
+await check('start sends the browser to Google with PKCE and a state', async () => {
+  const { start, location } = await googleSignIn(null);
+  equal(start.status, 302, 'redirect');
+  equal(location.searchParams.get('client_id'), process.env.GOOGLE_CLIENT_ID, 'client id');
+  equal(location.searchParams.get('code_challenge_method'), 'S256', 'PKCE');
+  truthy(location.searchParams.get('state'), 'a state');
+  matches(location.searchParams.get('redirect_uri'), /\/api\/auth\/google\/callback$/, 'redirect uri');
+});
+
+await check('a registered member signs in with Google, with no password', async () => {
+  const { callback } = await googleSignIn(googleClaims(residentEmail.toUpperCase()));
+  equal(callback.status, 302, 'redirect');
+  truthy(!/login_error/.test(callback.headers.get('location')), `back to the app: ${callback.headers.get('location')}`);
+  equal(fakeGoogle.lastBody.get('grant_type'), 'authorization_code', 'code exchanged');
+  truthy(fakeGoogle.lastBody.get('code_verifier'), 'with the PKCE verifier');
+  const cookies = callback.headers.getSetCookie().map(c => c.split(';')[0]).filter(c => /^sb_(session|csrf)=/.test(c));
+  equal(cookies.length, 2, 'session and csrf cookies set');
+  const me = await fetch(`${base}/api/auth/me`, { headers: { Cookie: cookies.join('; ') } });
+  equal(me.status, 200, 'the session works');
+  equal((await me.json()).email, residentEmail, 'as that member');
+});
+
+await check('a Google account the society does not know is refused; nothing is created', async () => {
+  const email = `stranger-${stamp}@gmail.example`;
+  const { callback } = await googleSignIn(googleClaims(email));
+  matches(callback.headers.get('location'), /login_error=google_not_registered/, 'refused');
+  equal(callback.headers.getSetCookie().some(c => c.startsWith('sb_session=') && !c.startsWith('sb_session=;')), false, 'no session');
+  equal(psql(`SELECT count(*) FROM users WHERE lower(email) = lower('${email}');`).out, '0', 'no account created');
+});
+
+await check('an unverified Google e-mail is refused', async () => {
+  const { callback } = await googleSignIn(googleClaims(residentEmail, { email_verified: false }));
+  matches(callback.headers.get('location'), /login_error=google_unverified/, 'refused');
+});
+
+await check('a token meant for another client is refused', async () => {
+  const { callback } = await googleSignIn(googleClaims(residentEmail, { aud: 'someone-else.apps.googleusercontent.com' }));
+  matches(callback.headers.get('location'), /login_error=google_unverified/, 'refused');
+});
+
+await check('a callback whose state was not issued to this browser is refused', async () => {
+  const { callback } = await googleSignIn(googleClaims(residentEmail), { tamperState: true });
+  matches(callback.headers.get('location'), /login_error=google_state/, 'refused');
 });
 
 // --- CSRF ------------------------------------------------------------------
@@ -4089,6 +4179,7 @@ await check('every journal entry in the database balances', async () => {
   // The pool the job suites used, closed here rather than in `finally`: it is
   // declared inside this block and the finally cannot see it.
   await jobPool.end();
+  googleServer.close();
 } finally {
   if (host !== null) await host.close();
   if (app !== null) await app.close();

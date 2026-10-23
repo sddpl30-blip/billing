@@ -266,6 +266,41 @@ export class AuthService {
     });
   }
 
+  /**
+   * Signs in an e-mail address an identity provider has verified — Google.
+   *
+   * Only an address already on file: there is no sign-up. A member exists
+   * because the office imported their flat or added them, and a Google
+   * account the society has never heard of gets the same refusal as a wrong
+   * password. Rate-limited per source address like every other sign-in.
+   */
+  async signInWithVerifiedEmail(input: {
+    email: string; provider: string; userAgent?: string; ip: string;
+  }): Promise<SignInResult> {
+    const decision = await consumeRateLimit(this.pool, {
+      subject: input.ip, action: `login:${input.provider}`,
+      limit: this.config.rateLimit.loginPerHour,
+      windowMinutes: this.config.rateLimit.windowMinutes,
+      secretKey: this.config.secretKey,
+    });
+    if (!decision.allowed) {
+      throw new RateLimitError('Too many sign-in attempts. Try again shortly.', decision.retryAfterSeconds);
+    }
+    return this.pool.transaction(async (tx) => {
+      const found = await tx.query<{ id: string; society_id: string; email: string }>(
+        `SELECT id, society_id, email FROM users
+          WHERE lower(email) = lower($1) AND is_active = true LIMIT 1`,
+        [input.email],
+      );
+      const user = found.rows[0];
+      if (user === undefined) {
+        throw new AuthError('That account is not registered with the society.');
+      }
+      this.log.info('signed in through an identity provider', { provider: input.provider });
+      return this.issueSession(tx, user.id, user.society_id, user.email, input.userAgent);
+    });
+  }
+
   private async issueSession(
     tx: Queryable,
     userId: string,
