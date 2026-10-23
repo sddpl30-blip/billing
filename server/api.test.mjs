@@ -599,8 +599,12 @@ await check('a treasurer cannot change a setting', async () => {
 });
 
 await check('the secretary sets GST on, and it is not approved by being typed', async () => {
+  // No per-member exemption for this society, so the checks below exercise
+  // the tax arithmetic on these flats, every one of which bills under the
+  // statutory ₹7,500. The exemption itself is checked in "billing defects",
+  // against a society that leaves it at its default.
   const r = await secretary.put('/api/settings/gst.treatment', {
-    value: { chargeGst: true, ratePercent: 18 },
+    value: { chargeGst: true, ratePercent: 18, memberThresholdRupees: 0 },
     note: 'Set by the integration test.',
   });
   equal(r.status, 200, 'status');
@@ -653,7 +657,7 @@ await check('changing the value drops the sign-off', async () => {
   equal(gst.approved, false, 'approved after the rate changed');
   // Put it back, approved, for the rest of the suite.
   await secretary.put('/api/settings/gst.treatment', {
-    value: { chargeGst: true, ratePercent: 18 },
+    value: { chargeGst: true, ratePercent: 18, memberThresholdRupees: 0 },
   });
   await treasurer.post('/api/settings/gst.treatment/approve', { on: '2026-07-17' });
 });
@@ -1926,7 +1930,7 @@ await check('the GST register nets the note, so a return would agree', async () 
 
 await check('a note that would carry an unapproved tax is refused', async () => {
   await secretary.put('/api/settings/gst.treatment', {
-    value: { chargeGst: true, ratePercent: 18 },
+    value: { chargeGst: true, ratePercent: 18, memberThresholdRupees: 0 },
   });
   const documents = await manager.get('/api/billing/documents?asAt=2026-08-31');
   const invoice = documents.body.documents.find(d => d.state === 'tax-invoice');
@@ -2510,6 +2514,458 @@ await check('and neither can a journal entry', async () => {
     `SELECT COUNT(*) FROM journal_entries WHERE society_id = '${fixture.societyId}';`,
   );
   truthy(Number(after.out) > 5, `entries after a DELETE: ${after.out}`);
+});
+
+// --- billing defects: regressions for the accounting audit -------------------
+
+suite('billing defects');
+
+// A society of its own, so these checks start from a known, empty ledger and
+// leave the main society's figures — which every check above asserts exactly —
+// untouched. Same seed, same flats and the same ₹4.50 rate; GST starts off.
+const dStamp = randomUUID().slice(0, 8);
+const dDomain = `d${dStamp}.invalid`;
+const dSeedPool = new PgPool(connectionFromEnv(process.env));
+const dFixture = await seed(dSeedPool, {
+  name: `Billing defects society ${dStamp}`, password: PASSWORD, emailDomain: dDomain,
+});
+await dSeedPool.end();
+const dFlat = (flatNo) => {
+  const flat = dFixture.flats.find(f => f.flatNo === flatNo);
+  if (flat === undefined) throw new Error(`no seeded flat ${flatNo}`);
+  return flat;
+};
+const dManager = new Client(base);
+const dTreasurer = new Client(base);
+const dSecretary = new Client(base);
+await dManager.signIn(`manager@${dDomain}`, PASSWORD);
+await dTreasurer.signIn(`treasurer@${dDomain}`, PASSWORD);
+await dSecretary.signIn(`secretary@${dDomain}`, PASSWORD);
+const dKey = (what) => `defects-${dStamp}-${what}`;
+const { computeBillTax, creditAccountForHead, financialYearStart } = await import(`${build}/posting.js`);
+const { isoDateInIndia, canonicalPeriod } = await import('../.server-build/src/accounting/clock.js');
+
+// One flat over the ₹7,500 per-member threshold: 2,000 sq ft at 450 paise is
+// ₹9,000 of maintenance. Every other seeded flat bills under it.
+psql(`UPDATE flats SET billing_area_sqft = 2000 WHERE id = '${dFlat('C-301').id}';`);
+
+let dJuly = [];
+const dDoc = (flatNo) => {
+  const found = dJuly.find(d => d.flatNo === flatNo);
+  if (found === undefined) throw new Error(`no July document for ${flatNo}`);
+  return found;
+};
+const dOutstanding = (taxInvoiceNo) => Number(psql(
+  `SELECT COALESCE(SUM(p.debit - p.credit), 0) FROM journal_postings p
+    WHERE p.society_id = '${dFixture.societyId}' AND p.account_code = '1100'
+      AND p.doc_ref = '${taxInvoiceNo}';`,
+).out);
+
+// 1. The period, canonicalised.
+
+await check('a period typed with two spaces is stored as the one spelling', async () => {
+  const r = await dManager.post('/api/billing/run', { period: 'Jul  2026', issuedOn: '2026-07-01' });
+  equal(r.status, 201, 'status');
+  equal(r.body.period, 'Jul 2026', 'the period the run reports');
+  equal(r.body.issued.length, 10, 'documents issued');
+  dJuly = r.body.issued;
+  const stored = psql(
+    `SELECT DISTINCT period FROM billing_documents WHERE society_id = '${dFixture.societyId}';`,
+  );
+  equal(stored.out, 'Jul 2026', 'what was stored');
+});
+
+await check('and other spellings of the same month bill nobody twice', async () => {
+  for (const period of ['jul 2026', 'July 2026', ' JUL 2026 ']) {
+    const r = await dManager.post('/api/billing/run', { period, issuedOn: '2026-07-01' });
+    equal(r.status, 201, `status for "${period}"`);
+    equal(r.body.issued.length, 0, `documents issued for "${period}"`);
+    equal(r.body.skipped.length, 10, `documents skipped for "${period}"`);
+    matches(r.body.skipped[0].why, /already billed for Jul 2026/, 'reason');
+  }
+  const bad = await dManager.post('/api/billing/run', { period: 'Julyy 2026', issuedOn: '2026-07-01' });
+  equal(bad.status, 400, 'a word that only starts like a month');
+  equal(canonicalPeriod('Sept 2026'), 'Sep 2026', 'the engine rule the validator uses');
+});
+
+await check('a listing finds the month however it is typed', async () => {
+  const r = await dManager.get('/api/billing/documents?period=jul%20%202026');
+  equal(r.body.documents.length, 10, 'documents found');
+});
+
+await check('and the database refuses a second spelling from anywhere', async () => {
+  const r = psql(
+    `INSERT INTO billing_documents
+       (society_id, proforma_no, flat_id, period, estimated_tax, gross, issued_on, due_on, state)
+     VALUES ('${dFixture.societyId}', 'DUP/${dStamp}', '${dFlat('B-204').id}', 'Jul  2026', 0, 100,
+             '2026-07-01', '2026-07-01', 'draft');`,
+  );
+  truthy(!r.ok, 'the database accepted a period written with two spaces');
+  matches(r.out, /not written the one way a period is written/, 'the trigger that refused it');
+});
+
+// Low: two billing runs for one period at the same moment.
+
+await check('two concurrent runs for one period skip, rather than collide', async () => {
+  const [a, b] = await Promise.all([
+    dManager.post('/api/billing/run', { period: 'Aug 2026', issuedOn: '2026-08-01' }),
+    dManager.post('/api/billing/run', { period: 'Aug 2026', issuedOn: '2026-08-01' }),
+  ]);
+  equal(a.status, 201, 'the first run');
+  equal(b.status, 201, 'the second run, which used to fail on the unique index');
+  equal(a.body.issued.length + b.body.issued.length, 10, 'documents issued between them');
+  equal(a.body.skipped.length + b.body.skipped.length, 10, 'documents skipped between them');
+});
+
+// 5. The per-member GST threshold, and equal halves.
+
+await check('GST is set on with no threshold named, so the statutory ₹7,500 applies', async () => {
+  const set = await dSecretary.put('/api/settings/gst.treatment', {
+    value: { chargeGst: true, ratePercent: 18 },
+  });
+  equal(set.status, 200, 'setting');
+  const approve = await dTreasurer.post('/api/settings/gst.treatment/approve', { on: '2026-07-01' });
+  equal(approve.status, 200, 'sign-off');
+  // Everything approved except B-101, which stays a draft for the receipts
+  // checks below.
+  for (const document of dJuly.filter(d => d.flatNo !== 'B-101')) {
+    const r = await dTreasurer.post(`/api/billing/documents/${document.documentId}/approve`, {
+      on: '2026-07-01',
+    });
+    equal(r.status, 200, `approving ${document.flatNo}`);
+  }
+});
+
+await check('a member above the threshold pays GST on the whole amount', async () => {
+  const r = await dTreasurer.post(`/api/billing/documents/${dDoc('C-301').documentId}/convert`, {
+    on: '2026-07-16', because: 'manual',
+  });
+  equal(r.status, 200, 'status');
+  // ₹9,000 of maintenance: 9% of all of it on each half, not on the excess.
+  equal(r.body.cgst, 81_000, 'cgst');
+  equal(r.body.sgst, 81_000, 'sgst');
+  equal(r.body.gross, 900_000 + 90_000 + 162_000, 'gross');
+});
+
+await check('a member at or under it pays none, and the register records no row', async () => {
+  const b204 = dDoc('B-204');
+  const r = await dTreasurer.post(`/api/billing/documents/${b204.documentId}/convert`, {
+    on: '2026-07-16', because: 'manual',
+  });
+  equal(r.status, 200, 'status');
+  equal(r.body.cgst, 0, 'cgst on ₹4,432.50 of maintenance');
+  equal(r.body.gross, 443_250 + 44_325, 'gross');
+  const rows = psql(`SELECT COUNT(*) FROM gst_register WHERE document_id = '${b204.documentId}';`);
+  equal(rows.out, '0', 'register rows for an exempt supply');
+  const gst = await dTreasurer.get('/api/reports/gst?taxPeriod=2026-07');
+  equal(gst.body.agrees, true, 'register against ledger');
+  equal(gst.body.cgst, 81_000, 'register cgst is the one taxed member only');
+});
+
+await check('the threshold is a boundary: equal is exempt, a paisa over is taxed in full', async () => {
+  const gst = { chargeGst: true, ratePercent: 18, approved: true, memberThresholdPaise: 750_000 };
+  equal(computeBillTax([{ head: 'maintenance', amount: 750_000, taxable: true }], gst).total, 0,
+    'at ₹7,500.00');
+  const over = computeBillTax([{ head: 'maintenance', amount: 750_001, taxable: true }], gst);
+  equal(over.taxableValue, 750_001, 'the whole amount is taxable');
+  equal(over.total, 135_000, 'tax at ₹7,500.01');
+  // The sinking share is not a taxable supply and does not count towards it.
+  equal(computeBillTax([
+    { head: 'maintenance', amount: 700_000, taxable: true },
+    { head: 'sinking', amount: 70_000, taxable: false },
+  ], gst).total, 0, 'maintenance under the threshold with a sinking share on top');
+});
+
+await check('CGST and SGST are computed as equal halves, never a paisa apart', async () => {
+  // 18% of 750,005 is 135,000.9, which rounds to the odd 135,001 and used to
+  // be split 67,501 / 67,500 under an invoice printing both at 9%.
+  const tax = computeBillTax([{ head: 'maintenance', amount: 750_005, taxable: true }], {
+    chargeGst: true, ratePercent: 18, approved: true, memberThresholdPaise: 0,
+  });
+  equal(tax.cgst, 67_500, 'cgst');
+  equal(tax.sgst, 67_500, 'sgst');
+  equal(tax.total, 135_000, 'total');
+});
+
+// 4. A partly paid invoice cannot be cancelled.
+
+await check('cancelling an invoice with money against it is refused', async () => {
+  const a101 = dDoc('A-101');
+  const convert = await dTreasurer.post(`/api/billing/documents/${a101.documentId}/convert`, {
+    on: '2026-07-16', because: 'manual',
+  });
+  equal(convert.status, 200, 'the conversion');
+  const pay = await dManager.post('/api/payments', {
+    flatId: dFlat('A-101').id, amountPaise: 100_000, receivedOn: '2026-07-20', method: 'upi',
+  }, { 'Idempotency-Key': dKey('a101-part') });
+  equal(pay.status, 201, 'the part payment');
+
+  const r = await dTreasurer.post(`/api/billing/documents/${a101.documentId}/cancel`, {
+    reason: 'Raised in error.', on: '2026-07-21',
+  });
+  equal(r.status, 409, 'status');
+  matches(r.body.message, /100000 paise received or credited/, 'message');
+  const state = psql(`SELECT state FROM billing_documents WHERE id = '${a101.documentId}';`);
+  equal(state.out, 'tax-invoice', 'the invoice was left as it was');
+  equal(dOutstanding(convert.body.taxInvoiceNo), 569_250 - 100_000, 'and nothing went below zero');
+});
+
+// 2. A cancelled invoice can be replaced.
+
+await check('a cancelled invoice is replaced and the replacement posts', async () => {
+  const a102 = dDoc('A-102');
+  const convert = await dTreasurer.post(`/api/billing/documents/${a102.documentId}/convert`, {
+    on: '2026-07-16', because: 'manual',
+  });
+  equal(convert.status, 200, 'the first conversion');
+  const cancel = await dTreasurer.post(`/api/billing/documents/${a102.documentId}/cancel`, {
+    reason: 'Wrong area on file.', on: '2026-07-17',
+  });
+  equal(cancel.status, 200, 'the cancellation');
+
+  const rerun = await dManager.post('/api/billing/run', {
+    period: 'Jul 2026', issuedOn: '2026-07-01', flatIds: [dFlat('A-102').id],
+  });
+  equal(rerun.status, 201, 'the re-run');
+  equal(rerun.body.issued.length, 1, 'a replacement document');
+  const replacement = rerun.body.issued[0];
+  equal((await dTreasurer.post(`/api/billing/documents/${replacement.documentId}/approve`, {
+    on: '2026-07-17',
+  })).status, 200, 'approving the replacement');
+
+  // This is the conversion that was refused: the billing entry was keyed on
+  // flat and period, and the cancelled invoice's key was never released.
+  const r = await dTreasurer.post(`/api/billing/documents/${replacement.documentId}/convert`, {
+    on: '2026-07-18', because: 'manual',
+  });
+  equal(r.status, 200, 'the replacement converts');
+  equal(r.body.gross, 443_250 + 44_325, 'gross');
+  const key = psql(`SELECT idempotency_key FROM journal_entries WHERE id = '${r.body.entryId}';`);
+  equal(key.out, `bill:doc:${replacement.documentId}`, 'keyed on the document');
+});
+
+// 3. A payment for a proforma converts it.
+
+await check('a payment against an approved proforma converts it and settles it', async () => {
+  const a201 = dDoc('A-201');
+  const r = await dManager.post('/api/payments', {
+    flatId: dFlat('A-201').id, amountPaise: 569_250, receivedOn: '2026-07-21', method: 'neft',
+    againstDocumentId: a201.documentId,
+  }, { 'Idempotency-Key': dKey('a201-proforma') });
+  equal(r.status, 201, 'status');
+  equal(r.body.converted.length, 1, 'documents converted');
+  equal(r.body.appliedToDues, 569_250, 'applied to dues');
+  equal(r.body.heldAsAdvance, 0, 'held as advance — this was the whole payment');
+
+  const list = await dManager.get('/api/billing/documents?period=Jul%202026&asAt=2026-07-31');
+  const document = list.body.documents.find(d => d.id === a201.documentId);
+  equal(document.state, 'tax-invoice', 'state');
+  equal(document.paymentStatus, 'Paid', 'paymentStatus');
+  const because = psql(`SELECT converted_because FROM billing_documents WHERE id = '${a201.documentId}';`);
+  equal(because.out, 'payment-received', 'why it was converted');
+});
+
+await check('and without naming it, the oldest approved proforma is converted', async () => {
+  const r = await dManager.post('/api/payments', {
+    flatId: dFlat('A-202').id, amountPaise: 487_575, receivedOn: '2026-07-21', method: 'upi',
+  }, { 'Idempotency-Key': dKey('a202-proforma') });
+  equal(r.status, 201, 'status');
+  equal(r.body.converted.length, 1, 'documents converted');
+  equal(r.body.heldAsAdvance, 0, 'held as advance');
+  equal(r.body.appliedToDues, 487_575, 'applied to dues');
+});
+
+await check('but a draft is not turned into a tax invoice by a payment', async () => {
+  const b101 = dDoc('B-101');
+  const named = await dManager.post('/api/payments', {
+    flatId: dFlat('B-101').id, amountPaise: 10_000, receivedOn: '2026-07-21', method: 'upi',
+    againstDocumentId: b101.documentId,
+  }, { 'Idempotency-Key': dKey('b101-named') });
+  equal(named.status, 409, 'naming an unapproved proforma');
+  matches(named.body.message, /not been approved/, 'message');
+
+  const unnamed = await dManager.post('/api/payments', {
+    flatId: dFlat('B-101').id, amountPaise: 10_000, receivedOn: '2026-07-21', method: 'upi',
+  }, { 'Idempotency-Key': dKey('b101-unnamed') });
+  equal(unnamed.status, 201, 'status');
+  equal(unnamed.body.converted.length, 0, 'documents converted');
+  equal(unnamed.body.heldAsAdvance, 10_000, 'held as advance, visibly');
+});
+
+// 12. Receipts for one flat in different months, and credit notes, capped.
+
+await check('two receipts for one flat dated in different months cannot both spend one invoice', async () => {
+  const b102 = dDoc('B-102');
+  const convert = await dTreasurer.post(`/api/billing/documents/${b102.documentId}/convert`, {
+    on: '2026-07-16', because: 'manual',
+  });
+  equal(convert.status, 200, 'the conversion');
+  const flatId = dFlat('B-102').id;
+  const [a, b] = await Promise.all([
+    dManager.post('/api/payments', {
+      flatId, amountPaise: 569_250, receivedOn: '2026-07-25', method: 'neft',
+    }, { 'Idempotency-Key': dKey('b102-july') }),
+    dManager.post('/api/payments', {
+      flatId, amountPaise: 569_250, receivedOn: '2026-08-05', method: 'neft',
+    }, { 'Idempotency-Key': dKey('b102-august') }),
+  ]);
+  equal(a.status, 201, 'the July receipt');
+  equal(b.status, 201, 'the August receipt');
+  equal(a.body.appliedToDues + b.body.appliedToDues, 569_250, 'applied between them: the invoice once');
+  equal(a.body.heldAsAdvance + b.body.heldAsAdvance, 569_250, 'the rest on account');
+  equal(dOutstanding(convert.body.taxInvoiceNo), 0, 'the invoice is settled, not credit-side');
+});
+
+await check('a credit note on a settled invoice goes to the advance, not below zero', async () => {
+  const b102 = dDoc('B-102');
+  const before = await dManager.get(`/api/flats/${dFlat('B-102').id}/dues?asAt=2026-08-31`);
+  const r = await dTreasurer.post(`/api/billing/documents/${b102.documentId}/notes`, {
+    kind: 'credit', amountPaise: 50_000, reason: 'Lift out of service.', on: '2026-08-10',
+    withTax: false,
+  });
+  equal(r.status, 201, 'status');
+  equal(r.body.appliedToInvoicePaise, 0, 'applied to the invoice');
+  equal(r.body.heldAsAdvancePaise, 50_000, 'held as advance');
+  const after = await dManager.get(`/api/flats/${dFlat('B-102').id}/dues?asAt=2026-08-31`);
+  equal(after.body.outstandingPaise, 0, 'receivable');
+  equal(after.body.advancePaise, before.body.advancePaise + 50_000, 'advance');
+});
+
+await check('and a credit note larger than the invoice is refused', async () => {
+  const r = await dTreasurer.post(`/api/billing/documents/${dDoc('B-102').documentId}/notes`, {
+    kind: 'credit', amountPaise: 600_000, reason: 'Too much.', on: '2026-08-11', withTax: false,
+  });
+  equal(r.status, 400, 'status');
+  matches(r.body.message, /more than the 519250 paise/, 'message');
+});
+
+// 7. Tax invoices numbered by financial year.
+
+await check('an invoice in January continues its financial year\'s series', async () => {
+  equal(financialYearStart('2027-03-31'), 2026, 'the last day of FY 2026-27');
+  equal(financialYearStart('2027-04-01'), 2027, 'the first day of FY 2027-28');
+  const run = await dManager.post('/api/billing/run', {
+    period: 'Jan 2027', issuedOn: '2027-01-01', flatIds: [dFlat('B-201').id],
+  });
+  equal(run.status, 201, 'the run');
+  const document = run.body.issued[0];
+  await dTreasurer.post(`/api/billing/documents/${document.documentId}/approve`, { on: '2027-01-01' });
+  const r = await dTreasurer.post(`/api/billing/documents/${document.documentId}/convert`, {
+    on: '2027-01-10', because: 'manual',
+  });
+  equal(r.status, 200, 'status');
+  // Eight July conversions came before it in this society — the cancelled one
+  // keeps its number — all in FY 2026-27.
+  equal(r.body.taxInvoiceNo, 'MV/2026/00009', 'the next number in FY 2026-27, not MV/2027/00001');
+});
+
+// 6. A report's default start is the financial year of its end.
+
+await check('a report ending in February starts the April before, not the April after', async () => {
+  const r = await dTreasurer.get('/api/reports/income-expenditure?to=2027-02-15');
+  equal(r.status, 200, 'status — this was 400, "from is after to"');
+  equal(r.body.from, '2026-04-01', 'from');
+  const july = await dTreasurer.get('/api/reports/income-expenditure?to=2026-07-31');
+  equal(july.body.from, '2026-04-01', 'from for a date after April');
+});
+
+// 8. "Today" is India's date.
+
+await check('today is the date in India, not in UTC', async () => {
+  equal(isoDateInIndia(new Date('2026-07-31T18:29:59Z')), '2026-07-31', 'at 23:59:59 IST');
+  equal(isoDateInIndia(new Date('2026-07-31T18:30:00Z')), '2026-08-01', 'at 00:00 IST, still 31 July in UTC');
+  equal(isoDateInIndia(new Date('2027-03-31T20:00:00Z')), '2027-04-01', 'a new financial year in India');
+});
+
+// 9. TDS on the value of the service, rounded as the engine rounds.
+
+let dVendorId = null;
+
+await check('TDS is withheld on the bill less its GST', async () => {
+  const vendor = await dManager.post('/api/vendors', {
+    name: `Defects Lift Services ${dStamp}`, category: 'lift', pan: 'AAACL1234E',
+    tdsSection: '194C', payeeKind: 'company',
+  });
+  equal(vendor.status, 201, 'the vendor');
+  dVendorId = vendor.body.id;
+  const r = await dManager.post(`/api/vendors/${dVendorId}/bills`, {
+    billNo: `LS-${dStamp}-01`, billDate: '2026-07-05', expenseAccount: '5020',
+    grossPaise: 1_180_000, inputGstPaise: 180_000,
+  });
+  equal(r.status, 201, 'status');
+  // 2% of the ₹10,000 service, not of the ₹11,800 including GST (23,600).
+  equal(r.body.tdsPaise, 20_000, 'tds');
+  equal(r.body.netPayablePaise, 1_160_000, 'net payable');
+
+  equal((await dTreasurer.post(`/api/vendor-bills/${r.body.id}/approve`)).status, 200, 'approval');
+  equal((await dTreasurer.post(`/api/vendor-bills/${r.body.id}/book`, { on: '2026-07-06' })).status, 200,
+    'booking');
+  const register = psql(`SELECT gross || ' ' || tds_amount FROM tds_register WHERE bill_id = '${r.body.id}';`);
+  equal(register.out, '1000000 20000', 'the register records the amount it was deducted on');
+});
+
+await check('and rounded half-up to the paisa, as the browser engine rounds', async () => {
+  const r = await dManager.post(`/api/vendors/${dVendorId}/bills`, {
+    billNo: `LS-${dStamp}-02`, billDate: '2026-07-05', expenseAccount: '5020', grossPaise: 10_025,
+  });
+  equal(r.status, 201, 'status');
+  // 2% of 10,025 is 200.5: 201 half-up; the server's Math.floor said 200.
+  equal(r.body.tdsPaise, 201, 'tds');
+});
+
+// 10. Festival collections follow the fund treatment.
+
+await check('a festival collection is credited to the festival fund by default', async () => {
+  equal(creditAccountForHead('festival', false), '3010', 'festival, fund treatment');
+  equal(creditAccountForHead('festival', true), '4020', 'festival, through income');
+  equal(creditAccountForHead('sinking', true), '4010', 'sinking, through income');
+
+  const c302 = dDoc('C-302');
+  psql(`INSERT INTO billing_document_lines (document_id, head, amount, taxable, position)
+        VALUES ('${c302.documentId}', 'festival', 50000, false, 2);`);
+  const r = await dTreasurer.post(`/api/billing/documents/${c302.documentId}/convert`, {
+    on: '2026-07-16', because: 'manual',
+  });
+  equal(r.status, 200, 'status');
+  const legs = psql(
+    `SELECT account_code || ':' || credit FROM journal_postings
+      WHERE entry_id = '${r.body.entryId}' AND account_code IN ('3010', '4020');`,
+  );
+  equal(legs.out, '3010:50000', 'the fund, not festival income');
+});
+
+await check('and routing it through income needs a sign-off first', async () => {
+  await dSecretary.put('/api/settings/accounting.sinkingFundThroughIncome', { value: true });
+  const r = await dTreasurer.post(`/api/billing/documents/${dDoc('B-201').documentId}/convert`, {
+    on: '2026-07-16', because: 'manual',
+  });
+  equal(r.status, 409, 'status');
+  matches(r.body.message, /has not been signed off/, 'message');
+  await dSecretary.put('/api/settings/accounting.sinkingFundThroughIncome', { value: false });
+});
+
+// Low: ageing separates what is not yet due from what is overdue.
+
+await check('ageing puts an invoice on its due date in "not-due", and after it in "1-30"', async () => {
+  // C-301's July invoice, unpaid, due 2026-07-16.
+  const onDue = await dTreasurer.get('/api/reports/ageing?asAt=2026-07-16');
+  const c301 = onDue.body.rows.find(row => row.flatNo === 'C-301');
+  equal(c301.buckets[0].label, 'not-due', 'on the due date');
+  const later = await dTreasurer.get('/api/reports/ageing?asAt=2026-07-20');
+  equal(later.body.rows.find(row => row.flatNo === 'C-301').buckets[0].label, '1-30', 'four days late');
+});
+
+await check('and this society\'s books tie after all of it', async () => {
+  const tb = await dTreasurer.get('/api/reports/trial-balance?asAt=2027-03-31');
+  equal(tb.body.tiesOut, true, 'tiesOut');
+  const receivable = tb.body.lines.find(l => l.code === '1100');
+  const documents = await dManager.get('/api/billing/documents?asAt=2027-03-31');
+  equal(receivable.debit - receivable.credit,
+    documents.body.documents.reduce((sum, d) => sum + d.outstanding, 0),
+    'receivable against the sum per document');
+  for (const d of documents.body.documents) {
+    truthy(d.outstanding >= 0, `${d.proformaNo} is not credit-side (${d.outstanding})`);
+  }
 });
 
 // --- one last consistency sweep --------------------------------------------
