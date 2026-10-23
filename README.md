@@ -94,7 +94,11 @@ The GST and TDS rates are society settings with an approval flag, not constants
 in the code, and the billing path refuses to charge a tax nobody has signed
 off. Whether GST applies to maintenance at all depends on the association's
 turnover and the ₹7,500 per-member threshold — have a CA confirm the treatment
-and record the sign-off before anyone bills from this.
+and record the sign-off before anyone bills from this. Two further choices sit
+in the same `gst.treatment` setting, both off unless set: `sinkingFundTaxable`
+(the Sinking Fund line carries GST at the maintenance rate, and the threshold is
+tested on maintenance plus sinking fund) and `roundToRupee` (CGST and SGST are
+each rounded to the nearest rupee, half up, per invoice and per note).
 
 In the demonstration, residents, flats and amounts are invented placeholders on
 the `.invalid` domain, and documents generated from it are marked

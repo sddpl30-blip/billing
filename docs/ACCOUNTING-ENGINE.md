@@ -68,7 +68,14 @@ Both live in `config.ts` with no safe default, and
 `assertConfigReviewed` throws until a CA has signed the config off:
 
 1. **Whether GST applies to maintenance at all**, which turns on the
-   association's turnover and the ₹7,500 per-member threshold.
+   association's turnover and the ₹7,500 per-member threshold. Two
+   refinements are optional config fields, off when absent:
+   `gstSinkingFundTaxable` taxes the sinking-fund line at the maintenance rate
+   and counts it towards the threshold (the test is on the member's whole
+   taxable contribution), and `gstRoundToRupee` rounds each of CGST and SGST
+   to the nearest rupee, half up, from the exact figure — still equal halves.
+   They mirror the server's `gst.treatment` fields `sinkingFundTaxable` and
+   `roundToRupee`; `gstOnContribution` applies both rules for both engines.
 2. **Whether sinking fund contributions go through income** and are then
    appropriated, or are credited to the fund directly. Both are used in
    practice and they give different surpluses and different balance sheets.
