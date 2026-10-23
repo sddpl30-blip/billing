@@ -43,7 +43,7 @@
     "db:status:node": "node server/migrate-node.mjs status",
     "test:serverless": "node scripts/server.mjs build && node server/serverless.test.mjs",
     "test:server:serverless": "node scripts/server.mjs build && SB_TEST_TRANSPORT=serverless node server/api.test.mjs",
-    "test:deploy": "node server/deploy.test.mjs"
+    "test:deploy": "node scripts/server.mjs build && node server/deploy.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.546.0",

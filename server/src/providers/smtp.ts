@@ -295,8 +295,10 @@ export function smtpSettingsFromEnv(
     host: host.trim(),
     port,
     implicitTls: env.SMTP_IMPLICIT_TLS === undefined ? port === 465 : env.SMTP_IMPLICIT_TLS === 'true',
-    ...(env.SMTP_USER === undefined ? {} : { user: env.SMTP_USER }),
-    ...(env.SMTP_PASSWORD === undefined ? {} : { password: env.SMTP_PASSWORD }),
+    // Empty counts as unset: compose and systemd pass an unset variable through
+    // as an empty string, and AUTH with an empty user is not "no AUTH".
+    ...(env.SMTP_USER === undefined || env.SMTP_USER === '' ? {} : { user: env.SMTP_USER }),
+    ...(env.SMTP_PASSWORD === undefined || env.SMTP_PASSWORD === '' ? {} : { password: env.SMTP_PASSWORD }),
     from,
     ...(env.SMTP_FROM_NAME === undefined ? {} : { fromName: env.SMTP_FROM_NAME }),
     timeoutMs: Number(env.SMTP_TIMEOUT_MS ?? '20000'),

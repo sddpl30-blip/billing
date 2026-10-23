@@ -449,7 +449,7 @@ the edge rather than through the middle. `createApp` returned a plain
 `(req, res)` handler all along; the standalone entry point wrapped it in
 `createServer`.
 
-* **`api/[...path].ts`** — the one function, twenty lines. Everything under
+* **`api/[...path].js`** — the one function, twenty lines. Everything under
   `/api/` arrives here.
 * **`server/src/serverless.ts`** — the adapter: builds the app once per
   instance, hands the platform's request to the same handler, and answers a

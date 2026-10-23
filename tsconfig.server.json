@@ -23,7 +23,7 @@
     "rootDir": ".",
     "types": []
   },
-  "include": ["server/src/**/*.ts", "src/accounting/**/*.ts", "api/**/*.ts"],
+  "include": ["server/src/**/*.ts", "src/accounting/**/*.ts"],
   "exclude": [
     "src/accounting/selftest.ts",
     "src/accounting/integration.test.ts",

@@ -84,11 +84,20 @@ services:
       # Required: the server refuses to start in production without it.
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET, e.g. openssl rand -hex 32}
       SECURE_COOKIES: ${SECURE_COOKIES:-true}
-      # NOT CONNECTED. 'none' makes the server decline to issue codes rather
-      # than log them, which is the only safe setting with no provider behind
-      # it. 'local-dev' is refused in production on purpose.
-      OTP_PROVIDER: none
-      EMAIL_PROVIDER: none
+      # nginx in the web container is the only way in, and it sets
+      # X-Forwarded-For to the real caller. Without this every request seems
+      # to come from nginx, and ten wrong passwords lock out the society.
+      TRUST_PROXY: "true"
+      # 'none' makes the server decline to issue codes rather than log them.
+      # For sign-in by email set OTP_PROVIDER=email with EMAIL_PROVIDER=smtp
+      # and the SMTP_* variables. 'local-dev' is refused in production.
+      OTP_PROVIDER: ${OTP_PROVIDER:-none}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-none}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
       LOG_LEVEL: info
     # Not published. The web container reaches it on the compose network, and
     # an API on a public port with no TLS in front of it is a session cookie

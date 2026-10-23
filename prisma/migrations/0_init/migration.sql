@@ -26,7 +26,7 @@
 -- applied has since changed. This file ends by recording the same rows, so a
 -- database created from it is consistent with the runner too.
 --
--- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql
+-- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 008_security_hardening.sql
 
 -- ====================================================================
 -- 001_initial.sql
@@ -1385,6 +1385,44 @@ COMMIT;
 
 
 -- ====================================================================
+-- 008_security_hardening.sql
+-- ====================================================================
+
+-- Migration 008: maker-checker on rates and settings, and job keys per society.
+--
+-- A rate or a society setting was approved by "someone with rate.approve",
+-- with nothing to say who had entered it. One account holding both roles
+-- could type a GST treatment and then sign it off. Each row now records who
+-- proposed it, and the database refuses an approval by that same person.
+--
+-- Scheduled jobs were unique on (kind, run_key) across every society, so one
+-- society could claim another's run key first and make its schedule fail.
+-- The key now includes the society. NULLS NOT DISTINCT keeps the old
+-- behaviour for jobs that belong to no society (PostgreSQL 15 and later).
+
+BEGIN;
+
+ALTER TABLE maintenance_rates
+  ADD COLUMN requested_by UUID REFERENCES users(id) ON DELETE RESTRICT;
+ALTER TABLE maintenance_rates
+  ADD CONSTRAINT maintenance_rates_maker_is_not_checker
+  CHECK (requested_by IS NULL OR approved_by IS NULL OR requested_by <> approved_by);
+
+ALTER TABLE society_settings
+  ADD COLUMN requested_by UUID REFERENCES users(id) ON DELETE RESTRICT;
+ALTER TABLE society_settings
+  ADD CONSTRAINT society_settings_maker_is_not_checker
+  CHECK (requested_by IS NULL OR approved_by IS NULL OR requested_by <> approved_by);
+
+ALTER TABLE scheduled_jobs DROP CONSTRAINT scheduled_jobs_kind_run_key_key;
+ALTER TABLE scheduled_jobs
+  ADD CONSTRAINT scheduled_jobs_society_kind_run_key_key
+  UNIQUE NULLS NOT DISTINCT (society_id, kind, run_key);
+
+COMMIT;
+
+
+-- ====================================================================
 -- The runner's own record, so both migration tools agree about this database.
 -- ====================================================================
 
@@ -1394,5 +1432,6 @@ INSERT INTO schema_migrations (version, checksum) VALUES
   ('003_domain.sql', 'f97899b9f2e1f9be'),
   ('004_fix_allocation_guard.sql', '7105ca6dc003e7c5'),
   ('005_login_identity.sql', 'eb89c1fd5be6f0ed'),
-  ('006_gst_register_notes.sql', '411b78307f3d1e99')
+  ('006_gst_register_notes.sql', '411b78307f3d1e99'),
+  ('008_security_hardening.sql', '8834e5fcb5e17160')
 ON CONFLICT (version) DO NOTHING;

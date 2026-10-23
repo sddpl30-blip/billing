@@ -19,7 +19,7 @@ RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
 COPY tsconfig.server.json ./
 COPY server ./server
 COPY src/accounting ./src/accounting
-COPY scripts/server.mjs ./scripts/server.mjs
+COPY scripts/server.mjs scripts/load-env.mjs ./scripts/
 RUN node scripts/server.mjs build
 
 FROM node:22-bookworm-slim AS runtime
@@ -35,6 +35,8 @@ RUN apt-get update \
 COPY --from=build /app/.server-build ./.server-build
 COPY server/migrations ./server/migrations
 COPY server/migrate.mjs ./server/migrate.mjs
+# migrate.mjs reads .env through this; without it the migrate service crashes.
+COPY scripts/load-env.mjs ./scripts/load-env.mjs
 COPY package.json ./
 
 # Not root. A process that only needs to read its own code and talk to a

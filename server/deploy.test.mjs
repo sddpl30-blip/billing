@@ -67,31 +67,41 @@ check('there is exactly one function, and it is a catch-all', () => {
   const files = readdirSync(join(root, 'api'));
   equal(files.length, 1, `files in api/: ${files.join(', ')}`);
   // A function per endpoint would multiply cold starts and connection pools.
-  matches(files[0], /^\[\.\.\..+\]\.ts$/, 'the one file is a catch-all');
+  matches(files[0], /^\[\.\.\..+\]\.js$/, 'the one file is a catch-all');
 });
 
-check('the function is type-checked by the server build', () => {
-  // It was not, at first: no tsconfig included api/, so a typo in the one
-  // file the whole deployment goes through would have been found by Vercel
-  // and by nothing before it.
-  const config = JSON.parse(read('tsconfig.server.json').replace(/^\s*\/\/.*$/gm, ''));
-  truthy(
-    (config.include ?? []).some(pattern => pattern.startsWith('api/')),
-    `tsconfig.server.json includes the function: ${JSON.stringify(config.include)}`,
-  );
+check('the build command compiles the server the function imports', () => {
+  // The function imports .server-build; a deployment that only ran the Vite
+  // build would ship an entry point whose import does not exist.
+  matches(config.buildCommand, /server:build/, `buildCommand: ${config.buildCommand}`);
+});
+
+// package.json says "type": "module". A .ts entry importing the server's
+// extensionless sources compiled to ESM and failed on the platform with
+// ERR_MODULE_NOT_FOUND; this imports the real entry the way Node will.
+let loadedEntry;
+try {
+  const { pathToFileURL } = await import('node:url');
+  loadedEntry = await import(pathToFileURL(join(root, 'api', '[...path].js')).href);
+} catch (err) {
+  loadedEntry = err;
+}
+check('the function loads as an ES module', () => {
+  if (loadedEntry instanceof Error) throw loadedEntry;
+  equal(typeof loadedEntry.default, 'function', 'the default export is the handler');
 });
 
 check('the function delegates to the shared wiring', () => {
-  const entry = read('api/[...path].ts');
+  const entry = read('api/[...path].js');
   matches(entry, /createServerlessHandler/, 'it uses the adapter');
-  matches(entry, /server\/src\/serverless/, 'from the server, not a copy of it');
+  matches(entry, /\.server-build\/server\/src\/serverless\.js/, 'from the built server, not a copy of it');
   // Anything else in here is a second implementation of the thing that is
   // already tested.
   equal(/createApp|createRoutes|PgPool/.test(entry), false, 'and wires nothing itself');
 });
 
 check('the function never runs migrations and never starts the worker', () => {
-  const entry = read('api/[...path].ts');
+  const entry = read('api/[...path].js');
   const adapter = read('server/src/serverless.ts');
   for (const [where, text] of [['the entry point', entry], ['the adapter', adapter]]) {
     equal(/migrate|schema_migrations/.test(text), false, `${where} does not migrate`);

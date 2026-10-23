@@ -56,7 +56,9 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
+# MemoryDenyWriteExecute is deliberately absent: Node's JIT compiler needs
+# memory that is written and then executed, and with it set the process is
+# killed at startup.
 SystemCallArchitectures=native
 CapabilityBoundingSet=
 AmbientCapabilities=

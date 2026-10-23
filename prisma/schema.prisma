@@ -106,6 +106,8 @@ model SocietySetting {
   /// use an unapproved tax treatment rather than defaulting to one.
   approvedBy String?  @map("approved_by") @db.Uuid
   approvedOn DateTime? @map("approved_on") @db.Date
+  // Who proposed the value; the approver must be someone else (migration 008).
+  requestedBy String? @map("requested_by") @db.Uuid
   updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz
   note       String?
 
@@ -455,6 +457,8 @@ model MaintenanceRate {
   /// to use it. That refusal is the point.
   approvedBy        String?  @map("approved_by") @db.Uuid
   approvedOn        DateTime? @map("approved_on") @db.Date
+  // Who entered the rate; the approver must be someone else (migration 008).
+  requestedBy       String?  @map("requested_by") @db.Uuid
 
   society  Society @relation(fields: [societyId], references: [id])
   approver User?   @relation(fields: [approvedBy], references: [id])
@@ -1375,7 +1379,8 @@ model ScheduledJob {
 
   society Society? @relation(fields: [societyId], references: [id])
 
-  @@unique([kind, runKey])
+  // NULLS NOT DISTINCT in the database (migration 008).
+  @@unique([societyId, kind, runKey])
   @@map("scheduled_jobs")
 }
 

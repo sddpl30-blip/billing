@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # The app, the engine and every server suite, against a real Postgres.
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sb
+          POSTGRES_PASSWORD: sb
+          POSTGRES_DB: sb
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sb"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: sb
+      PGPASSWORD: sb
+      PGDATABASE: sb
+      SESSION_SECRET: ci-only-secret-0123456789abcdef0123456789
+      SEED_PASSWORD: ci-only-seed-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - run: npm run db:migrate:node
+      - run: npm run test:backend
+
+  # The two Playwright suites: the engine and stores in a real browser.
+  browser:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sb
+          POSTGRES_PASSWORD: sb
+          POSTGRES_DB: sb
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sb"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: sb
+      PGPASSWORD: sb
+      PGDATABASE: sb
+      SESSION_SECRET: ci-only-secret-0123456789abcdef0123456789
+      SEED_PASSWORD: ci-only-seed-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Not a devDependency (the suites find it wherever it is installed), so
+      # CI installs it without touching the lockfile.
+      - run: npm install --no-save playwright@1.56.1
+      - run: npx playwright install --with-deps chromium
+      - run: npm run db:migrate:node
+      - run: npm run test:frontend
+      - run: npm run test:browser
+
+  # Both images build. Nothing has ever proved they do until this.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f Dockerfile -t societybooks-api .
+      - run: docker build -f Dockerfile.web -t societybooks-web .

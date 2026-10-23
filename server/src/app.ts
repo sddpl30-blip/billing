@@ -78,8 +78,8 @@ export function buildApp(
   const poolMax = Number(env.DB_POOL_MAX ?? (config.platform === 'vercel' ? '2' : '8'));
   const pool = new PgPool(connectionFromEnv(env), poolMax);
 
-  const otp = options.otp ?? resolveOtpProvider(config.otpProvider, log);
   const email = options.email ?? resolveEmailProvider(config.emailProvider, log, env);
+  const otp = options.otp ?? resolveOtpProvider(config.otpProvider, log, email);
   const bankApi = unconfiguredBankApi();
 
   const auth = new AuthService(pool, config, log, otp);

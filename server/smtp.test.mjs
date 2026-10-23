@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 
 const build = '../.server-build/server/src';
 const { smtpProvider, SmtpError } = await import(`${build}/providers/smtp.js`);
+const { emailOtpProvider } = await import(`${build}/providers/otp.js`);
 
 // --- certificate, and the one re-exec ---------------------------------------
 
@@ -307,6 +308,20 @@ await check('a message is delivered, in the right order, and comes back with the
     matches(server.messages[0], /^To: owner@flat\.localhost/m, 'the To header');
     matches(server.messages[0], /^Message-ID: </m, 'a Message-ID');
     matches(server.messages[0], /Maintenance invoice for July 2026/, 'the subject');
+  });
+});
+
+await check('a one-time sign-in code goes out by email through the same client', async () => {
+  // OTP_PROVIDER=email: what a member signing in actually receives.
+  await against({}, async (port, server) => {
+    const otp = emailOtpProvider(smtpProvider(settings(port), quiet));
+    equal(otp.delivers, true, 'delivers when the email provider does');
+    const delivery = await otp.send({ to: 'owner@flat.localhost', code: '482913', expiresInMinutes: 10 });
+    matches(delivery.providerMessageId, /FAKE-QUEUE/, 'the queue id is the evidence');
+    equal(server.messages.length, 1, 'one message arrived');
+    matches(server.messages[0], /Your sign-in code/, 'the subject');
+    matches(server.messages[0], /482913/, 'the code');
+    matches(server.messages[0], /expires in 10 minutes/, 'how long it lasts');
   });
 });
 

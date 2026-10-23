@@ -6,6 +6,5 @@ browser-test/
 docs/
 prisma/
 .storage/
-.server-build/
 .browser-build/
 .accounting-build/

@@ -37,7 +37,7 @@ export interface Config {
   readonly secretKey: string;
   /** Whether cookies carry Secure. False only for local http development. */
   readonly secureCookies: boolean;
-  readonly otpProvider: 'local-dev' | 'none';
+  readonly otpProvider: 'local-dev' | 'none' | 'email';
   /**
    * 'smtp' is the one that sends. It needs SMTP_HOST and SMTP_FROM, and
    * credentials where the server requires them; without SMTP_HOST the server
@@ -119,8 +119,17 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   }
 
   const otpProvider = (env.OTP_PROVIDER ?? (isProduction ? 'none' : 'local-dev'));
-  if (otpProvider !== 'local-dev' && otpProvider !== 'none') {
-    throw new ConfigError(`OTP_PROVIDER must be local-dev or none, got "${otpProvider}"`);
+  if (otpProvider !== 'local-dev' && otpProvider !== 'none' && otpProvider !== 'email') {
+    throw new ConfigError(`OTP_PROVIDER must be email, local-dev or none, got "${otpProvider}"`);
+  }
+  if (isProduction && otpProvider === 'email' && (env.EMAIL_PROVIDER ?? 'none') !== 'smtp') {
+    // Codes by email through an email provider that sends nothing would leave
+    // every member unable to sign in, quietly.
+    throw new ConfigError(
+      'OTP_PROVIDER=email sends codes through the email provider, and EMAIL_PROVIDER is not ' +
+      'smtp. Configure SMTP (EMAIL_PROVIDER=smtp, SMTP_HOST, SMTP_FROM) or choose another ' +
+      'OTP provider.',
+    );
   }
   if (isProduction && otpProvider === 'local-dev') {
     throw new ConfigError(

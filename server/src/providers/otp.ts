@@ -1,8 +1,9 @@
 /**
  * One-time code delivery.
  *
- * ── NOT CONNECTED ───────────────────────────────────────────────────────────
- * No real provider is integrated. `localDevProvider` writes the code to the
+ * `emailOtpProvider` (OTP_PROVIDER=email) sends the code through the configured
+ * email provider, so with EMAIL_PROVIDER=smtp members sign in from their inbox.
+ * No SMS provider is integrated. `localDevProvider` writes the code to the
  * log and returns a fake message id; it is refused in production by
  * `loadConfig`, which will not start with OTP_PROVIDER=local-dev there.
  *
@@ -14,7 +15,6 @@
  * message id from `send`, and register it in `resolveOtpProvider`. The message
  * id is what makes "sent" mean anything — nothing in this system records a
  * delivery it cannot evidence.
- * ────────────────────────────────────────────────────────────────────────────
  */
 
 import type { Logger } from '../logger';
@@ -75,6 +75,44 @@ export function noneOtpProvider(): OtpProvider {
   };
 }
 
-export function resolveOtpProvider(which: 'local-dev' | 'none', log: Logger): OtpProvider {
+/**
+ * Sends the code by email, through whichever email provider is configured.
+ *
+ * The member's address is already what they sign in with, so this needs no
+ * second provider: with EMAIL_PROVIDER=smtp a code reaches the member's inbox,
+ * and it delivers exactly when the email provider does.
+ */
+export function emailOtpProvider(email: {
+  readonly name: string;
+  readonly delivers: boolean;
+  send(message: { to: string; subject: string; text: string }): Promise<{ provider: string; providerMessageId: string }>;
+}): OtpProvider {
+  return {
+    name: `email:${email.name}`,
+    delivers: email.delivers,
+    async send({ to, code, expiresInMinutes }) {
+      const delivery = await email.send({
+        to,
+        subject: 'Your sign-in code',
+        text:
+          `Your sign-in code is ${code}.\n\n` +
+          `It can be used once and expires in ${expiresInMinutes} minutes. ` +
+          'If you did not ask to sign in, ignore this email; nobody can use the code without ' +
+          'access to this inbox.',
+      });
+      return { provider: delivery.provider, providerMessageId: delivery.providerMessageId };
+    },
+  };
+}
+
+export function resolveOtpProvider(
+  which: 'local-dev' | 'none' | 'email',
+  log: Logger,
+  email?: Parameters<typeof emailOtpProvider>[0],
+): OtpProvider {
+  if (which === 'email') {
+    if (email === undefined) throw new ProviderNotConfiguredError('email for one-time codes');
+    return emailOtpProvider(email);
+  }
   return which === 'local-dev' ? localDevOtpProvider(log) : noneOtpProvider();
 }
