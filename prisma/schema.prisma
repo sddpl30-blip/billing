@@ -57,6 +57,11 @@ model Society {
   /// GSTIN on a tax invoice is a legal assertion.
   gstin                   String?
   stateCode               String?     @map("state_code")
+  /// Tax deduction account number, four letters, five digits and a letter.
+  tan                     String?
+  address                 String?
+  contactEmail            String?     @map("contact_email")
+  contactPhone            String?     @map("contact_phone")
   financialYearStartMonth Int         @default(4) @map("financial_year_start_month") @db.SmallInt
   createdAt               DateTime    @default(now()) @map("created_at") @db.Timestamptz
 
@@ -94,6 +99,7 @@ model Society {
   auditLog          AuditLogEntry[]
   gstRegister       GstRegisterRow[]
   tdsRegister       TdsRegisterRow[]
+  openingBatches    OpeningBalanceBatch[]
 
   @@map("societies")
 }
@@ -162,6 +168,7 @@ model Flat {
   virtualAccounts  VirtualAccount[]
   tickets          Ticket[]
   contributions    EventContribution[]
+  openingLines     OpeningBalanceFlatLine[]
 
   @@unique([societyId, flatNo])
   @@map("flats")
@@ -260,6 +267,9 @@ model User {
   periodsReopened  FinancialPeriod[]  @relation("periodReopener")
   auditEntries     AuditLogEntry[]
   rolesGranted     UserRole[]         @relation("roleGranter")
+  openingPrepared  OpeningBalanceBatch[] @relation("openingPreparer")
+  openingApproved  OpeningBalanceBatch[] @relation("openingApprover")
+  openingReversed  OpeningBalanceBatch[] @relation("openingReverser")
 
   @@unique([societyId, email])
   @@map("users")
@@ -339,6 +349,8 @@ model Account {
   headsAsFund       ReceiptHead[]     @relation("headFund")
   vendorBills       VendorBill[]
   bankAccounts      BankAccount[]
+  openingLines      OpeningBalanceAccountLine[] @relation("openingLineAccount")
+  openingExpenses   OpeningBalanceAccountLine[] @relation("openingLineExpense")
 
   @@id([societyId, code])
   @@map("accounts")
@@ -411,6 +423,8 @@ model JournalEntry {
   vendorPaymentsPosted VendorPayment[]
   eventExpenses      EventExpense[]
   tdsRemittances     TdsRegisterRow[]
+  openingPosted      OpeningBalanceBatch[] @relation("openingEntry")
+  openingReversals   OpeningBalanceBatch[] @relation("openingReversalEntry")
 
   @@unique([societyId, idempotencyKey])
   @@unique([societyId, entryRef])
@@ -507,9 +521,14 @@ model BillingDocument {
   postedEntryId    String?           @map("posted_entry_id") @db.Uuid
   cancelledBy      String?           @map("cancelled_by") @db.Uuid
   cancelledReason  String?           @map("cancelled_reason")
+  /// Set on a flat's opening due brought forward at cut-over: a receivable
+  /// carried in, not a supply, so it has no GST and no GST register row.
+  openingBatchId   String?           @map("opening_batch_id") @db.Uuid
 
   society     Society                @relation(fields: [societyId], references: [id])
   flat        Flat                   @relation(fields: [flatId], references: [id])
+  openingBatch OpeningBalanceBatch?  @relation(fields: [openingBatchId], references: [id])
+  openingLines OpeningBalanceFlatLine[]
   approver    User?                  @relation("documentApprover", fields: [approvedBy], references: [id])
   canceller   User?                  @relation("documentCanceller", fields: [cancelledBy], references: [id])
   postedEntry JournalEntry?          @relation(fields: [postedEntryId], references: [id])
@@ -741,6 +760,7 @@ model Vendor {
   payments  VendorPayment[]
   tickets   Ticket[]
   tdsRows   TdsRegisterRow[]
+  openingLines OpeningBalanceAccountLine[]
 
   @@unique([societyId, name])
   @@map("vendors")
@@ -788,9 +808,13 @@ model VendorBill {
   approvedBy     String?         @map("approved_by") @db.Uuid
   rejectedReason String?         @map("rejected_reason")
   postedEntryId  String?         @map("posted_entry_id") @db.Uuid
+  /// Set on a vendor payable brought forward at cut-over.
+  openingBatchId String?         @map("opening_batch_id") @db.Uuid
 
   society     Society          @relation(fields: [societyId], references: [id])
   vendor      Vendor           @relation(fields: [vendorId], references: [id])
+  openingBatch OpeningBalanceBatch? @relation(fields: [openingBatchId], references: [id])
+  openingLines OpeningBalanceAccountLine[]
   account     Account          @relation(fields: [societyId, expenseAccount], references: [societyId, code])
   approver    User?            @relation(fields: [approvedBy], references: [id])
   postedEntry JournalEntry?    @relation(fields: [postedEntryId], references: [id])
@@ -1414,4 +1438,99 @@ model RateLimitBucket {
 
   @@id([subjectHash, action, windowStart])
   @@map("rate_limit_buckets")
+}
+
+// ---------------------------------------------------------------------------
+// Opening balances (migration 010)
+// ---------------------------------------------------------------------------
+
+enum OpeningBatchState {
+  draft
+  posted
+  reversed
+  discarded
+}
+
+/// The society's position on the day before it went live, entered by one
+/// office-bearer and approved (which posts it) by another. A partial unique
+/// index allows one draft-or-posted batch per society, and CHECKs forbid the
+/// preparer approving and require a posted batch to balance — none of which
+/// Prisma can express.
+model OpeningBalanceBatch {
+  id              String            @id @default(uuid()) @db.Uuid
+  societyId       String            @map("society_id") @db.Uuid
+  batchNo         Int               @map("batch_no") @db.SmallInt
+  asAt            DateTime          @map("as_at") @db.Date
+  state           OpeningBatchState @default(draft)
+  autoBalance     Boolean           @default(false) @map("auto_balance")
+  note            String?
+  preparedBy      String            @map("prepared_by") @db.Uuid
+  preparedAt      DateTime          @default(now()) @map("prepared_at") @db.Timestamptz
+  approvedBy      String?           @map("approved_by") @db.Uuid
+  approvedAt      DateTime?         @map("approved_at") @db.Timestamptz
+  postedEntryId   String?           @map("posted_entry_id") @db.Uuid
+  totalDebit      BigInt?           @map("total_debit")
+  totalCredit     BigInt?           @map("total_credit")
+  reversedBy      String?           @map("reversed_by") @db.Uuid
+  reversedAt      DateTime?         @map("reversed_at") @db.Timestamptz
+  reversalEntryId String?           @map("reversal_entry_id") @db.Uuid
+  reversalReason  String?           @map("reversal_reason")
+
+  society       Society                     @relation(fields: [societyId], references: [id])
+  preparer      User                        @relation("openingPreparer", fields: [preparedBy], references: [id])
+  approver      User?                       @relation("openingApprover", fields: [approvedBy], references: [id])
+  reverser      User?                       @relation("openingReverser", fields: [reversedBy], references: [id])
+  postedEntry   JournalEntry?               @relation("openingEntry", fields: [postedEntryId], references: [id])
+  reversalEntry JournalEntry?               @relation("openingReversalEntry", fields: [reversalEntryId], references: [id])
+  flatLines     OpeningBalanceFlatLine[]
+  accountLines  OpeningBalanceAccountLine[]
+  documents     BillingDocument[]
+  vendorBills   VendorBill[]
+
+  @@unique([societyId, batchNo])
+  @@map("opening_balance_batches")
+}
+
+/// What one flat brought in: a due or an advance, never both (a CHECK).
+model OpeningBalanceFlatLine {
+  id         BigInt    @id @default(autoincrement())
+  batchId    String    @map("batch_id") @db.Uuid
+  flatId     String    @map("flat_id") @db.Uuid
+  due        BigInt    @default(0)
+  advance    BigInt    @default(0)
+  dueSince   DateTime? @map("due_since") @db.Date
+  documentId String?   @map("document_id") @db.Uuid
+
+  batch    OpeningBalanceBatch @relation(fields: [batchId], references: [id])
+  flat     Flat                @relation(fields: [flatId], references: [id])
+  document BillingDocument?    @relation(fields: [documentId], references: [id])
+
+  @@unique([batchId, flatId])
+  @@index([batchId])
+  @@map("opening_balance_flat_lines")
+}
+
+/// One society-level balance, or one vendor bill owed at cut-over.
+model OpeningBalanceAccountLine {
+  id             BigInt  @id @default(autoincrement())
+  batchId        String  @map("batch_id") @db.Uuid
+  societyId      String  @map("society_id") @db.Uuid
+  accountCode    String  @map("account_code")
+  debit          BigInt  @default(0)
+  credit         BigInt  @default(0)
+  vendorId       String? @map("vendor_id") @db.Uuid
+  reference      String?
+  expenseAccount String? @map("expense_account")
+  memo           String?
+  isBalancing    Boolean @default(false) @map("is_balancing")
+  vendorBillId   String? @map("vendor_bill_id") @db.Uuid
+
+  batch      OpeningBalanceBatch @relation(fields: [batchId], references: [id])
+  account    Account             @relation("openingLineAccount", fields: [societyId, accountCode], references: [societyId, code])
+  expense    Account?            @relation("openingLineExpense", fields: [societyId, expenseAccount], references: [societyId, code])
+  vendor     Vendor?             @relation(fields: [vendorId], references: [id])
+  vendorBill VendorBill?         @relation(fields: [vendorBillId], references: [id])
+
+  @@index([batchId])
+  @@map("opening_balance_account_lines")
 }

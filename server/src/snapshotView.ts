@@ -357,7 +357,10 @@ export async function buildSnapshot(
   const sequence = await tx.query<{ highest: string | null }>(
     `SELECT MAX(NULLIF(regexp_replace(tax_invoice_no, '^.*/', ''), '')::int)::text AS highest
        FROM billing_documents
-      WHERE society_id = $1 AND tax_invoice_no IS NOT NULL`,
+      WHERE society_id = $1 AND tax_invoice_no IS NOT NULL
+        -- An opening due brought forward is numbered in its own OB/ series
+        -- and is not a tax invoice the register continues from.
+        AND opening_batch_id IS NULL`,
     [societyId],
   );
 

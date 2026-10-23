@@ -19,6 +19,7 @@ import { createAdminRoutes } from './routesAdmin';
 import { createCronRoutes } from './routesCron';
 import { createSetupRoutes } from './routesSetup';
 import { createScheduleRoutes } from './routesSchedule';
+import { createOnboardingRoutes } from './routesOnboarding';
 import { AuthService } from './auth';
 import { resolveOtpProvider, type OtpProvider } from './providers/otp';
 import { resolveEmailProvider, type EmailProvider } from './providers/email';
@@ -89,6 +90,7 @@ export function buildApp(
   const routes = [
     ...createRoutes({ pool, config, log, auth, email, bankApi }),
     ...createAdminRoutes({ pool, config, log, email }),
+    ...createOnboardingRoutes({ pool, config, log }),
     // The scheduler's own endpoints. Present everywhere, closed unless
     // CRON_SECRET is set, so the standalone server and the serverless
     // deployment run the same routes.

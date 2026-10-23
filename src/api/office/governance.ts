@@ -218,3 +218,162 @@ export async function listVendors(client: ApiClient): Promise<VendorOption[]> {
   const body = await client.get<{ vendors: VendorOption[] }>('/api/vendors');
   return body.vendors;
 }
+
+// --- going live: the member list from a CSV ------------------------------
+
+/** The import's columns, in the order the template writes them. */
+export const FLAT_IMPORT_COLUMNS = [
+  'flat_no', 'tower', 'floor', 'area_sqft', 'area_basis',
+  'owner_name', 'owner_email', 'owner_mobile',
+  'co_owner_name', 'co_owner_email', 'owner_pan',
+] as const;
+
+export interface FlatImportReport {
+  readonly dryRun: boolean;
+  readonly committed: boolean;
+  readonly rows: number;
+  readonly columns: readonly string[];
+  readonly ignoredColumns: readonly string[];
+  readonly defaultAreaBasis: AreaBasis;
+  readonly flats: { readonly new: number; readonly updated: number; readonly unchanged: number };
+  readonly accounts: { readonly created: number; readonly linked: number };
+  readonly errors: ReadonlyArray<{ line: number; flatNo?: string; message: string }>;
+  readonly changes: ReadonlyArray<{ line: number; flatNo: string; action: 'new' | 'updated' | 'unchanged'; what: readonly string[] }>;
+}
+
+export function importFlats(
+  client: ApiClient, csv: string, dryRun: boolean, filename?: string,
+): Promise<FlatImportReport> {
+  return client.post('/api/flats/import', filename === undefined ? { csv, dryRun } : { csv, dryRun, filename });
+}
+
+// --- going live: opening balances -----------------------------------------
+
+export interface OpeningAccountLine {
+  readonly accountCode: string;
+  readonly debitPaise: number;
+  readonly creditPaise: number;
+  readonly vendorId?: string | null;
+  readonly reference?: string | null;
+  readonly expenseAccount?: string | null;
+  readonly memo?: string | null;
+}
+
+export interface OpeningFlatLine {
+  readonly flatNo: string;
+  readonly duePaise: number;
+  readonly advancePaise: number;
+  readonly dueSince?: string | null;
+}
+
+export interface OpeningPlan {
+  readonly asAt: string;
+  readonly autoBalance: boolean;
+  readonly flats: ReadonlyArray<OpeningFlatLine & { flatId: string }>;
+  readonly accounts: ReadonlyArray<OpeningAccountLine & { accountName: string; vendorName?: string; isBalancing: boolean }>;
+  readonly totals: {
+    readonly duePaise: number; readonly advancePaise: number;
+    readonly debitPaise: number; readonly creditPaise: number; readonly differencePaise: number;
+  };
+  readonly errors: ReadonlyArray<{ part: 'flats' | 'accounts' | 'batch'; line?: number; message: string }>;
+  readonly blockers: readonly string[];
+}
+
+export interface OpeningBatch {
+  readonly id: string;
+  readonly batchNo: number;
+  readonly asAt: string;
+  readonly state: 'draft' | 'posted' | 'reversed' | 'discarded';
+  readonly autoBalance: boolean;
+  readonly note: string | null;
+  readonly preparedBy: string;
+  readonly preparedAt: string;
+  readonly approvedBy: string | null;
+  readonly approvedAt: string | null;
+  readonly postedEntryId: string | null;
+  readonly reversedBy: string | null;
+  readonly reversedAt: string | null;
+  readonly reversalReason: string | null;
+}
+
+export interface OpeningView {
+  readonly current: (OpeningBatch & { plan: OpeningPlan }) | null;
+  readonly history: readonly OpeningBatch[];
+  readonly accounts: ReadonlyArray<{ code: string; name: string; class: string; control: string | null }>;
+  readonly expenseAccounts: ReadonlyArray<{ code: string; name: string }>;
+  readonly balancingAccount: string;
+  readonly canPrepare: boolean;
+  readonly canApprove: boolean;
+  readonly you: string;
+}
+
+export function readOpening(client: ApiClient): Promise<OpeningView> {
+  return client.get('/api/opening-balances');
+}
+
+export interface OpeningDraftInput {
+  readonly asAt: string;
+  readonly autoBalance: boolean;
+  readonly dryRun: boolean;
+  readonly note?: string;
+  readonly flatsCsv?: string;
+  readonly flatLines?: readonly OpeningFlatLine[];
+  readonly accountLines: readonly OpeningAccountLine[];
+}
+
+export function saveOpeningDraft(
+  client: ApiClient, input: OpeningDraftInput,
+): Promise<{ dryRun: boolean; saved: boolean; batchId: string | null; plan: OpeningPlan }> {
+  return client.post('/api/opening-balances/draft', input);
+}
+
+export function approveOpening(
+  client: ApiClient, id: string,
+): Promise<{ entryId: string; documents: number; vendorBills: number; totalPaise: number }> {
+  return client.post(`/api/opening-balances/${encodeURIComponent(id)}/approve`, {});
+}
+
+export function discardOpening(client: ApiClient, id: string): Promise<{ id: string; state: 'discarded' }> {
+  return client.post(`/api/opening-balances/${encodeURIComponent(id)}/discard`, {});
+}
+
+export function reverseOpening(
+  client: ApiClient, id: string, reason: string,
+): Promise<{ reversalEntryId: string; note: string }> {
+  return client.post(`/api/opening-balances/${encodeURIComponent(id)}/reverse`, { reason });
+}
+
+export function applyAdvances(
+  client: ApiClient, on: string,
+): Promise<{ flats: number; appliedPaise: number }> {
+  return client.post('/api/advances/apply', { on });
+}
+
+// --- the society's profile -------------------------------------------------
+
+export interface SocietyProfile {
+  readonly name: string;
+  readonly mode: 'demo' | 'production';
+  readonly registrationNo: string | null;
+  readonly gstin: string | null;
+  readonly stateCode: string | null;
+  readonly tan: string | null;
+  readonly address: string | null;
+  readonly contactEmail: string | null;
+  readonly contactPhone: string | null;
+  readonly canEdit: boolean;
+}
+
+export type SocietyProfileInput = Omit<SocietyProfile, 'mode' | 'canEdit'>;
+
+export function readSociety(client: ApiClient): Promise<SocietyProfile> {
+  return client.get('/api/society');
+}
+
+export function saveSociety(
+  client: ApiClient, profile: SocietyProfileInput,
+): Promise<SocietyProfile & { changed: string[]; note: string }> {
+  // Null is "not recorded"; the server reads an empty string the same way.
+  const body = Object.fromEntries(Object.entries(profile).map(([k, v]) => [k, v ?? '']));
+  return client.put('/api/society', body);
+}

@@ -3376,6 +3376,489 @@ await check('computeBillTax applies both flags as the engine rule does', async (
   equal(exact.cgst, 1_200, '₹12.495 rounds to ₹12, not via ₹12.50');
 });
 
+// --- going live ------------------------------------------------------------
+
+suite('go-live: flat and owner import');
+
+// A society of its own, for the same reason as the billing-defects society:
+// these checks bring in 200 flats and an opening position, and every figure
+// the main society's checks assert must stay as it was.
+const oStamp = randomUUID().slice(0, 8);
+const oDomain = `g${oStamp}.invalid`;
+const oSeedPool = new PgPool(connectionFromEnv(process.env));
+const oFixture = await seed(oSeedPool, {
+  name: `Go-live society ${oStamp}`, password: PASSWORD, emailDomain: oDomain,
+});
+await oSeedPool.end();
+const oFlat = (flatNo) => {
+  const flat = oFixture.flats.find(f => f.flatNo === flatNo);
+  if (flat === undefined) throw new Error(`no seeded flat ${flatNo}`);
+  return flat;
+};
+const oManager = new Client(base);
+const oTreasurer = new Client(base);
+const oSecretary = new Client(base);
+await oManager.signIn(`manager@${oDomain}`, PASSWORD);
+await oTreasurer.signIn(`treasurer@${oDomain}`, PASSWORD);
+await oSecretary.signIn(`secretary@${oDomain}`, PASSWORD);
+const oKey = (what) => `golive-${oStamp}-${what}`;
+const oCount = (sql) => Number(psql(sql).out);
+
+const IMPORT_HEADER =
+  'flat_no,tower,floor,area_sqft,area_basis,owner_name,owner_email,owner_mobile,co_owner_name,co_owner_email,owner_pan';
+// 200 flats in four towers of ten floors, five to a floor, between 1,750 and
+// 2,600 sq ft — the shape of the society this is for.
+const importRows = Array.from({ length: 200 }, (_, i) => {
+  const tower = 'ABCD'[Math.floor(i / 50)];
+  const floor = 1 + Math.floor((i % 50) / 5);
+  const unit = 1 + (i % 5);
+  const flatNo = `${tower}-${floor}${String(unit).padStart(2, '0')}`;
+  const area = 1750 + (i % 18) * 50;
+  const co = i % 10 === 0 ? `,Co-owner ${i},co${i}@${oDomain}` : ',,';
+  return `${flatNo},${tower},${floor},${area},,Owner ${i},o${i}@${oDomain},98300${String(i).padStart(5, '0')}${co},`;
+});
+const importCsv = [IMPORT_HEADER, ...importRows].join('\n');
+
+await check('a dry run reports every bad row by line, under tolerated header spellings', async () => {
+  const csv = [
+    'Flat No,Wing,Floor,Area (sq ft),Basis,Owner,E-mail,Mobile,PAN',
+    `Z-1,Z,1,1800,super built up,Asha Roy,asha@${oDomain},9830012345,ABCDE1234F`,
+    `Z-2,Z,1,,carpet,Bimal Sen,bimal@${oDomain},,`,
+    `Z-3,Z,G,12x0,attic,Chitra Das,not-an-email,12345,BAD`,
+    `Z-1,Z,2,1900,,Dipa Ghosh,dipa@${oDomain},,`,
+    `Z-5,Z,2,1900,,Esha Paul,asha@${oDomain},,`,
+  ].join('\n');
+  const before = oCount(`SELECT count(*) FROM flats WHERE society_id = '${oFixture.societyId}';`);
+  const r = await oSecretary.post('/api/flats/import', { csv, dryRun: true });
+  equal(r.status, 200, 'status');
+  equal(r.body.committed, false, 'committed');
+  const lines = (n) => r.body.errors.filter(e => e.line === n).map(e => e.message).join(' | ');
+  equal(lines(2), '', 'line 2 is clean');
+  matches(lines(3), /area_sqft is empty/, 'line 3: missing area');
+  matches(lines(4), /area_sqft "12x0"/, 'line 4: bad area');
+  matches(lines(4), /area_basis "attic"/, 'line 4: bad basis');
+  matches(lines(4), /not an email address/, 'line 4: bad email');
+  matches(lines(4), /mobile/, 'line 4: bad mobile');
+  matches(lines(4), /PAN/, 'line 4: bad PAN');
+  matches(lines(5), /flat Z-1 is also on line 2/, 'line 5: duplicate flat');
+  matches(lines(6), /asha@.* is also on line 2/, 'line 6: duplicate email');
+  equal(oCount(`SELECT count(*) FROM flats WHERE society_id = '${oFixture.societyId}';`), before, 'nothing written');
+});
+
+await check('a commit of a file with errors writes nothing', async () => {
+  const csv = `${IMPORT_HEADER}\nZ-9,Z,1,1800,,Ok Person,ok9@${oDomain},,,,\nZ-10,Z,1,-4,,Bad Area,bad10@${oDomain},,,,`;
+  const r = await oSecretary.post('/api/flats/import', { csv, dryRun: false });
+  equal(r.status, 400, 'status');
+  matches(r.body.message, /Nothing was imported/, 'message');
+  equal(r.body.detail.errors[0].line, 3, 'the bad line');
+  equal(oCount(`SELECT count(*) FROM flats WHERE society_id = '${oFixture.societyId}' AND flat_no = 'Z-9';`), 0,
+    'the good row was not written either');
+});
+
+await check('an address that signs in to another society is refused', async () => {
+  const csv = `${IMPORT_HEADER}\nZ-11,Z,1,1800,,Someone,treasurer@${domain},,,,`;
+  const r = await oSecretary.post('/api/flats/import', { csv, dryRun: true });
+  matches(r.body.errors.map(e => e.message).join(' '), /another society/, 'refusal');
+});
+
+await check('only an account that manages members may import', async () => {
+  const r = await oTreasurer.post('/api/flats/import', { csv: importCsv, dryRun: true });
+  equal(r.status, 403, 'status');
+});
+
+await check('a 200-flat dry run counts what a commit would do', async () => {
+  const started = Date.now();
+  const r = await oSecretary.post('/api/flats/import', { csv: importCsv, dryRun: true });
+  equal(r.status, 200, 'status');
+  equal(r.body.errors.length, 0, `errors: ${JSON.stringify(r.body.errors.slice(0, 3))}`);
+  // All ten seeded flats share numbers with the sheet, so they are updates.
+  equal(r.body.flats.new, 190, 'new flats');
+  equal(r.body.flats.updated, 10, 'updated flats');
+  equal(r.body.accounts.created, 220, 'accounts: 200 owners and 20 co-owners');
+  equal(r.body.defaultAreaBasis, 'super-built-up', 'the approved rate\'s basis fills a blank');
+  truthy(Date.now() - started < 10_000, 'in reasonable time');
+});
+
+await check('the commit creates flats, owners, tenures and code-only resident accounts, audited', async () => {
+  const r = await oSecretary.post('/api/flats/import', { csv: importCsv, dryRun: false, filename: 'flats.csv' });
+  equal(r.status, 201, `status ${JSON.stringify(r.body).slice(0, 200)}`);
+  equal(r.body.committed, true, 'committed');
+  equal(oCount(`SELECT count(*) FROM flats WHERE society_id = '${oFixture.societyId}';`), 200, 'flats');
+  const user = psql(
+    `SELECT (u.password_hash IS NULL)::text || ',' || o.full_name || ',' || f.flat_no || ',' ||
+            (SELECT string_agg(role, '+') FROM user_roles WHERE user_id = u.id)
+       FROM users u JOIN owners o ON o.id = u.owner_id
+       JOIN flat_ownership fo ON fo.owner_id = o.id AND fo.held_until IS NULL
+       JOIN flats f ON f.id = fo.flat_id
+      WHERE u.email = 'o0@${oDomain}';`,
+  );
+  equal(user.out, 'true,Owner 0,A-101,resident', 'no password, linked to the owner of A-101, resident');
+  equal(oCount(
+    `SELECT count(*) FROM flat_ownership fo JOIN flats f ON f.id = fo.flat_id
+      WHERE f.society_id = '${oFixture.societyId}' AND fo.role = 'co-owner';`), 20, 'co-owner tenures');
+  // A-101 was a seeded flat: its area is now the file's and its owner the file's.
+  equal(psql(`SELECT billing_area_sqft::int FROM flats WHERE id = '${oFlat('A-101').id}';`).out, '1750', 'A-101 area');
+  const logged = psql(
+    `SELECT detail->>'flatsNew' || '/' || (detail->>'accountsCreated') FROM audit_log
+      WHERE society_id = '${oFixture.societyId}' AND action = 'member.import';`,
+  );
+  matches(logged.out, /^\d+\/220$/, 'audit row with the counts');
+  truthy(!/98300/.test(psql(`SELECT detail::text FROM audit_log WHERE society_id = '${oFixture.societyId}' AND action = 'member.import';`).out),
+    'no member phone numbers in the audit log');
+});
+
+await check('re-importing the same file changes nothing', async () => {
+  const tenures = oCount(`SELECT count(*) FROM flat_ownership fo JOIN flats f ON f.id = fo.flat_id WHERE f.society_id = '${oFixture.societyId}';`);
+  const r = await oSecretary.post('/api/flats/import', { csv: importCsv, dryRun: false });
+  equal(r.status, 201, 'status');
+  equal(r.body.flats.unchanged, 200, 'unchanged');
+  equal(r.body.flats.new + r.body.flats.updated, 0, 'new or updated');
+  equal(r.body.accounts.created + r.body.accounts.linked, 0, 'accounts');
+  equal(oCount(`SELECT count(*) FROM flat_ownership fo JOIN flats f ON f.id = fo.flat_id WHERE f.society_id = '${oFixture.societyId}';`),
+    tenures, 'tenures');
+  equal(oCount(`SELECT count(*) FROM flats WHERE society_id = '${oFixture.societyId}';`), 200, 'flats');
+});
+
+await check('a corrected row updates that flat and nothing else', async () => {
+  const corrected = importCsv.replace(`A-102,A,1,1800,,Owner 1,o1@${oDomain}`, `A-102,A,1,1825,,Owner One,owner1@${oDomain}`);
+  const dry = await oSecretary.post('/api/flats/import', { csv: corrected, dryRun: true });
+  equal(dry.body.flats.updated, 1, 'updated');
+  equal(dry.body.flats.unchanged, 199, 'unchanged');
+  const change = dry.body.changes.find(c => c.flatNo === 'A-102');
+  matches(change.what.join(','), /area/, 'the area');
+  matches(change.what.join(','), /owner/, 'the owner');
+  const r = await oSecretary.post('/api/flats/import', { csv: corrected, dryRun: false });
+  equal(r.status, 201, 'status');
+  const holder = psql(
+    `SELECT o.email FROM flat_ownership fo JOIN owners o ON o.id = fo.owner_id
+      WHERE fo.flat_id = '${oFlat('A-102').id}' AND fo.role = 'owner' AND fo.held_until IS NULL;`,
+  );
+  equal(holder.out, `owner1@${oDomain}`, 'the new owner holds A-102');
+});
+
+suite('go-live: opening balances');
+
+let oVendorId = null;
+const OPENING_AS_AT = '2026-09-30';
+const openingCsv = [
+  'flat_no,opening_due,opening_advance,due_since',
+  'A-101,"5,000.00",,2026-06-30',
+  'A-102,0,1200,',
+  'B-101,2500.50,0,',
+  'C-302,0,0,',
+].join('\n');
+const accountLines = () => [
+  { accountCode: '1000', debitPaise: 150_000_000, creditPaise: 0, memo: 'Operating account per bank statement' },
+  { accountCode: '1200', debitPaise: 500_000_000, creditPaise: 0 },
+  { accountCode: '3000', debitPaise: 0, creditPaise: 520_000_000 },
+  { accountCode: '3010', debitPaise: 0, creditPaise: 2_000_000 },
+  {
+    accountCode: '2000', debitPaise: 0, creditPaise: 3_500_000, vendorId: oVendorId,
+    reference: 'SEC/SEP/26', expenseAccount: '5010',
+  },
+];
+// Debits 5,00,000 + 2,50,050 + 15,00,00,000 + 50,00,00,000 paise; credits
+// 1,20,000 + 52,00,00,000 + 20,00,000 + 35,00,000. The difference is the
+// general fund.
+const OPENING_DEBITS = 500_000 + 250_050 + 150_000_000 + 500_000_000;
+const OPENING_CREDITS = 120_000 + 520_000_000 + 2_000_000 + 3_500_000;
+const GENERAL_FUND = OPENING_DEBITS - OPENING_CREDITS;
+
+await check('a vendor to owe', async () => {
+  const r = await oManager.post('/api/vendors', {
+    name: `Guards ${oStamp}`, category: 'security', tdsSection: '194C', payeeKind: 'company',
+  });
+  equal(r.status, 201, 'status');
+  oVendorId = r.body.id;
+});
+
+await check('a dry run reports bad per-flat rows by line and saves nothing', async () => {
+  const csv = 'flat_no,opening_due,opening_advance\nA-101,100,50\nNO-SUCH,10,\nB-101,abc,\nB-101,5,';
+  const r = await oSecretary.post('/api/opening-balances/draft', {
+    asAt: OPENING_AS_AT, autoBalance: false, dryRun: true, flatsCsv: csv, accountLines: [],
+  });
+  equal(r.status, 200, 'status');
+  const at = (line) => r.body.plan.errors.filter(e => e.line === line).map(e => e.message).join(' | ');
+  matches(at(2), /both a due and an advance/, 'line 2');
+  matches(at(3), /no such flat/, 'line 3');
+  matches(at(4), /not an amount/, 'line 4');
+  equal(oCount(`SELECT count(*) FROM opening_balance_batches WHERE society_id = '${oFixture.societyId}';`), 0, 'no batch');
+});
+
+await check('income and per-flat control accounts are refused as society balances', async () => {
+  const r = await oSecretary.post('/api/opening-balances/draft', {
+    asAt: OPENING_AS_AT, autoBalance: true, dryRun: true,
+    accountLines: [
+      { accountCode: '4000', debitPaise: 0, creditPaise: 100 },
+      { accountCode: '1100', debitPaise: 100, creditPaise: 0 },
+    ],
+  });
+  matches(r.body.plan.errors[0].message, /income account/, 'income');
+  matches(r.body.plan.errors[1].message, /per flat/, 'control account');
+});
+
+let batchId = null;
+
+await check('the secretary saves an unbalanced draft, which says it cannot post', async () => {
+  const r = await oSecretary.post('/api/opening-balances/draft', {
+    asAt: OPENING_AS_AT, autoBalance: false, dryRun: false, flatsCsv: openingCsv, accountLines: accountLines(),
+  });
+  equal(r.status, 201, `status ${JSON.stringify(r.body).slice(0, 300)}`);
+  batchId = r.body.batchId;
+  equal(r.body.plan.totals.debitPaise, OPENING_DEBITS, 'debits');
+  equal(r.body.plan.totals.creditPaise, OPENING_CREDITS, 'credits');
+  equal(r.body.plan.flats.length, 3, 'a zero row is not a line');
+  matches(r.body.plan.blockers.join(' '), /out by/, 'the difference is the blocker');
+});
+
+await check('posting an unbalanced batch is refused and posts nothing', async () => {
+  const r = await oTreasurer.post(`/api/opening-balances/${batchId}/approve`, {});
+  equal(r.status, 409, 'status');
+  matches(r.body.message, /out by/, 'message');
+  equal(oCount(`SELECT count(*) FROM journal_entries WHERE society_id = '${oFixture.societyId}';`), 0, 'no entry');
+});
+
+await check('the preparer cannot approve, by role and by the database', async () => {
+  const r = await oSecretary.post(`/api/opening-balances/${batchId}/approve`, {});
+  equal(r.status, 403, 'the secretary has no right to post');
+  const db = psql(
+    `UPDATE opening_balance_batches SET approved_by = prepared_by WHERE id = '${batchId}';`,
+  );
+  truthy(!db.ok, 'the database refused maker = checker');
+  matches(db.out, /opening_balance_maker_is_not_checker/, 'the constraint');
+});
+
+await check('with the balancing figure to the general reserve, the treasurer posts one balanced entry', async () => {
+  const saved = await oSecretary.post('/api/opening-balances/draft', {
+    asAt: OPENING_AS_AT, autoBalance: true, dryRun: false, flatsCsv: openingCsv, accountLines: accountLines(),
+  });
+  equal(saved.status, 201, 'saved');
+  equal(saved.body.batchId, batchId, 'the same draft, replaced');
+  const balancing = saved.body.plan.accounts.find(a => a.isBalancing);
+  equal(balancing.accountCode, '3020', 'to the general reserve');
+  equal(balancing.creditPaise, GENERAL_FUND, 'the balancing figure');
+  equal(saved.body.plan.blockers.length, 0, `blockers: ${saved.body.plan.blockers}`);
+
+  const r = await oTreasurer.post(`/api/opening-balances/${batchId}/approve`, {});
+  equal(r.status, 200, `status ${JSON.stringify(r.body).slice(0, 300)}`);
+  equal(r.body.documents, 2, 'two opening dues');
+  equal(r.body.vendorBills, 1, 'one opening payable');
+  equal(r.body.totalPaise, OPENING_DEBITS, 'the entry total');
+
+  const tb = await oTreasurer.get(`/api/reports/trial-balance?asAt=${OPENING_AS_AT}`);
+  equal(tb.body.tiesOut, true, 'tiesOut');
+  equal(tb.body.totalDebit, OPENING_DEBITS, 'total debit');
+  const line = (code) => tb.body.lines.find(l => l.code === code) ?? { debit: 0, credit: 0 };
+  equal(line('3020').credit, GENERAL_FUND, 'general reserve');
+  equal(line('1100').debit, 750_050, 'receivable');
+  equal(line('2300').credit, 120_000, 'member advances');
+  equal(line('2200').credit + line('2201').credit, 0, 'no output GST');
+  equal(oCount(`SELECT count(*) FROM journal_entries WHERE society_id = '${oFixture.societyId}' AND source_kind = 'opening-balance';`), 1, 'one entry');
+  equal(oCount(`SELECT count(*) FROM gst_register WHERE society_id = '${oFixture.societyId}';`), 0, 'no GST register rows');
+  equal(oCount(`SELECT count(*) FROM approvals WHERE subject_id = '${batchId}' AND decision = 'approved';`), 1, 'in the approvals register');
+});
+
+await check('a second opening position is refused, by the API and by the database', async () => {
+  const again = await oSecretary.post('/api/opening-balances/draft', {
+    asAt: OPENING_AS_AT, autoBalance: true, dryRun: false, flatsCsv: openingCsv, accountLines: [],
+  });
+  equal(again.status, 409, 'a new draft');
+  matches(again.body.message, /already posted/, 'message');
+  const twice = await oTreasurer.post(`/api/opening-balances/${batchId}/approve`, {});
+  equal(twice.status, 409, 'approving twice');
+  const db = psql(
+    `INSERT INTO opening_balance_batches (society_id, batch_no, as_at, prepared_by)
+     SELECT society_id, 99, as_at, prepared_by FROM opening_balance_batches WHERE id = '${batchId}';`,
+  );
+  truthy(!db.ok, 'the database refused a second live batch');
+  matches(db.out, /opening_balance_one_live/, 'the index');
+});
+
+await check('an opening due is not cancelled on its own, and carries no GST row even if asked', async () => {
+  const docs = await oManager.get(`/api/flats/${oFlat('A-101').id}/dues?asAt=2026-10-01`);
+  const due = docs.body.invoices[0];
+  matches(due.taxInvoiceNo, /^OB\/1\/\d{5}$/, 'numbered in the opening series');
+  const r = await oTreasurer.post(`/api/billing/documents/${due.documentId}/cancel`, { reason: 'test', on: '2026-10-01' });
+  equal(r.status, 409, 'status');
+  matches(r.body.message, /opening balance/, 'message');
+  const db = psql(
+    `INSERT INTO gst_register (society_id, document_id, tax_period, invoice_no, invoice_date, counterparty,
+       supply_type, taxable_value, cgst, sgst, rate_bps)
+     VALUES ('${oFixture.societyId}', '${due.documentId}', '2026-09', 'X', '2026-09-30', 'A-101', 'B2C', 1, 0, 0, 0);`,
+  );
+  truthy(!db.ok, 'the register refused it');
+  matches(db.out, /not a supply/, 'the reason');
+});
+
+await check('a correction is a reversal and a fresh batch, both audited', async () => {
+  const r = await oTreasurer.post(`/api/opening-balances/${batchId}/reverse`, { reason: 'Bank figure was the passbook, not the statement' });
+  equal(r.status, 200, `status ${JSON.stringify(r.body).slice(0, 200)}`);
+  const tb = await oTreasurer.get(`/api/reports/trial-balance?asAt=${OPENING_AS_AT}`);
+  for (const line of tb.body.lines) equal(line.debit, line.credit, `account ${line.code} nets to nothing at the as-at date`);
+  equal(oCount(`SELECT count(*) FROM billing_documents WHERE opening_batch_id = '${batchId}' AND state = 'cancelled';`), 2, 'dues cancelled');
+
+  const lines = accountLines();
+  lines[0] = { ...lines[0], debitPaise: 150_500_000 };
+  const saved = await oSecretary.post('/api/opening-balances/draft', {
+    asAt: OPENING_AS_AT, autoBalance: true, dryRun: false, flatsCsv: openingCsv, accountLines: lines,
+  });
+  equal(saved.status, 201, `re-entry saved ${JSON.stringify(saved.body).slice(0, 300)}`);
+  const posted = await oTreasurer.post(`/api/opening-balances/${saved.body.batchId}/approve`, {});
+  equal(posted.status, 200, `re-entry posted ${JSON.stringify(posted.body).slice(0, 300)}`);
+  batchId = saved.body.batchId;
+  const actions = psql(
+    `SELECT string_agg(action, ',' ORDER BY id) FROM audit_log
+      WHERE society_id = '${oFixture.societyId}' AND action LIKE 'opening.%';`,
+  );
+  equal(actions.out, 'opening.prepare,opening.prepare,opening.post,opening.reverse,opening.prepare,opening.post', 'the trail');
+  const tb2 = await oTreasurer.get(`/api/reports/trial-balance?asAt=${OPENING_AS_AT}`);
+  const bank = tb2.body.lines.find(l => l.code === '1000');
+  equal(bank.debit - bank.credit, 150_500_000, 'the corrected bank balance');
+  const reserve = tb2.body.lines.find(l => l.code === '3020');
+  equal(reserve.credit - reserve.debit, GENERAL_FUND + 500_000, 'and the general fund moves with it');
+  equal(tb2.body.tiesOut, true, 'tiesOut');
+});
+
+await check('an opening due ages from when it fell due', async () => {
+  const r = await oTreasurer.get('/api/reports/ageing?asAt=2026-10-23');
+  const a101 = r.body.rows.find(row => row.flatNo === 'A-101');
+  equal(a101.outstanding, 500_000, 'A-101 outstanding');
+  equal(a101.buckets[0].label, '90+', 'bucket, from 30 June');
+  const b101 = r.body.rows.find(row => row.flatNo === 'B-101');
+  equal(b101.outstanding, 250_050, 'B-101 outstanding');
+});
+
+let openingReceipt = null;
+
+await check('a later receipt settles the opening due first, like an invoice', async () => {
+  const r = await oManager.post('/api/payments', {
+    flatId: oFlat('A-101').id, amountPaise: 300_000, receivedOn: '2026-10-25', method: 'upi',
+  }, { 'Idempotency-Key': oKey('opening-receipt') });
+  equal(r.status, 201, `status ${JSON.stringify(r.body).slice(0, 200)}`);
+  equal(r.body.allocations.length, 1, 'allocations');
+  matches(r.body.allocations[0].taxInvoiceNo, /^OB\/2\//, 'against the opening due');
+  equal(r.body.appliedToDues, 300_000, 'applied');
+  openingReceipt = r.body;
+  const ageing = await oTreasurer.get('/api/reports/ageing?asAt=2026-10-25');
+  equal(ageing.body.rows.find(row => row.flatNo === 'A-101').outstanding, 200_000, 'what is left, in ageing');
+  const statement = await oTreasurer.get(`/api/reports/statement/${oFlat('A-101').id}?to=2026-10-31`);
+  equal(statement.status, 200, 'statement');
+  equal(statement.body.closing, 200_000, 'the flat statement agrees');
+});
+
+await check('an opening advance is applied to the next bill', async () => {
+  const run = await oManager.post('/api/billing/run', { period: 'Oct 2026', issuedOn: '2026-10-01' });
+  equal(run.status, 201, 'billing run');
+  const doc = run.body.issued.find(d => d.flatNo === 'A-102');
+  equal((await oTreasurer.post(`/api/billing/documents/${doc.documentId}/approve`, { on: '2026-10-01' })).status, 200, 'approved');
+  const converted = await oTreasurer.post(`/api/billing/documents/${doc.documentId}/convert`, { on: '2026-10-16', because: 'due-date-reached' });
+  equal(converted.status, 200, 'converted');
+
+  const applied = await oTreasurer.post('/api/advances/apply', { on: '2026-10-16', flatId: oFlat('A-102').id });
+  equal(applied.status, 200, `status ${JSON.stringify(applied.body).slice(0, 200)}`);
+  equal(applied.body.appliedPaise, 120_000, 'the whole advance');
+  equal(applied.body.applications[0].allocations[0].taxInvoiceNo, converted.body.taxInvoiceNo, 'against the October bill');
+
+  const dues = await oTreasurer.get(`/api/flats/${oFlat('A-102').id}/dues?asAt=2026-10-16`);
+  equal(dues.body.advancePaise, 0, 'nothing left on account');
+  equal(dues.body.outstandingPaise, converted.body.gross - 120_000, 'the bill, less the advance');
+  const again = await oTreasurer.post('/api/advances/apply', { on: '2026-10-16', flatId: oFlat('A-102').id });
+  equal(again.body.appliedPaise, 0, 'applying again finds nothing to apply');
+});
+
+await check('the opening payable is a booked bill the payment route can settle', async () => {
+  const bill = psql(
+    `SELECT id || ',' || state || ',' || net_payable FROM vendor_bills
+      WHERE vendor_id = '${oVendorId}' AND opening_batch_id = '${batchId}';`,
+  );
+  const [billId, state, net] = bill.out.split(',');
+  equal(state, 'booked', 'state');
+  equal(Number(net), 3_500_000, 'payable');
+  const r = await oTreasurer.post(`/api/vendor-bills/${billId}/pay`, {
+    amountPaise: 3_500_000, paidOn: '2026-10-10', method: 'neft', paymentRef: `NEFT-${oStamp}`,
+  }, { 'Idempotency-Key': oKey('opening-vendor-pay') });
+  equal(r.status, 200, `status ${JSON.stringify(r.body).slice(0, 200)}`);
+});
+
+await check('the opening entry and everything after it restore in the browser engine\'s chart', async () => {
+  const { CHART } = await import('../.server-build/src/accounting/accounts.js');
+  const known = new Set(CHART.map(a => a.code));
+  const snap = await oTreasurer.get('/api/books/snapshot');
+  for (const entry of snap.body.entries) {
+    for (const leg of entry.postings) truthy(known.has(leg.accountCode), `account ${leg.accountCode}`);
+  }
+  equal(snap.body.taxInvoiceSequence, 1, 'the opening series does not move the tax invoice series');
+});
+
+suite('go-live: society profile');
+
+const GSTIN_WB = '19AAACI1681G1ZM';
+
+await check('anyone with report access can read it; only settings.manage can change it', async () => {
+  const r = await oManager.get('/api/society');
+  equal(r.status, 200, 'status');
+  equal(r.body.gstin, null, 'no GSTIN yet');
+  equal(r.body.canEdit, false, 'the manager cannot edit');
+  const put = await oManager.put('/api/society', { name: 'Taken over' });
+  equal(put.status, 403, 'the manager is refused');
+});
+
+await check('a GSTIN is checked for shape, check digit and state', async () => {
+  const basics = { name: 'Mani Vista RWA' };
+  const shape = await oSecretary.put('/api/society', { ...basics, gstin: '19ABC', stateCode: '19' });
+  equal(shape.status, 400, 'shape');
+  matches(shape.body.message, /15 characters/, 'shape message');
+  const digit = await oSecretary.put('/api/society', { ...basics, gstin: '19AAACI1681G1ZN', stateCode: '19' });
+  equal(digit.status, 400, 'check digit');
+  matches(digit.body.message, /mistyped/, 'check digit message');
+  const state = await oSecretary.put('/api/society', { ...basics, gstin: GSTIN_WB, stateCode: '27' });
+  equal(state.status, 400, 'state');
+  matches(state.body.message, /begins 19, but the state code is 27/, 'state message');
+  const tan = await oSecretary.put('/api/society', { ...basics, tan: 'CAL12345B' });
+  equal(tan.status, 400, 'TAN');
+  matches(tan.body.message, /TAN/, 'TAN message');
+});
+
+await check('a valid change is saved, audited with before and after, and reaches the documents', async () => {
+  const r = await oSecretary.put('/api/society', {
+    name: `Mani Vista RWA ${oStamp}`, registrationNo: 'WB/RWA/123/2015', gstin: GSTIN_WB.toLowerCase(),
+    stateCode: '19', tan: 'calm12345b', address: 'Kolkata 700 156', contactEmail: 'Office@ManiVista.invalid',
+  });
+  equal(r.status, 200, `status ${JSON.stringify(r.body).slice(0, 200)}`);
+  equal(r.body.gstin, GSTIN_WB, 'normalised to capitals');
+  equal(r.body.tan, 'CALM12345B', 'TAN');
+  matches(r.body.changed.join(','), /name.*gstin|gstin.*name/, 'what changed');
+
+  const change = (field) => psql(
+    `SELECT COALESCE(c->>'from', '(none)') || ' -> ' || (c->>'to')
+       FROM audit_log, jsonb_array_elements(detail->'changes') AS c
+      WHERE society_id = '${oFixture.societyId}' AND action = 'society.profile' AND c->>'field' = '${field}';`,
+  ).out;
+  equal(change('gstin'), `(none) -> ${GSTIN_WB}`, 'GSTIN before and after');
+  equal(change('tan'), '(none) -> CALM12345B', 'TAN before and after');
+  equal(change('name'), `Go-live society ${oStamp} -> Mani Vista RWA ${oStamp}`, 'name before and after');
+
+  const snap = await oTreasurer.get('/api/books/snapshot');
+  equal(snap.body.gstin, GSTIN_WB, 'the header reads it');
+  equal(snap.body.societyName, `Mani Vista RWA ${oStamp}`, 'and the name');
+
+  const response = await fetch(`${base}/api/payments/${openingReceipt.paymentId}/pdf`, {
+    headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') },
+  });
+  equal(response.status, 200, 'receipt PDF');
+  const text = Buffer.from(await response.arrayBuffer()).toString('latin1');
+  matches(text, new RegExp(`Mani Vista RWA ${oStamp}`), 'the new name on the receipt');
+  matches(text, new RegExp(`GSTIN ${GSTIN_WB}`), 'the GSTIN on the receipt');
+
+  const same = await oSecretary.put('/api/society', {
+    name: `Mani Vista RWA ${oStamp}`, registrationNo: 'WB/RWA/123/2015', gstin: GSTIN_WB,
+    stateCode: '19', tan: 'CALM12345B', address: 'Kolkata 700 156', contactEmail: 'office@manivista.invalid',
+  });
+  equal(same.body.changed.length, 0, 'saving the same values changes nothing');
+  equal(oCount(`SELECT count(*) FROM audit_log WHERE society_id = '${oFixture.societyId}' AND action = 'society.profile';`), 1,
+    'and logs nothing');
+});
+
 // --- one last consistency sweep --------------------------------------------
 
 suite('scheduled release at 6 am');
