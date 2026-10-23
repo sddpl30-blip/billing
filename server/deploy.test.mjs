@@ -127,6 +127,14 @@ check('the adapter is the only thing that reads an already-parsed body', () => {
   matches(http, /prepared\.bodyText \?\? await readBody\(req\)/, 'the socket path still reads the socket');
 });
 
+check('the schema version the server expects is the newest migration', () => {
+  // Health compares the database with this; a stale constant would either
+  // pass a database that is behind or fail one that is current.
+  const files = readdirSync(join(root, 'server', 'migrations')).filter(f => f.endsWith('.sql')).sort();
+  const constant = /EXPECTED_SCHEMA_VERSION = '([^']+)'/.exec(read('server/src/schemaVersion.ts'))?.[1];
+  equal(constant, files[files.length - 1], 'EXPECTED_SCHEMA_VERSION');
+});
+
 // --- routing ---------------------------------------------------------------
 
 suite('routing');

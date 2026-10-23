@@ -1,8 +1,8 @@
 # After setup: verify, close setup, finish configuration
 
 A prompt for Claude in Chrome, signed in to Vercel and Neon. Paste everything
-between the two lines. It has three parts and stops for your approval before
-it changes anything.
+between the two lines. It runs in order — migration, your setup, verify, close
+setup, configure — and stops for your approval before it changes anything.
 
 ---
 
@@ -20,6 +20,30 @@ Rules for the whole task:
   setting, redeploying), describe exactly what you will do and wait for me to
   reply "approve". Read-only steps need no approval.
 - After each part, report in a few lines what you saw.
+
+## Part 0 — Migration 010, before setup (needs my approval)
+
+The site's code expects migration 010; the database has 001–009. Without
+010 the society can be created, but the secretary's first sign-in fails
+(the books, Society profile and Opening balances screens return errors), and
+`/api/health` now reports `"status":"degraded"` with a message naming the
+missing migration.
+
+1. Read-only check first: in Neon's SQL Editor (database `societybooks`,
+   check twice) run `SELECT version FROM schema_migrations ORDER BY version;`
+   and `SELECT count(*) FROM societies;`. Report both.
+2. If the list ends at `009_bank_match_once.sql`: open
+   https://github.com/sddpl30-blip/billing/blob/claude/loving-ritchie-nymqj1/docs/neon/010-apply.sql,
+   click Raw, copy all of it. Tell me you are about to run it on
+   `societybooks` and wait for "approve". Then run it in a new SQL Editor tab
+   on `societybooks`. It ends by recording `010_opening_balances.sql`.
+3. Check `https://billing-five-kappa.vercel.app/api/health`: expect
+   `"status":"ok"` and `schemaVersion` `010_opening_balances.sql`, and
+   `/api/setup`: expect `{"required":true,"open":true}`.
+4. Then tell me to fill in the **Set up your society** form myself on the
+   site (name `Mani Vista Residents Association`, prefix `MV`, state code
+   `19`; I type the secretary's e-mail, password and the setup token). Wait
+   until I say the green "The society is set up" bar appeared.
 
 ## Part 1 — Verify the setup (read-only)
 
@@ -60,7 +84,7 @@ SELECT at, actor_label, action, detail
   FROM audit_log a JOIN societies s ON s.id = a.society_id AND s.mode = 'production'
  WHERE action = 'society.bootstrap';
 
--- 6. Schema version (expect 9 rows now, ending 009_bank_match_once.sql)
+-- 6. Schema version (expect 10 rows, ending 010_opening_balances.sql)
 SELECT version FROM schema_migrations ORDER BY version;
 ```
 
@@ -69,27 +93,15 @@ accounts list (emails and roles), the counts, the GST setting, whether the
 audit row exists, and the migration list. If anything differs from the
 expectations in the comments, stop and tell me.
 
-## Part 2 — Close setup and bring the schema up to date (needs my approval)
+## Part 2 — Close setup (needs my approval)
 
-Two changes go together, then one redeploy:
+1. **Remove SETUP_TOKEN** — in Vercel → `billing` → Settings → Environment
+   Variables, delete the `SETUP_TOKEN` variable (setup is complete and the
+   route already refuses, but a secret nobody needs should be gone).
+2. **Redeploy** — Deployments → latest → Redeploy without build cache.
 
-1. **Migration 010** — the app's new Society profile and Opening balances
-   screens need it (it adds TAN/address/contact columns and the opening
-   balance tables). Open
-   https://github.com/sddpl30-blip/billing/blob/claude/loving-ritchie-nymqj1/docs/neon/010-apply.sql,
-   click Raw, copy all of it. In Neon's SQL Editor (database `societybooks`,
-   check twice; a new query tab, so the read-only setting from Part 1 is not
-   in force) it is to be run once. It ends by recording
-   `010_opening_balances.sql` in `schema_migrations`.
-2. **Remove SETUP_TOKEN** — in Vercel → `billing` → Settings → Environment
-   Variables, the `SETUP_TOKEN` variable is to be deleted (setup is complete
-   and the route already refuses, but a secret nobody needs should be gone).
-3. **Redeploy** — Deployments → latest → Redeploy without build cache.
-
-Describe these three steps back to me and wait for "approve". Then do them in
+Describe these two steps back to me and wait for "approve". Then do them in
 that order. Afterwards check, and report:
-- In Neon: `SELECT version FROM schema_migrations ORDER BY version;` now ends
-  with `010_opening_balances.sql`.
 - `https://billing-five-kappa.vercel.app/api/setup` returns
   `{"required":false,"open":false}`.
 - `https://billing-five-kappa.vercel.app/api/health` shows `"status":"ok"`

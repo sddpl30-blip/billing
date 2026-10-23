@@ -22,6 +22,7 @@ import type { AuthService } from './auth';
 import type { EmailProvider } from './providers/email';
 import type { BankApiProvider } from './providers/bank';
 import { StatementFormatError, parseStatement } from './providers/bank';
+import { EXPECTED_SCHEMA_VERSION } from './schemaVersion';
 import { badRequest, conflict, notFound, route, type RequestContext, type Reply, type RouteDefinition } from './http';
 import { v } from './validate';
 import {
@@ -152,16 +153,30 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     // not name the database server.
     const security = pool.connectionSecurity;
 
+    // A database behind the code is degraded, and the body names the
+    // migration to apply; versions sort by their numeric prefix.
+    const schemaBehind = database.reachable && (migrations === null || migrations < EXPECTED_SCHEMA_VERSION);
+    const healthy = database.reachable && !schemaBehind;
+
     return {
-      status: database.reachable ? 200 : 503,
+      status: healthy ? 200 : 503,
       body: {
-        status: database.reachable ? 'ok' : 'degraded',
+        status: healthy ? 'ok' : 'degraded',
         mode: config.mode,
         database: {
           ...database,
           ...(security === null ? {} : { encrypted: security.encrypted }),
         },
         schemaVersion: migrations,
+        expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
+        ...(schemaBehind
+          ? {
+              message:
+                `The database schema is at ${migrations ?? 'nothing'} and this version of the app ` +
+                `needs ${EXPECTED_SCHEMA_VERSION}. Apply the missing migrations ` +
+                '(npm run db:migrate:node, or docs/neon/ for the SQL Editor) and reload.',
+            }
+          : {}),
         // Named for what they do, so nothing reads as connected when it is not.
         providers: {
           otp: config.otpProvider,
