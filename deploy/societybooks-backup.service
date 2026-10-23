@@ -1,0 +1,36 @@
+# /etc/systemd/system/societybooks-backup.service
+#
+# A nightly pg_dump of the books, run by societybooks-backup.timer.
+#
+# This keeps fourteen days on this machine. A copy on the same disk as the
+# database is not a backup against losing the machine: point BACKUP_DIR at a
+# mounted off-site volume, or add an ExecStartPost that copies the file to
+# object storage. And restore one now and then —
+#   ADMIN_URL=... node scripts/verify-backup.mjs
+# rehearses the whole thing against a scratch database.
+#
+#   sudo install -m 0644 societybooks-backup.service societybooks-backup.timer /etc/systemd/system/
+#   sudo install -d -o societybooks -g societybooks -m 0700 /var/backups/societybooks
+#   sudo systemctl daemon-reload && sudo systemctl enable --now societybooks-backup.timer
+
+[Unit]
+Description=SocietyBooks nightly database backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=societybooks
+Group=societybooks
+# DIRECT_URL (the unpooled endpoint) is what pg_dump needs; it is in here.
+EnvironmentFile=/etc/societybooks/api.env
+Environment=BACKUP_DIR=/var/backups/societybooks
+# Custom format: compressed, and pg_restore can pick tables out of it.
+ExecStart=/bin/sh -c 'set -eu; f="$BACKUP_DIR/societybooks-$(date -u +%%Y%%m%%dT%%H%%M%%SZ).dump"; pg_dump --format=custom --no-owner --file="$f.partial" "${DIRECT_URL:-$DATABASE_URL}"; mv "$f.partial" "$f"'
+ExecStartPost=/usr/bin/find ${BACKUP_DIR} -name 'societybooks-*.dump' -mtime +14 -delete
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/backups/societybooks

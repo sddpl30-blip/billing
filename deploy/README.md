@@ -136,3 +136,17 @@ because that is your real recovery window. Take your own dumps as well; a
 provider's history does not protect you from a bad migration you then can't
 identify. `server/README.md` has the `pg_dump`/`pg_restore` steps and the one
 check worth running after a restore.
+
+`societybooks-backup.service` and `.timer` take that dump every night at
+02:30 IST and keep fourteen days in `/var/backups/societybooks`:
+
+```
+sudo install -m 0644 societybooks-backup.service societybooks-backup.timer /etc/systemd/system/
+sudo install -d -o societybooks -g societybooks -m 0700 /var/backups/societybooks
+sudo systemctl daemon-reload && sudo systemctl enable --now societybooks-backup.timer
+systemctl list-timers societybooks-backup.timer   # when it runs next
+```
+
+The machine needs `postgresql-client` for `pg_dump`. A dump on the same disk
+as nothing else is still one disk: copy the files off the machine, and
+rehearse a restore with `ADMIN_URL=... node scripts/verify-backup.mjs`.

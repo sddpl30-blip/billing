@@ -1,0 +1,13 @@
+# /etc/systemd/system/societybooks-backup.timer — see societybooks-backup.service.
+
+[Unit]
+Description=Nightly SocietyBooks database backup
+
+[Timer]
+# 02:30 IST. Persistent: a run missed while the machine was off happens at boot.
+OnCalendar=*-*-* 21:00:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
