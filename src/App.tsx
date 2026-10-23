@@ -5,6 +5,7 @@ import {
   CreditCard,
   BookOpen,
   Menu,
+  Briefcase,
   Bell,
   Lock,
   Unlock,
@@ -51,6 +52,7 @@ const BackupHub = lazy(() => import('./components/BackupHub').then(m => ({ defau
 const FinancialStatements = lazy(() => import('./components/FinancialStatements').then(m => ({ default: m.FinancialStatements })));
 const JournalLedger = lazy(() => import('./components/JournalLedger').then(m => ({ default: m.JournalLedger })));
 const CollectionChart = lazy(() => import('./components/Charts').then(m => ({ default: m.CollectionChart })));
+const OfficeHub = lazy(() => import('./components/office/OfficeHub').then(m => ({ default: m.OfficeHub })));
 const BudgetChart = lazy(() => import('./components/Charts').then(m => ({ default: m.BudgetChart })));
 import { BillingWorkflow } from './components/BillingWorkflow';
 import { Dialog } from './components/Dialog';
@@ -67,6 +69,7 @@ import {
   apiCategoryFor, invoicesFrom, residentsFrom, ticketsFrom, vendorInvoicesFrom, vendorsFrom,
 } from './api/legacy';
 import type { TicketResponse } from './api/client';
+import type { OfficeContext } from './components/office/types';
 import { LoginScreen } from './components/LoginScreen';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import { downloadInvoice, pdfFilename, saveBlob } from './invoiceExport';
@@ -150,7 +153,7 @@ export default function App() {
 
   // --- Session UI States ---
   const [currentRole, setCurrentRole] = useState<'Resident' | 'Manager' | 'Committee'>('Resident');
-  const [activeTab, setActiveTab] = useState<'home' | 'bills' | 'pay' | 'books' | 'more'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'bills' | 'pay' | 'books' | 'office' | 'more'>('home');
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
 
   // --- Modals Triggers ---
@@ -698,6 +701,24 @@ export default function App() {
   /** Whether this account may record a receipt. In demo every view may. */
   const mayRecordReceipts = !onServer || booksSource.can('payment.record');
   const mayPayOnline = !onServer || booksSource.can('payment.record');
+
+  // The Office is server-only (it is the API's own screens) and not for the
+  // resident view; OfficeHub then offers only the sections this account's
+  // permissions open.
+  const showOffice = onServer && booksSource.client !== null && currentRole !== 'Resident';
+  // Stable for as long as the client is: panels load data in effects keyed on
+  // the context, and a fresh object every render would reload them each time.
+  // The latest hook result is read through a ref instead.
+  const booksSourceRef = useRef(booksSource);
+  booksSourceRef.current = booksSource;
+  const officeContext = useMemo<OfficeContext | null>(() => (
+    booksSource.client === null ? null : {
+      client: booksSource.client,
+      can: (permission: string) => booksSourceRef.current.can(permission),
+      toast: (message: string, tone: 'info' | 'error' = 'info') => triggerToast(message, tone),
+      reload: () => booksSourceRef.current.reload(),
+    }
+  ), [booksSource.client, triggerToast]);
 
   /** GST as the screens should state it: from the settings, never a constant. */
   const gstSetting = onServer
@@ -1717,6 +1738,19 @@ export default function App() {
                 </div>
                 {currentRole === 'Resident' && <Lock className="w-3.5 h-3.5 text-white/75 ml-auto" aria-label="Locked" />}
               </button>
+
+              {showOffice && (
+                <button
+                  onClick={() => setActiveTab('office')}
+                  aria-current={activeTab === 'office' ? 'page' : undefined}
+                  className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-semibold uppercase tracking-wider transition-all text-left ${activeTab === 'office' ? 'text-white bg-[var(--mv-accent)]' : 'text-white/70 hover:text-white hover:bg-white/5'}`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Briefcase className="w-4 h-4" />
+                    <span>Office</span>
+                  </div>
+                </button>
+              )}
 
               <button
                 onClick={() => setActiveTab('more')}
@@ -2798,6 +2832,18 @@ export default function App() {
               )}
 
               {/* -------------------- MORE MODULES TAB -------------------- */}
+              {activeTab === 'office' && officeContext !== null && (
+                <div className="space-y-6 max-w-7xl mx-auto animate-scale-up text-left">
+                  <div>
+                    <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Office</h2>
+                    <p className="text-xs text-[var(--mv-muted)]">Vendors, banking, approvals, periods, users and the statutory reports</p>
+                  </div>
+                  <Suspense fallback={<p className="text-sm text-[var(--mv-muted)]">Loading…</p>}>
+                    <OfficeHub ctx={officeContext} />
+                  </Suspense>
+                </div>
+              )}
+
               {activeTab === 'more' && (
                 <div className="space-y-6 max-w-7xl mx-auto animate-scale-up text-left">
                   <div>
@@ -4040,6 +4086,18 @@ export default function App() {
           {/* =========================================
               VIEW: TAB 'MORE' EXPANDED PORTALS
              ========================================= */}
+          {activeTab === 'office' && officeContext !== null && (
+            <div className="space-y-4 animate-scale-up pb-24 text-left">
+              <div>
+                <h2 className="text-xl font-bold text-[var(--mv-ink)]">Office</h2>
+                <p className="text-xs text-[var(--mv-muted)]">Vendors, banking, approvals and reports</p>
+              </div>
+              <Suspense fallback={<p className="text-sm text-[var(--mv-muted)]">Loading…</p>}>
+                <OfficeHub ctx={officeContext} />
+              </Suspense>
+            </div>
+          )}
+
           {activeTab === 'more' && (
             <div className="space-y-4 animate-scale-up pb-24 text-left">
 
@@ -4050,6 +4108,22 @@ export default function App() {
                   <p className="text-xs text-[var(--mv-muted)]">Systems, configurations, and sandboxes</p>
                 </div>
               </div>
+
+              {showOffice && (
+                <button
+                  onClick={() => setActiveTab('office')}
+                  className="w-full flex items-center justify-between bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 shadow-xs text-left"
+                >
+                  <span className="flex items-center gap-3">
+                    <Briefcase className="w-5 h-5 text-[var(--mv-accent)]" aria-hidden="true" />
+                    <span>
+                      <span className="block text-sm font-bold text-[var(--mv-ink)]">Office</span>
+                      <span className="block text-xs text-[var(--mv-muted)]">Vendors, banking, approvals and reports</span>
+                    </span>
+                  </span>
+                  <ChevronRight className="w-4 h-4 text-[var(--mv-muted)]" aria-hidden="true" />
+                </button>
+              )}
 
               {/* HELPDESK Raising Ticketing Portal */}
               <div className="bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-4 space-y-3 shadow-xs">
