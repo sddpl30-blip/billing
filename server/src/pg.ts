@@ -1057,8 +1057,11 @@ export function connectionFromEnv(
   // alone kept the empty string: the fallback never happened, the PG*
   // variables were used instead, and a migration ran against whatever local
   // default those pointed at. Silent and wrong is the worst outcome here.
+  //
+  // DATABASE_URL_UNPOOLED is the name the Neon integration on Vercel gives the
+  // direct endpoint, so it stands in for DIRECT_URL when that is not set.
   const configured = which === 'DIRECT_URL'
-    ? [env.DIRECT_URL, env.DATABASE_URL]
+    ? [env.DIRECT_URL, env.DATABASE_URL_UNPOOLED, env.DATABASE_URL]
     : [env.DATABASE_URL];
   const url = configured.find(value => value !== undefined && value !== '');
 

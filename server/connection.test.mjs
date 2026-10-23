@@ -154,6 +154,14 @@ await check('DIRECT_URL is used for migrations and falls back to DATABASE_URL', 
     'ep-x-pooler.example.neon.tech',
     'an empty DIRECT_URL falls back too',
   );
+  equal(
+    connectionFromEnv({
+      DATABASE_URL: env.DATABASE_URL,
+      DATABASE_URL_UNPOOLED: 'postgresql://u:p@ep-x.example.neon.tech/db?sslmode=require',
+    }, 'DIRECT_URL').host,
+    'ep-x.example.neon.tech',
+    'the Neon integration\'s DATABASE_URL_UNPOOLED stands in for DIRECT_URL',
+  );
 });
 
 await check('a pooled hostname is recognised', async () => {
