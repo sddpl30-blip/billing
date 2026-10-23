@@ -10,7 +10,7 @@
  * event, so re-running a monthly job is safe: the second attempt is rejected.
  */
 
-import { Paise, allocate, assertPositive, formatRupees, percentOf, sum } from './money';
+import { Paise, allocate, assertInteger, assertPositive, formatRupees, percentOf, sum } from './money';
 import { planAllocation } from './allocation';
 import { requireIsoDate } from './clock';
 import { A, ReceiptHead, receiptHead } from './accounts';
@@ -68,19 +68,32 @@ export interface MaintenanceBill {
  *    once it is above, GST is due on the WHOLE amount, not on the excess. The
  *    contribution compared is the taxable value of the bill — the lines that
  *    are a supply of service. A corpus collection such as the sinking fund is
- *    not taxable here, so it is not counted towards the threshold either.
- *    Whether that is the right reading for this association is a CA question;
- *    the threshold itself is a setting, not a literal.
+ *    not taxable by default, so it is not counted towards the threshold
+ *    either; a society that taxes it (`sinkingFundTaxable`) marks its line
+ *    taxable, and then it counts. Whether either is the right reading for
+ *    this association is a CA question; the threshold itself is a setting,
+ *    not a literal.
  *  · CGST and SGST were one rounded tax split in two, so on an odd total one
  *    half was a paisa more than the other while the invoice printed both at
  *    9%. Each half is now 9% of the taxable value, rounded on its own, which
  *    is what the invoice says; the total is their sum.
  *
  * `thresholdPaise` of 0 means every taxable rupee is taxed.
+ *
+ * `roundToRupee` is a society setting (default off): each of CGST and SGST is
+ * rounded to the nearest whole rupee, half up, per invoice — ₹708.75 becomes
+ * ₹709, ₹911.25 becomes ₹911. Each half is still computed and rounded on its
+ * own from the same base at the same half-rate, so the two stay equal and the
+ * total is still exactly twice one of them.
+ *
+ * Which lines make up `taxableValue` is the caller's: the sinking fund counts
+ * only where the society's `sinkingFundTaxable` setting marks its line
+ * taxable, and then it counts towards the threshold as well — the test is on
+ * the member's whole taxable contribution for the month.
  */
 export function gstOnContribution(
   taxableValue: Paise,
-  opts: { ratePercent: number; thresholdPaise: Paise },
+  opts: { ratePercent: number; thresholdPaise: Paise; roundToRupee?: boolean },
 ): { taxableValue: Paise; cgst: Paise; sgst: Paise; total: Paise } {
   if (taxableValue <= 0 || opts.ratePercent <= 0) {
     return { taxableValue: 0, cgst: 0, sgst: 0, total: 0 };
@@ -91,8 +104,30 @@ export function gstOnContribution(
     // tax 0" would misstate a return.
     return { taxableValue: 0, cgst: 0, sgst: 0, total: 0 };
   }
-  const half = percentOf(taxableValue, opts.ratePercent / 2);
+  const half = gstHalf(taxableValue, opts.ratePercent, opts.roundToRupee === true);
   return { taxableValue, cgst: half, sgst: half, total: half * 2 };
+}
+
+/**
+ * One of CGST or SGST on a taxable value: half the rate, rounded half up to
+ * the paisa — or, with `roundToRupee`, to the whole rupee.
+ *
+ * The rupee rounding is taken from the exact product, not from the paisa
+ * figure, so nothing is rounded twice: an exact ₹12.495 is ₹12, where rounding
+ * it first to ₹12.50 would have made it ₹13. Credit and debit notes use this
+ * too, so a note carries tax the same way the invoice it adjusts did.
+ */
+export function gstHalf(taxableValue: Paise, ratePercent: number, roundToRupee: boolean): Paise {
+  if (!roundToRupee) return percentOf(taxableValue, ratePercent / 2);
+  assertInteger(taxableValue);
+  if (!Number.isFinite(ratePercent) || ratePercent < 0) {
+    throw new PostingError(`GST rate must be a non-negative percentage, got ${ratePercent}`);
+  }
+  // In units of a millionth of a paisa, exactly as `percentOf` scales it; a
+  // rupee is 10^8 of those. Both factors are integers well inside 2^53, and a
+  // value exactly half way is representable, so Math.round's half-up is exact.
+  const scaled = Math.round(taxableValue * Math.round((ratePercent / 2) * 10000));
+  return Math.round(scaled / 100_000_000) * 100;
 }
 
 /** The per-member threshold from the config, in paise. */
@@ -147,6 +182,7 @@ export function billMaintenance(
     const gst = gstOnContribution(taxableLines, {
       ratePercent: config.gst.rate,
       thresholdPaise: memberThresholdPaise(config),
+      roundToRupee: config.gstRoundToRupee === true,
     });
     taxableValue = gst.taxableValue;
     tax = gst.total;

@@ -124,9 +124,15 @@ export async function gstTreatment(tx: Queryable, societyId: string): Promise<Gs
   const row = await readOne(tx, societyId, SETTING_KEYS.GST);
   const defaultThreshold = DEFAULT_GST_MEMBER_THRESHOLD_RUPEES * 100;
   if (row === null) {
-    return { chargeGst: false, ratePercent: 0, approved: false, memberThresholdPaise: defaultThreshold };
+    return {
+      chargeGst: false, ratePercent: 0, approved: false, memberThresholdPaise: defaultThreshold,
+      sinkingFundTaxable: false, roundToRupee: false,
+    };
   }
-  const value = row.value as { chargeGst?: unknown; ratePercent?: unknown; memberThresholdRupees?: unknown };
+  const value = row.value as {
+    chargeGst?: unknown; ratePercent?: unknown; memberThresholdRupees?: unknown;
+    sinkingFundTaxable?: unknown; roundToRupee?: unknown;
+  };
   const chargeGst = value.chargeGst === true;
   const ratePercent = typeof value.ratePercent === 'number' ? value.ratePercent : 0;
   if (chargeGst && !(ratePercent > 0 && ratePercent <= 100)) {
@@ -150,7 +156,27 @@ export async function gstTreatment(tx: Queryable, societyId: string): Promise<Gs
   const memberThresholdPaise = typeof threshold === 'number'
     ? Math.round(threshold * 100)
     : defaultThreshold;
-  return { chargeGst, ratePercent, approved: row.approved, memberThresholdPaise };
+  // Two choices the society makes, both off when absent so a society that has
+  // not opted in bills exactly as before. Part of the treatment's value, so
+  // changing either drops the sign-off like any other change to it. Anything
+  // but a boolean is refused rather than read as one: "false" as a string is
+  // truthy, and a tax figure should not turn on that.
+  const flag = (name: 'sinkingFundTaxable' | 'roundToRupee'): boolean => {
+    const raw = value[name];
+    if (raw === undefined) return false;
+    if (typeof raw !== 'boolean') {
+      throw badRequest(
+        `The stored GST treatment gives ${name} as ${JSON.stringify(raw)}, which is not true ` +
+        `or false. Correct the ${SETTING_KEYS.GST} setting.`,
+      );
+    }
+    return raw;
+  };
+  return {
+    chargeGst, ratePercent, approved: row.approved, memberThresholdPaise,
+    sinkingFundTaxable: flag('sinkingFundTaxable'),
+    roundToRupee: flag('roundToRupee'),
+  };
 }
 
 /**

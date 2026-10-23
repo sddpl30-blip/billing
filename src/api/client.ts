@@ -216,7 +216,11 @@ export interface SnapshotResponse {
     approvedBy?: string; rejectedReason?: string; billNo?: string;
   }>;
   readonly settings: {
-    readonly gst: { chargeGst: boolean; ratePercent: number; approved: boolean };
+    readonly gst: {
+      chargeGst: boolean; ratePercent: number; approved: boolean;
+      /** Absent from a server older than these settings; treated as false. */
+      sinkingFundTaxable?: boolean; roundToRupee?: boolean;
+    };
     readonly invoicePrefix: string;
     readonly dueDays: number;
     readonly sinkingFundPercent: number;

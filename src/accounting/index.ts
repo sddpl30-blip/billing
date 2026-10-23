@@ -43,7 +43,7 @@ export type {
   ReceiptResult, TdsSection, VendorBillInput, VendorBillResult,
 } from './transactions';
 export {
-  accrueFdInterest, applyAdvance, billMaintenance, bookVendorBill, gstOnContribution,
+  accrueFdInterest, applyAdvance, billMaintenance, bookVendorBill, gstHalf, gstOnContribution,
   memberPosition, memberThresholdPaise, payVendorBill, placeFixedDeposit, postOpeningBalances, receiveFromMember,
   remitGst, remitTds, transferToSinkingFundBank, vendorPosition,
 } from './transactions';

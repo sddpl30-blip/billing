@@ -135,7 +135,10 @@ export function runBilling(
         (maintenance.amount * Math.round(input.sinkingFundPercentOfMaintenance * 10000)) / 1000000,
       );
       if (sinking > 0) {
-        lines.push({ head: 'sinking', amount: sinking, taxable: false });
+        // Not taxable — a corpus collection — unless the society has decided
+        // otherwise; then it is taxed with maintenance and counts towards the
+        // per-member threshold, because the line says it is taxable.
+        lines.push({ head: 'sinking', amount: sinking, taxable: config.gstSinkingFundTaxable === true });
       }
     }
 

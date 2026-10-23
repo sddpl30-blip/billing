@@ -84,10 +84,13 @@ the list of open items below that I still need to supply.
 ## Where the note and the app differ today
 
 - **GST on the Sinking Fund.** The note bills Sinking Fund with 18% GST
-  ("committee to confirm"). The app currently treats the Sinking Fund
-  contribution as not taxable. Decide, then ask the developer to change it.
+  ("committee to confirm"). The app treats it as not taxable unless the GST
+  treatment's "Charge GST on the sinking fund too" box is ticked (Society
+  settings → GST treatment); then the ₹7,500 exemption is tested on
+  maintenance plus sinking fund. Ticking it needs the treasurer's approval.
 - **Rounding.** The note rounds GST to the rupee per invoice; the app keeps
-  paise.
+  paise unless "Round CGST and SGST to the rupee per invoice" is ticked in the
+  same setting.
 - **Interest on late payment** (with 18% GST) is not computed by the app yet.
 - **Helpdesk targets** (Emergency 4 h, Common area 48 h, Plumbing/electrical
   72 h, Accounts query 5 working days) differ from the app's built-in

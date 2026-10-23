@@ -179,6 +179,7 @@ export class BillingRegister {
     const estimatedTax = gstOnContribution(taxable, {
       ratePercent: this.config.gst.rate,
       thresholdPaise: memberThresholdPaise(this.config),
+      roundToRupee: this.config.gstRoundToRupee === true,
     }).total;
 
     const proformaNo = input.proformaNo ?? this.nextProformaNo(input.flatNo, period);

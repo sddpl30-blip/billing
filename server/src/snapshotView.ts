@@ -127,7 +127,11 @@ export interface BooksSnapshotView {
   readonly vendorBills: readonly EngineVendorBill[];
   /** Settings the screens need, rather than every setting. */
   readonly settings: {
-    readonly gst: { chargeGst: boolean; ratePercent: number; approved: boolean };
+    readonly gst: {
+      chargeGst: boolean; ratePercent: number; approved: boolean;
+      /** The two `gst.treatment` choices, false when absent, for the screens' labels. */
+      sinkingFundTaxable: boolean; roundToRupee: boolean;
+    };
     readonly invoicePrefix: string;
     readonly dueDays: number;
     readonly sinkingFundPercent: number;
@@ -406,7 +410,9 @@ export async function buildSnapshot(
   };
 
   const gstRow = setting('gst.treatment');
-  const gstValue = (gstRow?.value ?? {}) as { chargeGst?: unknown; ratePercent?: unknown };
+  const gstValue = (gstRow?.value ?? {}) as {
+    chargeGst?: unknown; ratePercent?: unknown; sinkingFundTaxable?: unknown; roundToRupee?: unknown;
+  };
   const numberSetting = (key: string, fallback: number): number => {
     const value = setting(key)?.value;
     return typeof value === 'number' ? value : fallback;
@@ -445,6 +451,8 @@ export async function buildSnapshot(
         chargeGst: gstValue.chargeGst === true,
         ratePercent: typeof gstValue.ratePercent === 'number' ? gstValue.ratePercent : 0,
         approved: gstRow?.approved ?? false,
+        sinkingFundTaxable: gstValue.sinkingFundTaxable === true,
+        roundToRupee: gstValue.roundToRupee === true,
       },
       invoicePrefix: typeof prefix === 'string' ? prefix : 'INV',
       dueDays: numberSetting('billing.dueDays', 15),

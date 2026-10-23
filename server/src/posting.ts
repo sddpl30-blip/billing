@@ -352,6 +352,18 @@ export interface GstTreatment {
    * contribution for the month is at or below it is not charged GST at all.
    */
   readonly memberThresholdPaise: number;
+  /**
+   * Whether the sinking-fund line carries GST at the maintenance rate. Read
+   * when a proforma's lines are built — the line's own `taxable` flag is what
+   * conversion taxes — and the threshold then applies to maintenance plus
+   * sinking fund, because both are taxable lines. False unless set.
+   */
+  readonly sinkingFundTaxable: boolean;
+  /**
+   * Whether CGST and SGST are each rounded to the nearest rupee, half up, per
+   * invoice (and per credit or debit note). False unless set: to the paisa.
+   */
+  readonly roundToRupee: boolean;
 }
 
 /**
@@ -371,6 +383,7 @@ export function computeBillTax(
   return gstOnContribution(taxable, {
     ratePercent: gst.ratePercent,
     thresholdPaise: gst.memberThresholdPaise,
+    roundToRupee: gst.roundToRupee,
   });
 }
 

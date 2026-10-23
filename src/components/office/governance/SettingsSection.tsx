@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { formatRupees } from '../../../accounting/money';
+import { gstOnContribution } from '../../../accounting/transactions';
 import { approveSetting, listSettings, putSetting, type Setting } from '../../../api/office/governance';
 import type { OfficeContext } from '../types';
 import {
@@ -16,7 +17,7 @@ const DEFAULT_THRESHOLD_RUPEES = 7500;
 const KNOWN: Record<string, { label: string; treatment: boolean; help: string }> = {
   [GST]: {
     label: 'GST treatment', treatment: true,
-    help: 'Whether maintenance carries GST, at what rate, and the per-member monthly exemption. Billing refuses to issue a tax invoice that charges an unapproved treatment.',
+    help: 'Whether maintenance carries GST, at what rate, the per-member monthly exemption, whether the sinking fund is taxed too, and whether CGST and SGST are rounded to the rupee. Billing refuses to issue a tax invoice that charges an unapproved treatment.',
   },
   [FUNDS_THROUGH_INCOME]: {
     label: 'Sinking fund through income', treatment: true,
@@ -32,7 +33,30 @@ interface GstValue {
   chargeGst?: boolean;
   ratePercent?: number;
   memberThresholdRupees?: number;
+  sinkingFundTaxable?: boolean;
+  roundToRupee?: boolean;
   [other: string]: unknown;
+}
+
+/**
+ * The approach note's worked figure — 1,750 sq ft at ₹4.50, 10% sinking fund —
+ * under the treatment being edited, so the effect of each choice is visible
+ * before it is saved. The same arithmetic as both engines' `gstOnContribution`:
+ * each half at half the rate, to the paisa or (rounded) to the rupee half up.
+ */
+function gstExample(opts: { ratePercent: number; thresholdRupees: number; sinkingFundTaxable: boolean; roundToRupee: boolean }): string {
+  if (!(opts.ratePercent > 0 && opts.ratePercent <= 100)) return '';
+  const maintenance = 787_500;
+  const sinking = 78_750;
+  const taxable = maintenance + (opts.sinkingFundTaxable ? sinking : 0);
+  const thresholdPaise = Number.isFinite(opts.thresholdRupees) ? Math.round(opts.thresholdRupees * 100) : 0;
+  const tax = gstOnContribution(taxable, {
+    ratePercent: opts.ratePercent, thresholdPaise, roundToRupee: opts.roundToRupee,
+  });
+  const money = (paise: number): string => formatRupees(paise, { paise: true });
+  const base = `Example: ₹7,875.00 maintenance + ₹787.50 sinking fund — taxable contribution ${money(taxable)}`;
+  if (tax.total === 0) return `${base}, within the exemption, so no GST; total ${money(maintenance + sinking)}.`;
+  return `${base}; CGST ${money(tax.cgst)} + SGST ${money(tax.sgst)}; total ${money(maintenance + sinking + tax.total)}.`;
 }
 
 function describe(key: string, value: unknown): string {
@@ -42,7 +66,9 @@ function describe(key: string, value: unknown): string {
     const thresholdText = `${formatRupees(Math.round(threshold * 100))}/member/month exempt` +
       (typeof gst.memberThresholdRupees === 'number' ? '' : ' (statutory default)');
     return gst.chargeGst === true
-      ? `Charge GST at ${String(gst.ratePercent ?? 0)}% · ${thresholdText}`
+      ? `Charge GST at ${String(gst.ratePercent ?? 0)}% · ${thresholdText}` +
+        (gst.sinkingFundTaxable === true ? ' · sinking fund taxed (counts towards the exemption)' : '') +
+        (gst.roundToRupee === true ? ' · CGST and SGST rounded to the rupee per invoice' : '')
       : 'No GST charged';
   }
   if (key === FUNDS_THROUGH_INCOME) {
@@ -192,6 +218,8 @@ function EditSettingDialog({ settingKey, current, busy, onClose, onSubmit }: {
   const [chargeGst, setChargeGst] = useState(gst.chargeGst === true);
   const [ratePercent, setRatePercent] = useState(gst.ratePercent !== undefined && gst.ratePercent !== 0 ? String(gst.ratePercent) : '');
   const [threshold, setThreshold] = useState(typeof gst.memberThresholdRupees === 'number' ? String(gst.memberThresholdRupees) : '');
+  const [sinkingTaxable, setSinkingTaxable] = useState(gst.sinkingFundTaxable === true);
+  const [roundToRupee, setRoundToRupee] = useState(gst.roundToRupee === true);
   const [flag, setFlag] = useState(current === true);
   const [text, setText] = useState(
     settingKey === GST || settingKey === FUNDS_THROUGH_INCOME ? ''
@@ -206,8 +234,15 @@ function EditSettingDialog({ settingKey, current, busy, onClose, onSubmit }: {
       if (chargeGst && !(rate > 0 && rate <= 100)) throw new Error('A GST rate is a percentage above 0 and at most 100.');
       // Fields this form does not edit are kept, so saving the rate does not
       // quietly drop something else the treatment carries.
-      const { chargeGst: _c, ratePercent: _r, memberThresholdRupees: _m, ...rest } = gst;
+      const {
+        chargeGst: _c, ratePercent: _r, memberThresholdRupees: _m,
+        sinkingFundTaxable: _s, roundToRupee: _t, ...rest
+      } = gst;
       const value: GstValue = { ...rest, chargeGst, ratePercent: rate };
+      // Written only when on, so a treatment that never opted in keeps the
+      // shape it had; absent means off on the server.
+      if (sinkingTaxable) value.sinkingFundTaxable = true;
+      if (roundToRupee) value.roundToRupee = true;
       if (threshold.trim() !== '') {
         const amount = Number(threshold);
         if (!(Number.isFinite(amount) && amount >= 0 && amount <= 10_000_000)) {
@@ -266,6 +301,36 @@ function EditSettingDialog({ settingKey, current, busy, onClose, onSubmit }: {
             </div>
           </div>
           <p className="text-[11px] text-[var(--mv-muted)]">Leave the threshold blank for the statutory ₹7,500.</p>
+          <div className="flex items-start gap-2">
+            <input id="gov-gst-sinking" type="checkbox" checked={sinkingTaxable} disabled={!chargeGst}
+              onChange={e => setSinkingTaxable(e.target.checked)} className="w-4 h-4 mt-0.5 accent-[var(--mv-accent)]" />
+            <label htmlFor="gov-gst-sinking" className="text-sm text-[var(--mv-ink)]">
+              Charge GST on the sinking fund too
+              <span className="block text-[11px] text-[var(--mv-muted)]">
+                The sinking fund line is taxed at the maintenance rate, and the exemption is tested on maintenance plus sinking fund. Off: only maintenance is taxed and counted. Applies to bills raised after approval.
+              </span>
+            </label>
+          </div>
+          <div className="flex items-start gap-2">
+            <input id="gov-gst-round" type="checkbox" checked={roundToRupee} disabled={!chargeGst}
+              onChange={e => setRoundToRupee(e.target.checked)} className="w-4 h-4 mt-0.5 accent-[var(--mv-accent)]" />
+            <label htmlFor="gov-gst-round" className="text-sm text-[var(--mv-ink)]">
+              Round CGST and SGST to the rupee per invoice
+              <span className="block text-[11px] text-[var(--mv-muted)]">
+                Each half is rounded to the nearest rupee, half up (₹708.75 → ₹709, ₹911.25 → ₹911), so the two stay equal. Also applies to credit and debit notes. Off: to the paisa.
+              </span>
+            </label>
+          </div>
+          {chargeGst && (
+            <p className="text-[11px] text-[var(--mv-muted)] bg-[var(--mv-soft)] rounded-xl p-2">
+              {gstExample({
+                ratePercent: Number(ratePercent),
+                thresholdRupees: threshold.trim() === '' ? DEFAULT_THRESHOLD_RUPEES : Number(threshold),
+                sinkingFundTaxable: sinkingTaxable,
+                roundToRupee,
+              }) || 'Enter a rate to see its effect on a bill.'}
+            </p>
+          )}
         </>
       )}
       {settingKey === FUNDS_THROUGH_INCOME && (

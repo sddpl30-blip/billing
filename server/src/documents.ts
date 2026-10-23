@@ -18,6 +18,8 @@ import { A4, PdfPage, buildPdf, money, textWidth } from './pdf';
 import type { Queryable } from './pg';
 import { badRequest, notFound } from './http';
 import { allocateNumber } from './series';
+import { gstTreatment } from './settings';
+import { percentOf } from '../../src/accounting/money';
 
 export interface InvoicePayload {
   readonly kind: 'tax-invoice' | 'proforma';
@@ -40,6 +42,12 @@ export interface InvoicePayload {
   readonly cgst: number;
   readonly sgst: number;
   readonly ratePercent: number;
+  /**
+   * Whether CGST and SGST were rounded to the rupee under the society's
+   * `roundToRupee` treatment, so the document can say so beside two figures
+   * that are not exactly 9% of the taxable value. Absent means to the paisa.
+   */
+  readonly taxRoundedToRupee?: boolean;
   readonly net: number;
   readonly gross: number;
   readonly outstanding: number;
@@ -171,8 +179,16 @@ export function renderInvoice(payload: InvoicePayload): Buffer {
 
   total('Net charges', payload.net);
   if (payload.cgst > 0 || payload.sgst > 0) {
-    total(`CGST @ ${(payload.ratePercent / 2).toFixed(2)}%`, payload.cgst);
-    total(`SGST @ ${(payload.ratePercent / 2).toFixed(2)}%`, payload.sgst);
+    // On a proforma the tax is the estimate the tax invoice will recompute.
+    const estimate = payload.kind === 'proforma' ? ' (estimate)' : '';
+    total(`CGST @ ${(payload.ratePercent / 2).toFixed(2)}%${estimate}`, payload.cgst);
+    total(`SGST @ ${(payload.ratePercent / 2).toFixed(2)}%${estimate}`, payload.sgst);
+    if (payload.taxRoundedToRupee === true) {
+      page.text('CGST and SGST each rounded to the nearest rupee', {
+        x: taxableX - 90, size: 8, grey: 0.45,
+      });
+      page.down(13);
+    }
   } else {
     page.text('No GST charged on this document', {
       x: taxableX - 90, size: 8.5, grey: 0.45,
@@ -349,8 +365,33 @@ export async function invoicePayload(
   const net = lines.reduce((sum, line) => sum + line.amount, 0);
 
   const isTaxInvoice = row.state === 'tax-invoice' && row.tax_invoice_no !== null;
-  const cgst = Number(row.cgst);
-  const sgst = Number(row.sgst);
+  const taxableValue = row.taxable_value === null
+    ? lines.filter(l => l.taxable).reduce((sum, l) => sum + l.amount, 0)
+    : Number(row.taxable_value);
+  let cgst = Number(row.cgst);
+  let sgst = Number(row.sgst);
+  let ratePercent = row.rate_bps === null ? 0 : Number(row.rate_bps) / 100;
+  let taxRoundedToRupee = false;
+  if (isTaxInvoice) {
+    // Read off the figures the register holds rather than today's setting, so
+    // an invoice issued before the society changed its rounding still
+    // describes itself truly: whole rupees that are not the paisa figure.
+    taxRoundedToRupee = cgst > 0 && cgst % 100 === 0 && ratePercent > 0 &&
+      cgst !== percentOf(taxableValue, ratePercent / 2);
+  } else {
+    // A proforma has no register row; its tax is the estimate made at issue
+    // — two equal halves by construction — and it printed "No GST charged"
+    // under a total that included it. Shown as the two halves at the rate
+    // the society now charges, marked as an estimate.
+    const estimated = Number(row.estimated_tax);
+    if (estimated > 0) {
+      const gst = await gstTreatment(tx, input.societyId);
+      cgst = Math.floor(estimated / 2);
+      sgst = estimated - cgst;
+      ratePercent = gst.ratePercent;
+      taxRoundedToRupee = gst.roundToRupee;
+    }
+  }
 
   return {
     kind: isTaxInvoice ? 'tax-invoice' : 'proforma',
@@ -363,12 +404,11 @@ export async function invoicePayload(
     flatNo: row.flat_no,
     ownerName: row.owner,
     lines,
-    taxableValue: row.taxable_value === null
-      ? lines.filter(l => l.taxable).reduce((sum, l) => sum + l.amount, 0)
-      : Number(row.taxable_value),
+    taxableValue,
     cgst,
     sgst,
-    ratePercent: row.rate_bps === null ? 0 : Number(row.rate_bps) / 100,
+    ratePercent,
+    taxRoundedToRupee,
     net,
     // Before conversion the figure on the document is an estimate; after it,
     // the gross the ledger was posted with.

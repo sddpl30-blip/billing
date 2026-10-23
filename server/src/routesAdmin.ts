@@ -29,7 +29,8 @@ import { generateDocument } from './documents';
 import { A, accountBalance, postEntry, type Leg } from './posting';
 import { allocateNumber, lockFlatBalance } from './series';
 import { gstTreatment } from './settings';
-import { formatRupees, percentOf } from '../../src/accounting/money';
+import { formatRupees } from '../../src/accounting/money';
+import { gstHalf } from '../../src/accounting/transactions';
 import { isoDateInIndia } from '../../src/accounting/clock';
 
 export interface AdminRouteDependencies {
@@ -238,8 +239,11 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         );
       }
       // Each half at half the rate, as on the invoice itself, so a note's
-      // CGST and SGST are equal and match the "@ 9%" it prints.
-      const half = input.withTax && gst.chargeGst ? percentOf(input.amountPaise, gst.ratePercent / 2) : 0;
+      // CGST and SGST are equal and match the "@ 9%" it prints — and rounded
+      // to the rupee where the society's treatment says invoices are.
+      const half = input.withTax && gst.chargeGst
+        ? gstHalf(input.amountPaise, gst.ratePercent, gst.roundToRupee)
+        : 0;
       const cgst = half;
       const sgst = half;
       const tax = cgst + sgst;

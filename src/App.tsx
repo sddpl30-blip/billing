@@ -100,6 +100,16 @@ const PanelLoading: React.FC = () => (
  * An invoice's due date as ISO. The server's are ISO already; the demo's
  * seed has "10 Jun 2026", and some rows only a period.
  */
+/**
+ * The GST the billing screen states, from the society's treatment: the rate,
+ * and the two choices that change what a bill carries.
+ */
+function gstLabelFor(ratePercent: number, sinkingFundTaxable: boolean, roundToRupee: boolean): string {
+  return `${ratePercent}% GST` +
+    (sinkingFundTaxable ? ' incl. sinking fund' : '') +
+    (roundToRupee ? ', rounded to ₹' : '');
+}
+
 function dueIso(invoice: Invoice): string {
   const raw = invoice.dueDate ?? '';
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
@@ -733,9 +743,15 @@ export default function App() {
     ? booksSource.server?.context()?.settings.gst ?? null
     : null;
   const gstLabel = onServer
-    ? (gstSetting === null || !gstSetting.chargeGst ? 'No GST' : `${gstSetting.ratePercent}% GST`)
+    ? (gstSetting === null || !gstSetting.chargeGst
+        ? 'No GST'
+        : gstLabelFor(gstSetting.ratePercent, gstSetting.sinkingFundTaxable === true, gstSetting.roundToRupee === true))
     : (books?.snapshot().config.gstOnMaintenance === true
-        ? `${books.snapshot().config.gst.rate}% GST`
+        ? gstLabelFor(
+            books.snapshot().config.gst.rate,
+            books.snapshot().config.gstSinkingFundTaxable === true,
+            books.snapshot().config.gstRoundToRupee === true,
+          )
         : 'No GST');
   /** The maintenance rate the run will use, in words. */
   const rateLabel = onServer
@@ -1033,7 +1049,8 @@ export default function App() {
 
     const lines = [
       { head: 'maintenance' as const, amount: fromRupeesSafe(invoice.maintenance), taxable: true },
-      { head: 'sinking' as const, amount: fromRupeesSafe(invoice.sinkingFund), taxable: false },
+      // Taxable only where the config says the society taxes the sinking fund.
+      { head: 'sinking' as const, amount: fromRupeesSafe(invoice.sinkingFund), taxable: local.snapshot().config.gstSinkingFundTaxable === true },
       { head: 'maintenance' as const, amount: fromRupeesSafe(invoice.waterCharges), taxable: true },
       { head: 'maintenance' as const, amount: fromRupeesSafe(invoice.parkingCharges), taxable: true },
       { head: 'maintenance' as const, amount: fromRupeesSafe(invoice.nonOccupancyCharges), taxable: true },

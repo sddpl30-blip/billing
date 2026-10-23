@@ -23,8 +23,24 @@ export interface AccountingConfig {
   readonly gstOnMaintenance: boolean;
   /** Split equally into CGST and SGST for an intra-state supply. */
   readonly gst: TaxRate;
-  /** Per-member monthly maintenance above which GST is charged, in rupees. */
+  /**
+   * Per-member monthly taxable contribution above which GST is charged, in
+   * rupees. Maintenance alone, or maintenance plus the sinking fund where
+   * `gstSinkingFundTaxable` is set.
+   */
   readonly gstMemberThresholdRupees: number;
+  /**
+   * Whether the sinking-fund line carries GST at the maintenance rate, and so
+   * counts towards the per-member threshold. Absent means false: a corpus
+   * collection, outside GST. The server's `gst.treatment.sinkingFundTaxable`.
+   */
+  readonly gstSinkingFundTaxable?: boolean;
+  /**
+   * Whether CGST and SGST are each rounded to the nearest rupee (half up) per
+   * invoice. Absent means false: rounded to the paisa. The server's
+   * `gst.treatment.roundToRupee`.
+   */
+  readonly gstRoundToRupee?: boolean;
 
   readonly tds: {
     readonly contractor194C: TaxRate;
@@ -147,7 +163,14 @@ export function assertConfigReviewed(config: AccountingConfig): void {
 export function outstandingConfirmations(config: AccountingConfig): string[] {
   const out = [
     `GST on maintenance: ${config.gstOnMaintenance ? 'charged' : 'not charged'} at ${config.gst.rate}% — ${config.gst.basis}`,
-    `Per-member GST threshold: ₹${config.gstMemberThresholdRupees}`,
+    `Per-member GST threshold: ₹${config.gstMemberThresholdRupees}` +
+      (config.gstSinkingFundTaxable === true ? ' on maintenance plus sinking fund' : ' on maintenance'),
+    config.gstSinkingFundTaxable === true
+      ? 'The sinking fund carries GST at the maintenance rate.'
+      : 'The sinking fund is not taxed.',
+    config.gstRoundToRupee === true
+      ? 'CGST and SGST are each rounded to the nearest rupee per invoice.'
+      : 'CGST and SGST are each rounded to the paisa.',
     `TDS 194C: ${config.tds.contractor194C.rate}% — ${config.tds.contractor194C.basis}`,
     `TDS 194J: ${config.tds.professional194J.rate}% — ${config.tds.professional194J.basis}`,
     `TDS 194I: ${config.tds.rent194I.rate}% — ${config.tds.rent194I.basis}`,
