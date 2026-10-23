@@ -38,7 +38,9 @@ function toPaise(text: string): number | null {
   return m === null ? null : Number(m[1]) * 100 + Number((m[2] ?? '').padEnd(2, '0'));
 }
 
-const OPENING_TEMPLATE = 'flat_no,opening_due,opening_advance,due_since\r\nA-101,4500.00,0,2026-07-01\r\nA-102,0,1200.00,\r\n';
+// Header only: sample dues against sample flats are one forgotten line away
+// from being posted as a member's real arrears.
+const OPENING_TEMPLATE = 'flat_no,opening_due,opening_advance,due_since\r\n';
 
 function downloadOpeningTemplate(): void {
   const blob = new Blob(['﻿', OPENING_TEMPLATE], { type: 'text/csv;charset=utf-8' });

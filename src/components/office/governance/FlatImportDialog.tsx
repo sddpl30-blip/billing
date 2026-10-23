@@ -19,14 +19,15 @@ import { ApiError } from '../../../api/client';
 /** The largest file the server accepts. */
 const MAX_BYTES = 512 * 1024;
 
-const TEMPLATE_EXAMPLE = [
-  'A-101', 'A', '1', '1750', 'super-built-up', 'Ananya Banerjee', 'ananya.banerjee@example.com',
-  '9830012345', 'Rahul Banerjee', 'rahul.banerjee@example.com', 'ABCPB1234K',
-];
-
-/** A CSV with the header and one example row, saved by the browser. */
+/**
+ * A CSV with the header row only, saved by the browser.
+ *
+ * No example row: a sample flat with a made-up owner, email and PAN is one
+ * forgotten line away from being imported as a real member. What each column
+ * takes is described in the dialog instead.
+ */
 export function downloadFlatTemplate(): void {
-  const text = `${FLAT_IMPORT_COLUMNS.join(',')}\r\n${TEMPLATE_EXAMPLE.join(',')}\r\n`;
+  const text = `${FLAT_IMPORT_COLUMNS.join(',')}\r\n`;
   // The byte-order mark is what makes Excel read the file as UTF-8.
   const blob = new Blob(['﻿', text], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -136,8 +137,10 @@ export function FlatImportDialog({ ctx, onClose, onImported }: {
           <div className="space-y-3">
             <p className="text-xs text-[var(--mv-muted)]">
               {step.kind === 'done' ? 'Imported' : `Preview of ${step.kind === 'preview' ? step.filename : ''}`}:{' '}
-              {report.rows} {report.rows === 1 ? 'row' : 'rows'}. Rows without an area basis take{' '}
-              <strong>{report.defaultAreaBasis}</strong>, the basis of the approved rate.
+              {report.rows} {report.rows === 1 ? 'row' : 'rows'}.{' '}
+              {report.defaultAreaBasis !== null
+                ? <>Rows without an area basis take <strong>{report.defaultAreaBasis}</strong>, the basis of the approved rate.</>
+                : <>No rate is approved yet, so rows without an area basis keep it <strong>pending verification</strong>; billing skips those flats until it is recorded.</>}
             </p>
             <dl className="grid grid-cols-2 sm:grid-cols-4 gap-2" aria-label="What the import does">
               <Count label="New flats" value={report.flats.new} />

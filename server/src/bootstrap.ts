@@ -37,7 +37,16 @@ import { audit } from './audit';
 export async function installSocietyStructure(
   tx: Queryable,
   societyId: string,
-  options: { invoicePrefix: string; gstNote: string },
+  options: {
+    invoicePrefix: string; gstNote: string;
+    /**
+     * 'pending-verification' leaves the payment terms (days to pay, sinking
+     * fund share) unset, so they read as pending until the committee's figures
+     * are entered and approved; production billing refuses to run until then.
+     * 'defaults' writes the demo figures, 15 days and 10%.
+     */
+    billingTerms?: 'defaults' | 'pending-verification';
+  },
 ): Promise<void> {
   for (const entry of CHART) {
     await tx.query(
@@ -95,8 +104,10 @@ export async function installSocietyStructure(
     note: options.gstNote,
   });
   await writeSetting(tx, { societyId, key: SETTING_KEYS.INVOICE_PREFIX, value: options.invoicePrefix });
-  await writeSetting(tx, { societyId, key: SETTING_KEYS.DUE_DAYS, value: 15 });
-  await writeSetting(tx, { societyId, key: SETTING_KEYS.SINKING_PERCENT, value: 10 });
+  if ((options.billingTerms ?? 'defaults') === 'defaults') {
+    await writeSetting(tx, { societyId, key: SETTING_KEYS.DUE_DAYS, value: 15 });
+    await writeSetting(tx, { societyId, key: SETTING_KEYS.SINKING_PERCENT, value: 10 });
+  }
   await writeSetting(tx, { societyId, key: SETTING_KEYS.BILLING_DAY, value: 1 });
 }
 
@@ -156,6 +167,9 @@ export async function createProductionSociety(
 
   await installSocietyStructure(tx, societyId, {
     invoicePrefix: input.invoicePrefix,
+    // A real society's payment terms are the committee's decision, not ours:
+    // no figure is written until someone enters theirs and another approves it.
+    billingTerms: 'pending-verification',
     gstNote:
       'Set at setup. No GST is charged until the treatment is entered and approved by ' +
       'someone other than the person who entered it.',

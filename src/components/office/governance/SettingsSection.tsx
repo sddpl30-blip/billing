@@ -24,8 +24,8 @@ const KNOWN: Record<string, { label: string; treatment: boolean; help: string }>
     help: 'When on, fund contributions are credited to income and appropriated later instead of to the fund directly. While on and unapproved, nothing that credits a fund can be posted.',
   },
   'billing.invoicePrefix': { label: 'Invoice prefix', treatment: false, help: '2–12 capital letters, digits or hyphens. Anything else falls back to INV.' },
-  'billing.dueDays': { label: 'Days to pay', treatment: false, help: 'Whole days from the invoice date, 0–90. Anything else falls back to 15.' },
-  'billing.sinkingFundPercent': { label: 'Sinking fund share (%)', treatment: false, help: 'Percentage of maintenance, 0–100.' },
+  'billing.dueDays': { label: 'Days to pay', treatment: false, help: 'Whole days from the invoice date, 0–90, as the committee fixed them. A live society cannot bill until this is entered and approved.' },
+  'billing.sinkingFundPercent': { label: 'Sinking fund share (%)', treatment: false, help: 'Percentage of maintenance, 0–100, as the AGM fixed it. A live society cannot bill until this is entered and approved.' },
   'billing.dayOfMonth': { label: 'Billing day of month', treatment: false, help: 'The day of the month the monthly run is scheduled for.' },
 };
 
@@ -59,7 +59,13 @@ function gstExample(opts: { ratePercent: number; thresholdRupees: number; sinkin
   return `${base}; CGST ${money(tax.cgst)} + SGST ${money(tax.sgst)}; total ${money(maintenance + sinking + tax.total)}.`;
 }
 
+/** Payment terms a live society must enter and approve before billing. Unset, they are pending verification. */
+const PAYMENT_TERMS = ['billing.dueDays', 'billing.sinkingFundPercent'];
+
 function describe(key: string, value: unknown): string {
+  if (PAYMENT_TERMS.includes(key) && (value === undefined || value === null)) {
+    return 'Pending verification — the committee\'s figure has not been entered';
+  }
   if (key === GST) {
     const gst = (value ?? {}) as GstValue;
     const threshold = typeof gst.memberThresholdRupees === 'number' ? gst.memberThresholdRupees : DEFAULT_THRESHOLD_RUPEES;
@@ -95,7 +101,7 @@ export function SettingsSection({ ctx }: { ctx: OfficeContext }) {
   // The two treatments are always listed: absent is a real state with a
   // meaning (no GST; fund credited directly) that someone may need to change.
   const rows: Array<Setting | { key: string; missing: true }> = [
-    ...[GST, FUNDS_THROUGH_INCOME]
+    ...[GST, FUNDS_THROUGH_INCOME, ...PAYMENT_TERMS]
       .filter(k => !stored.some(s => s.key === k))
       .map(k => ({ key: k, missing: true as const })),
     ...stored,
@@ -137,7 +143,9 @@ export function SettingsSection({ ctx }: { ctx: OfficeContext }) {
                     <code className="text-[10px] text-[var(--mv-muted)] break-all">{row.key}</code>
                   </div>
                   <p className="text-sm text-[var(--mv-ink)] break-words">
-                    {missing ? `Not set — ${describe(row.key, undefined).toLowerCase()}` : describe(row.key, row.value)}
+                    {missing
+                      ? (PAYMENT_TERMS.includes(row.key) ? describe(row.key, undefined) : `Not set — ${describe(row.key, undefined).toLowerCase()}`)
+                      : describe(row.key, row.value)}
                   </p>
                   {known !== undefined && <p className="text-[11px] text-[var(--mv-muted)]">{known.help}</p>}
                   {!missing && row.note !== null && <p className="text-[11px] text-[var(--mv-muted)] italic">Note: {row.note}</p>}
@@ -149,7 +157,9 @@ export function SettingsSection({ ctx }: { ctx: OfficeContext }) {
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                  {missing ? <Badge tone="muted">Not set</Badge> : row.approved ? <Badge tone="ok">Approved</Badge> : <Badge tone="warn">Pending approval</Badge>}
+                  {missing
+                    ? (PAYMENT_TERMS.includes(row.key) ? <Badge tone="warn">Pending verification</Badge> : <Badge tone="muted">Not set</Badge>)
+                    : row.approved ? <Badge tone="ok">Approved</Badge> : <Badge tone="warn">Pending approval</Badge>}
                   {mayEdit && (
                     <Button onClick={() => setEditing(row.key)} aria-label={`Edit ${known?.label ?? row.key}`}>Edit</Button>
                   )}
