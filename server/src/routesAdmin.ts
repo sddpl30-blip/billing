@@ -29,6 +29,7 @@ import { generateDocument } from './documents';
 import { A, accountBalance, postEntry, type Leg } from './posting';
 import { allocateNumber, lockFlatBalance } from './series';
 import { gstTreatment } from './settings';
+import { insertFlat, recordHolder, upsertOwner } from './members';
 import { formatRupees, percentOf } from '../../src/accounting/money';
 import { isoDateInIndia } from '../../src/accounting/clock';
 
@@ -807,26 +808,25 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     }
 
     const result = await pool.transaction(async (tx) => {
-      const inserted = await tx.query<{ id: string }>(
-        `INSERT INTO flats (society_id, flat_no, wing, floor, billing_area_sqft, area_basis, non_occupied)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         RETURNING id`,
-        [
-          principal.societyId, input.flatNo, input.wing ?? null, input.floor ?? null,
-          input.billingAreaSqFt ?? null, input.areaBasis ?? null, input.nonOccupied ?? false,
-        ],
-      );
+      const flatId = await insertFlat(tx, principal.societyId, {
+        flatNo: input.flatNo,
+        wing: input.wing ?? null,
+        floor: input.floor ?? null,
+        billingAreaSqFt: input.billingAreaSqFt ?? null,
+        areaBasis: input.areaBasis ?? null,
+        nonOccupied: input.nonOccupied ?? false,
+      });
       await audit(tx, {
         societyId: principal.societyId,
         actorUser: principal.userId,
         actorLabel: principal.email,
         action: 'member.manage',
         subjectTable: 'flats',
-        subjectId: inserted.rows[0].id,
+        subjectId: flatId,
         detail: { ...input },
         requestId: ctx.requestId,
       });
-      return inserted.rows[0].id;
+      return flatId;
     });
 
     return created({
@@ -855,34 +855,19 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
       );
       if (flat.rows[0] === undefined) throw notFound('That flat');
 
-      const owner = await tx.query<{ id: string }>(
-        `INSERT INTO owners (society_id, full_name, email, phone)
-         VALUES ($1,$2,$3,$4)
-         ON CONFLICT (society_id, email) DO UPDATE
-            SET full_name = EXCLUDED.full_name, phone = COALESCE(EXCLUDED.phone, owners.phone)
-         RETURNING id`,
-        [principal.societyId, input.fullName, input.email, input.phone ?? null],
-      );
-      const ownerId = owner.rows[0].id;
-
-      if (input.replaceCurrent) {
-        // The outgoing holder's tenure ends the day before the new one starts.
-        // Two open rows for one flat and role is how a previous owner's
-        // arrears attach to the new one, and a partial unique index refuses it
-        // — so this has to happen before the insert, not after.
-        await tx.query(
-          `UPDATE flat_ownership
-              SET held_until = ($2::date - 1)
-            WHERE flat_id = $1 AND role = $3 AND held_until IS NULL`,
-          [ctx.params.id, input.heldFrom, input.role],
-        );
-      }
-
-      await tx.query(
-        `INSERT INTO flat_ownership (flat_id, owner_id, role, held_from)
-         VALUES ($1,$2,$3,$4)`,
-        [ctx.params.id, ownerId, input.role, input.heldFrom],
-      );
+      const ownerId = await upsertOwner(tx, {
+        societyId: principal.societyId,
+        fullName: input.fullName,
+        email: input.email,
+        phone: input.phone ?? null,
+      });
+      await recordHolder(tx, {
+        flatId: ctx.params.id,
+        ownerId,
+        role: input.role,
+        heldFrom: input.heldFrom,
+        replaceCurrent: input.replaceCurrent,
+      });
 
       await audit(tx, {
         societyId: principal.societyId,
