@@ -24,6 +24,7 @@ const { seed } = await import(`${build}/seed.js`);
 const { PgPool, connectionFromEnv } = await import(`${build}/pg.js`);
 const { runDueJobs, backoffMinutes } = await import(`${build}/jobs.js`);
 const { createLogger } = await import(`${build}/logger.js`);
+const { createProductionSociety, AlreadyBootstrappedError } = await import(`${build}/bootstrap.js`);
 const { resolveEmailProvider } = await import(`${build}/providers/email.js`);
 const {
   summariseTrialBalance, assembleBalanceSheet, registerAgreesWithLedger,
@@ -148,6 +149,7 @@ process.env.OTP_PROVIDER = 'local-dev';
 process.env.EMAIL_PROVIDER = 'none';
 process.env.LOG_LEVEL = 'error';
 process.env.RATE_LIMIT_LOGIN_PER_HOUR = '8';
+process.env.SETUP_TOKEN = `setup-token-${stamp}-0123456789`;
 
 const seedPool = new PgPool(connectionFromEnv(process.env));
 const fixture = await seed(seedPool, { name: societyName, password: PASSWORD, emailDomain: domain });
@@ -236,6 +238,68 @@ await check('names the schema version it is running against', async () => {
 await check('does not claim a provider it has not got', async () => {
   const r = await anonymous.get('/api/health');
   equal(r.body.providers.emailDelivers, false, 'emailDelivers with EMAIL_PROVIDER=none');
+});
+
+// --- first-time setup ------------------------------------------------------
+
+suite('first-time setup');
+
+await check('setup reports whether it is needed, and that it is open', async () => {
+  const r = await anonymous.get('/api/setup');
+  equal(r.status, 200, 'status');
+  equal(typeof r.body.required, 'boolean', 'required');
+  equal(r.body.open, r.body.required, 'open exactly while it is needed, with SETUP_TOKEN set');
+});
+
+await check('setup with the wrong token is refused', async () => {
+  const r = await anonymous.post('/api/setup', {
+    token: 'not-the-setup-token',
+    societyName: 'Someone Else\'s Society',
+    invoicePrefix: 'XX',
+    secretaryEmail: `intruder-${stamp}@example.invalid`,
+    secretaryPassword: 'a-long-enough-password',
+  });
+  equal(r.status, 403, 'status');
+});
+
+await check('setup creates one production society with its structure and secretary, once', async () => {
+  // Inside a transaction that is rolled back: the test database must not be
+  // left holding a production society, or setup would be closed for every
+  // later run.
+  const pool = new PgPool(connectionFromEnv(process.env));
+  const rollback = new Error('rollback');
+  try {
+    await pool.transaction(async (tx) => {
+      const { societyId, secretaryId } = await createProductionSociety(tx, {
+        societyName: `Setup test ${stamp}`,
+        invoicePrefix: 'ST',
+        secretaryEmail: `setup-${stamp}@example.invalid`,
+        secretaryPassword: 'a-long-enough-password',
+        bank: { bankName: 'Test Bank', last4: '1234', ifsc: 'TEST0123456' },
+      });
+      const one = async (sql, params) => (await tx.query(sql, params)).rows[0];
+      equal((await one('SELECT mode FROM societies WHERE id = $1', [societyId])).mode, 'production', 'mode');
+      truthy(Number((await one('SELECT count(*)::text AS n FROM accounts WHERE society_id = $1', [societyId])).n) > 20, 'chart of accounts');
+      truthy(Number((await one('SELECT count(*)::text AS n FROM receipt_heads WHERE society_id = $1', [societyId])).n) > 3, 'receipt heads');
+      equal((await one('SELECT role FROM user_roles WHERE user_id = $1', [secretaryId])).role, 'secretary', 'the first account is the secretary');
+      equal((await one('SELECT ifsc FROM bank_accounts WHERE society_id = $1', [societyId])).ifsc, 'TEST0123456', 'the bank account');
+      const gst = await one(`SELECT value::text, approved_by FROM society_settings WHERE society_id = $1 AND key = 'gst.treatment'`, [societyId]);
+      equal(gst.approved_by, null, 'GST starts unapproved');
+      let second = null;
+      try {
+        await createProductionSociety(tx, {
+          societyName: 'A second one', invoicePrefix: 'XX',
+          secretaryEmail: `second-${stamp}@example.invalid`, secretaryPassword: 'a-long-enough-password',
+        });
+      } catch (err) { second = err; }
+      truthy(second instanceof AlreadyBootstrappedError, 'a second setup is refused');
+      throw rollback;
+    });
+  } catch (err) {
+    if (err !== rollback) throw err;
+  } finally {
+    await pool.end();
+  }
 });
 
 // --- authentication --------------------------------------------------------

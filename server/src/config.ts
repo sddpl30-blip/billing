@@ -67,6 +67,12 @@ export interface Config {
    * something to leave open by default.
    */
   readonly cronSecret: string | null;
+  /**
+   * Opens POST /api/setup, which creates the first production society. Unset,
+   * setup is CLI-only (`npm run db:bootstrap`). It stops working by itself
+   * once a production society exists, but should be removed after use.
+   */
+  readonly setupToken: string | null;
   /** 'vercel' when running as a serverless function. Reporting only. */
   readonly platform: 'node' | 'vercel';
 }
@@ -189,10 +195,19 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     );
   }
 
+  const setupToken = (env.SETUP_TOKEN ?? '').trim();
+  if (setupToken !== '' && setupToken.length < 16) {
+    throw new ConfigError(
+      `SETUP_TOKEN is ${setupToken.length} characters; at least 16 are required. Whoever ` +
+      'holds it can create the society and its first secretary.',
+    );
+  }
+
   return {
     mode,
     trustProxy,
     cronSecret: cronSecret === '' ? null : cronSecret,
+    setupToken: setupToken === '' ? null : setupToken,
     platform: onVercel ? 'vercel' : 'node',
     // 0 is allowed: it asks the operating system for a free port, which is
     // how the integration tests start a real server without picking one.

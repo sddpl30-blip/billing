@@ -19,6 +19,7 @@
     "test:browser": "node scripts/browser-test.mjs",
     "test:all": "npm run test && npm run test:browser && npm run test:backend && npm run test:frontend",
     "db:migrate": "node server/migrate.mjs",
+    "db:bootstrap": "node scripts/server.mjs build && node .server-build/server/src/bootstrap.js",
     "db:status": "node server/migrate.mjs status",
     "test:db": "node server/schema.test.mjs && node server/schema-domain.test.mjs",
     "db:verify": "node server/migrate.mjs verify",

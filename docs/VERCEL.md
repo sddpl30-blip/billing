@@ -210,6 +210,22 @@ know the secret and the routing are right.
 
 ---
 
+## Step 6 — Create the society
+
+A fresh database has the schema and no society, so there is nobody to sign
+in as. Either:
+
+* **From the site.** Add `SETUP_TOKEN` (any secret of 16+ characters) to the
+  Environment Variables and redeploy. Opening the site then shows **Set up your
+  society**: the name, an invoice prefix, the secretary's email and password,
+  optionally the operating bank account, and the token. It works once; after
+  that the screen is gone and the route refuses. Remove `SETUP_TOKEN` after.
+* **From a terminal.** `BOOTSTRAP_SOCIETY_NAME=... BOOTSTRAP_SECRETARY_EMAIL=...
+  BOOTSTRAP_SECRETARY_PASSWORD=... DATABASE_URL_UNPOOLED=... npm run db:bootstrap`.
+
+The secretary then adds flats, owners, the treasurer and manager accounts, and
+the maintenance rate from the Office; the treasurer approves the rate.
+
 ## The scheduler
 
 There is no process to keep a timer in, so the worker is replaced by an

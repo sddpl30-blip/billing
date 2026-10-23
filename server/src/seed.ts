@@ -20,43 +20,12 @@
  *   node .server-build/server/src/seed.js
  */
 
-import { CHART, RECEIPT_HEADS } from '../../src/accounting/accounts';
 import { PgPool, connectionFromEnv } from './pg';
 import { hashPassword } from './security';
 import { loadConfig } from './config';
 import { createLogger } from './logger';
-import { writeSetting, SETTING_KEYS } from './settings';
+import { installSocietyStructure } from './bootstrap';
 import type { Queryable } from './pg';
-
-/**
- * The chart of accounts, and the receipt heads, come from the engine.
- *
- * Not retyped here. They were, and the two drifted immediately: the engine has
- * 5000 as water supply and this file had it as housekeeping, so a vendor bill
- * booked to "housekeeping" through the API would have shown up as water in
- * every report the engine renders, and a journal entry restored into the
- * client's ledger would have been refused for naming an account the engine
- * does not know. One definition, mirrored into the database.
- */
-const ACCOUNTS = CHART;
-
-const RECEIPT_HEAD_ROWS: ReadonlyArray<{
-  key: string; label: string; income: string | null; fund: string | null;
-  taxable: boolean; creditsFundDirectly: boolean;
-}> = RECEIPT_HEADS.map(head => ({
-  key: head.key,
-  label: head.label,
-  income: head.income,
-  fund: head.fund ?? null,
-  // Which heads carry GST is a tax determination, not a fact about the head:
-  // maintenance and rental are services, a sinking fund contribution is a
-  // corpus collection. Whether any of it is charged at all still depends on
-  // the society's approved treatment, which starts off.
-  taxable: head.key === 'maintenance' || head.key === 'rental' || head.key === 'other',
-  // A sinking contribution is credited to the fund rather than to income, so
-  // it never appears as surplus the committee could spend.
-  creditsFundDirectly: head.key === 'sinking',
-}));
 
 /** Placeholder flats. Areas vary so the per-square-foot charge is visible. */
 const FLATS: ReadonlyArray<[string, string, number, number]> = [
@@ -119,32 +88,15 @@ export async function seed(
       societyId = society.rows[0].id;
     }
 
-    for (const entry of ACCOUNTS) {
-      await tx.query(
-        `INSERT INTO accounts (society_id, code, name, class, grp, is_cash, control)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (society_id, code) DO UPDATE
-            SET name = EXCLUDED.name, class = EXCLUDED.class, grp = EXCLUDED.grp,
-                is_cash = EXCLUDED.is_cash, control = EXCLUDED.control`,
-        [
-          societyId, entry.code, entry.name, entry.cls, entry.group,
-          entry.isCash ?? false, entry.control ?? null,
-        ],
-      );
-    }
-
-    for (const head of RECEIPT_HEAD_ROWS) {
-      await tx.query(
-        `INSERT INTO receipt_heads
-           (society_id, key, label, income_account, fund_account, taxable, credits_fund_directly)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (society_id, key) DO UPDATE
-            SET label = EXCLUDED.label, income_account = EXCLUDED.income_account,
-                fund_account = EXCLUDED.fund_account, taxable = EXCLUDED.taxable,
-                credits_fund_directly = EXCLUDED.credits_fund_directly`,
-        [societyId, head.key, head.label, head.income, head.fund, head.taxable, head.creditsFundDirectly],
-      );
-    }
+    // The chart of accounts, receipt heads, helpdesk categories and billing
+    // settings: the same structure a real society gets at setup, from the one
+    // function both use, so demo and production cannot be built differently.
+    await installSocietyStructure(tx, societyId, {
+      invoicePrefix: 'MV',
+      gstNote:
+        'Demo default. No GST is charged and no treatment is approved. Charging requires a ' +
+        'rate and a recorded sign-off.',
+    });
 
     const bank = await tx.query<{ id: string }>(
       `INSERT INTO bank_accounts
@@ -237,34 +189,6 @@ export async function seed(
        ON CONFLICT (society_id, effective_from) DO NOTHING`,
       [societyId, treasurer?.id ?? null],
     );
-
-    await tx.query(
-      `INSERT INTO ticket_categories (society_id, key, label, sla_hours, escalate_to_role)
-       VALUES ($1,'plumbing','Plumbing',24,'manager'),
-              ($1,'electrical','Electrical',12,'manager'),
-              ($1,'lift','Lift',6,'secretary'),
-              ($1,'housekeeping','Housekeeping',48,'manager'),
-              ($1,'security','Security',4,'secretary'),
-              ($1,'billing','Billing query',72,'treasurer')
-       ON CONFLICT (society_id, key) DO NOTHING`,
-      [societyId],
-    );
-
-    // Settings. GST starts off and unapproved on purpose: the first thing a
-    // demo should show is the system refusing to charge a tax nobody has
-    // signed off, not a confident 18%.
-    await writeSetting(tx, {
-      societyId,
-      key: SETTING_KEYS.GST,
-      value: { chargeGst: false, ratePercent: 0 },
-      note:
-        'Demo default. No GST is charged and no treatment is approved. Charging requires a ' +
-        'rate and a recorded sign-off.',
-    });
-    await writeSetting(tx, { societyId, key: SETTING_KEYS.INVOICE_PREFIX, value: 'MV' });
-    await writeSetting(tx, { societyId, key: SETTING_KEYS.DUE_DAYS, value: 15 });
-    await writeSetting(tx, { societyId, key: SETTING_KEYS.SINKING_PERCENT, value: 10 });
-    await writeSetting(tx, { societyId, key: SETTING_KEYS.BILLING_DAY, value: 1 });
 
     return {
       societyId,

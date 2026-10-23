@@ -17,6 +17,7 @@ import { createApp } from './http';
 import { createRoutes } from './routes';
 import { createAdminRoutes } from './routesAdmin';
 import { createCronRoutes } from './routesCron';
+import { createSetupRoutes } from './routesSetup';
 import { AuthService } from './auth';
 import { resolveOtpProvider, type OtpProvider } from './providers/otp';
 import { resolveEmailProvider, type EmailProvider } from './providers/email';
@@ -91,6 +92,7 @@ export function buildApp(
     // CRON_SECRET is set, so the standalone server and the serverless
     // deployment run the same routes.
     ...createCronRoutes({ pool, config, log, email }),
+    ...createSetupRoutes({ pool, config, log }),
   ];
 
   const { server, handler } = createApp(routes, {

@@ -70,6 +70,7 @@ import {
 } from './api/legacy';
 import type { TicketResponse } from './api/client';
 import type { OfficeContext } from './components/office/types';
+import { SetupGate } from './components/SetupScreen';
 import { LoginScreen } from './components/LoginScreen';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import { downloadInvoice, pdfFilename, saveBlob } from './invoiceExport';
@@ -1639,7 +1640,15 @@ export default function App() {
             {booksSource.error}
           </div>
         )}
-        <LoginScreen onLogin={handleLogin} server={signInServer} />
+        {onServer && booksSource.client !== null ? (
+          // A fresh production database has no society to sign in to; the gate
+          // shows first-time setup until it has one.
+          <SetupGate client={booksSource.client}>
+            <LoginScreen onLogin={handleLogin} server={signInServer} />
+          </SetupGate>
+        ) : (
+          <LoginScreen onLogin={handleLogin} server={signInServer} />
+        )}
       </>
     );
   }
