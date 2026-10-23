@@ -178,6 +178,68 @@ can be assumed. A change of owner ends the previous holder's tenure the day
 before the new one starts, and anything already outstanding stays against the
 flat — a new owner does not inherit it and it is not cleared.
 
+## Going live
+
+```
+POST /api/flats/import                       member.manage
+GET  /api/opening-balances                   report.read
+POST /api/opening-balances/draft             settings.manage
+POST /api/opening-balances/:id/discard       settings.manage
+POST /api/opening-balances/:id/approve       period.close
+POST /api/opening-balances/:id/reverse       period.close
+POST /api/advances/apply                     payment.record or billing.convert
+GET  /api/society                            report.read
+PUT  /api/society                            settings.manage
+```
+
+**Flat import.** `{ csv, dryRun, filename?, heldFrom? }`, at most 512 KB. The
+header row names the columns, case-insensitively and with common spellings
+accepted (`Flat No`, `Wing`, `Area (sq ft)`, `E-mail`, `Mobile`, …):
+
+```
+flat_no,tower,floor,area_sqft,area_basis,owner_name,owner_email,owner_mobile,co_owner_name,co_owner_email,owner_pan
+```
+
+`flat_no`, `area_sqft`, `owner_name` and `owner_email` are required;
+`area_basis` defaults to the basis of the approved rate (super built-up if
+none). Every row is checked first and each problem comes back with its line
+number; a file with any problem writes nothing (400 on commit). A repeated flat
+number or address within the file is a problem. Flats match by number and
+owners by address, so importing the same file again reports every row
+unchanged. Each owner and co-owner gets a resident account with no password —
+they sign in by emailed code — linked to their owner record. The audit row
+carries counts and the file's SHA-256, not its contents.
+
+**Opening balances.** The draft takes `{ asAt, autoBalance, dryRun, note?,
+accountLines[], flatsCsv? | flatLines? }`. The per-flat CSV is
+
+```
+flat_no,opening_due,opening_advance,due_since
+```
+
+in rupees (`due_since` optional, for ageing). A flat has a due or an advance,
+not both. Account lines are balance-sheet accounts only, one side each; a
+vendor payable (2000) names `vendorId`, `reference` (the bill number) and
+`expenseAccount`. With `autoBalance` the difference posts to 3020 General
+reserve as the balancing figure; without it an unbalanced batch saves but
+cannot be approved. Approval — by someone other than whoever saved the draft —
+posts one journal entry dated `asAt` (`source_kind` `opening-balance`): each
+due becomes a document numbered `OB/<batch>/<n>` in state `tax-invoice` that
+receipts settle oldest-first and ageing reports, each advance a credit on 2300,
+each payable a booked vendor bill. No GST, and no GST register row (a trigger
+refuses one). One batch per society may stand; a correction is
+`/reverse` (refused once anything has been settled against an opening item)
+and a new draft. It is refused while any other entry is dated on or before
+`asAt`.
+
+**Advances.** `{ on, flatId? }` sets each flat's advance against its open
+invoices, oldest first: debit 2300, credit 1100 per invoice.
+
+**Society profile.** GSTIN is checked for shape, its check character, and that
+it begins with the state code; TAN is `AAAA99999A`. Changes are audited with
+before and after. Documents generated afterwards carry the new details; one
+already issued keeps what it was issued with.
+
 ## Reference
 
 ### Billing
