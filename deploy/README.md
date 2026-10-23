@@ -147,6 +147,6 @@ sudo systemctl daemon-reload && sudo systemctl enable --now societybooks-backup.
 systemctl list-timers societybooks-backup.timer   # when it runs next
 ```
 
-The machine needs `postgresql-client` for `pg_dump`. A dump on the same disk
-as nothing else is still one disk: copy the files off the machine, and
+The machine needs `postgresql-client` for `pg_dump`. A dump on the database's
+own machine is lost with it: copy the files off the machine, and
 rehearse a restore with `ADMIN_URL=... node scripts/verify-backup.mjs`.
