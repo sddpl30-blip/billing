@@ -147,8 +147,22 @@ export function importDemoData(
     ].filter(l => l.amount > 0);
 
     if (inv.latePenalty > 0) {
-      // Late interest is its own head, not part of the maintenance charge.
-      lines.push({ head: 'other' as const, amount: fromRupees(inv.latePenalty), taxable: false } as never);
+      // Late interest is its own head, not part of the maintenance charge, and
+      // it has its own income account (4060). It was booked to "Other
+      // receipts", so penalty income vanished into a figure nobody could
+      // explain.
+      //
+      // Taxable when the supply it is levied on is: interest for late payment
+      // of a taxable supply is part of the value of that supply under GST, so
+      // it follows the maintenance lines rather than being declared exempt
+      // here. On an import the stated tax is posted either way; the flag is
+      // what the taxable value reports.
+      const underlyingTaxable = lines.some(l => l.taxable);
+      lines.push({
+        head: 'late-interest' as const,
+        amount: fromRupees(inv.latePenalty),
+        taxable: underlyingTaxable,
+      } as never);
     }
     if (lines.length === 0) {
       skipped.push({ what: `invoice ${inv.invoiceNo}`, why: 'every line is zero' });

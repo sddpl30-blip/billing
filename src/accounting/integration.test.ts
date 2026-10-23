@@ -13,7 +13,7 @@ import { formatRupees, fromRupees } from './money';
 import { A } from './accounts';
 import { Ledger } from './journal';
 import { AccountingConfig, DEMO_CONFIG } from './config';
-import { fixedClock } from './clock';
+import { canonicalPeriod, fixedClock, isoDateInIndia } from './clock';
 import { BillingRegister, DocumentError } from './documents';
 import { runBilling, FlatRecord } from './billingRun';
 import {
@@ -25,7 +25,7 @@ import {
 } from './reports';
 import { applyAdvance, bookVendorBill, payVendorBill, remitTds } from './transactions';
 import { buildStatements } from './uiReports';
-import { SourceInvoice, SourceVendorInvoice } from './adapter';
+import { SourceInvoice, SourceVendorInvoice, importDemoData } from './adapter';
 import { createBooksStore } from '../store/booksStore';
 import { toRupees } from './money';
 
@@ -800,9 +800,10 @@ check('a non-standard GST rate flows through', () => {
   const register = new BillingRegister(ledger, twelve, CLOCK);
   const doc = register.issueProforma({
     flatNo: 'A-101', period: 'Jul 2026',
-    lines: [{ head: 'maintenance', amount: R(1000), taxable: true }],
+    // Above the ₹7,500 per-member threshold, below which nothing is charged.
+    lines: [{ head: 'maintenance', amount: R(10000), taxable: true }],
   });
-  eq(doc.estimatedTax, R(120), '12% applied');
+  eq(doc.estimatedTax, R(1200), '12% applied');
 });
 
 // --- cancellation and reversal -------------------------------------------
@@ -1198,6 +1199,120 @@ check('an empty store falls back to the seed so the books are never blank', () =
   const statements = buildStatements(SEED_INVOICES, [], { ledger: store.snapshot().ledger });
   eq(statements.source, 'imported-seed', 'the seed was imported');
   truthy(statements.counts.entries > 0, 'and there is something to show');
+});
+
+// --- regressions from the accounting audit ---------------------------------
+
+suite('Audit regressions');
+
+check('a period is canonicalised before the duplicate check', () => {
+  const { register } = freshRegister();
+  const doc = register.issueProforma({
+    flatNo: 'A-101', period: 'jul  2026',
+    lines: [{ head: 'maintenance', amount: R(5000), taxable: true }],
+  });
+  eq(doc.period, 'Jul 2026', 'the stored period');
+  // "July 2026" and "JUL 2026" are the same month; the raw-text key let both
+  // through as new slots.
+  throws(() => register.issueProforma({
+    flatNo: 'A-101', period: 'July 2026',
+    lines: [{ head: 'maintenance', amount: R(5000), taxable: true }],
+  }), /already has .* for Jul 2026/, 'a second spelling of July');
+  truthy(register.hasDocumentFor('A-101', 'JUL 2026'), 'the slot is found under any spelling');
+  throws(() => register.issueProforma({
+    flatNo: 'B-204', period: 'Julyy 2026',
+    lines: [{ head: 'maintenance', amount: R(5000), taxable: true }],
+  }), /not a month and year/, 'a word that only starts like a month');
+  eq(canonicalPeriod('Sept 2026'), 'Sep 2026', 'Sept');
+  eq(canonicalPeriod(' 2026 Jul'), null, 'year first');
+});
+
+check('a cancelled tax invoice can be replaced and the replacement posts', () => {
+  const { ledger, register } = freshRegister();
+  const lines = [{ head: 'maintenance' as const, amount: R(5000), taxable: true }];
+  const first = register.issueProforma({ flatNo: 'A-101', period: 'Jul 2026', lines });
+  register.approve(first.proformaNo, 'T');
+  register.convertToTaxInvoice(first.proformaNo, { because: 'manual', by: 'T' });
+  register.cancel(first.proformaNo, 'T', 'wrong area on file');
+
+  // Its own number: re-using PI-2026-07-A101 was refused as "already in use".
+  const second = register.issueProforma({ flatNo: 'A-101', period: 'Jul 2026', lines });
+  eq(second.proformaNo, 'PI-2026-07-A101-R2', 'the replacement number');
+  register.approve(second.proformaNo, 'T');
+  // And it posts: the billing entry was keyed on flat and period, and the
+  // reversed entry's key is never released.
+  const { document } = register.convertToTaxInvoice(second.proformaNo, { because: 'manual', by: 'T' });
+  eq(register.outstandingOf(document), R(5000), 'the replacement is owed');
+  eq(ledger.balanceOf(A.MAINTENANCE_RECEIVABLE, { party: 'A-101' }), R(5000), 'the flat owes it once');
+  eq(ledger.all().filter(e => e.source.kind === 'maintenance-billing').length, 2, 'two billing entries');
+  assertTies(ledger, '2026-07-01', '2026-07-31', 'after the replacement');
+});
+
+check('the proforma estimate and the posted tax follow the same threshold rule', () => {
+  const { register } = freshRegister();
+  const under = register.issueProforma({
+    flatNo: 'A-101', period: 'Jul 2026',
+    lines: [{ head: 'maintenance', amount: R(7500), taxable: true }],
+  });
+  eq(under.estimatedTax, 0, 'at ₹7,500 a member is exempt');
+  const over = register.issueProforma({
+    flatNo: 'B-204', period: 'Jul 2026',
+    lines: [
+      { head: 'maintenance', amount: R(9000), taxable: true },
+      { head: 'sinking', amount: R(900), taxable: false },
+    ],
+  });
+  eq(over.estimatedTax, R(1620), 'above it, 18% of the whole taxable value');
+  register.approve(over.proformaNo, 'T');
+  const { document } = register.convertToTaxInvoice(over.proformaNo, { because: 'manual', by: 'T' });
+  eq(document.gross, over.gross, 'the posted gross is the estimate');
+});
+
+check('an imported late penalty is late-payment interest, not "other receipts"', () => {
+  const invoice: SourceInvoice = {
+    id: 'pen-1', invoiceNo: 'GM-PEN-1', flatNo: 'A-101', name: 'Test', period: 'Jun 2026',
+    maintenance: 2500, sinkingFund: 500, waterCharges: 0, parkingCharges: 0,
+    nonOccupancyCharges: 0, latePenalty: 100, gst: 450, total: 3550,
+    status: 'Pending', dueDate: '10th of Month',
+  };
+  const report = importDemoData([invoice], []);
+  eq(report.skipped.length, 0, 'nothing skipped');
+  eq(report.ledger.balanceOf(A.INC_LATE_INTEREST), R(100), 'late payment interest (4060)');
+  eq(report.ledger.balanceOf(A.INC_OTHER_RECEIPTS), 0, 'other receipts untouched');
+});
+
+check('TDS is withheld on the bill less its GST, rounded half-up', () => {
+  const ledger = new Ledger();
+  const withGst = bookVendorBill(ledger, {
+    vendorId: 'V1', vendorName: 'Lift Co', billNo: 'L-1', date: '2026-07-05',
+    expenseAccount: A.EXP_LIFT, gross: R(11800), inputGst: R(1800), tdsSection: '194C',
+  }, APPROVED, { postedBy: 'test' });
+  // 2% of the ₹10,000 service; it was 2% of ₹11,800.
+  eq(withGst.tdsAmount, R(200), 'tds on the value of the service');
+  eq(withGst.netPayable, R(11600), 'net payable');
+  const odd = bookVendorBill(ledger, {
+    vendorId: 'V1', vendorName: 'Lift Co', billNo: 'L-2', date: '2026-07-05',
+    expenseAccount: A.EXP_LIFT, gross: 10_025, tdsSection: '194C',
+  }, APPROVED, { postedBy: 'test' });
+  eq(odd.tdsAmount, 201, '2% of 10,025 paise, half-up — the server now agrees');
+});
+
+check('a tax invoice in February is labelled by its financial year', () => {
+  const { register } = freshRegister();
+  const doc = register.issueProforma({
+    flatNo: 'A-101', period: 'Feb 2027',
+    lines: [{ head: 'maintenance', amount: R(5000), taxable: true }],
+  });
+  register.approve(doc.proformaNo, 'T', '2027-02-01');
+  const { document } = register.convertToTaxInvoice(doc.proformaNo, {
+    on: '2027-02-10', because: 'manual', by: 'T',
+  });
+  truthy((document.taxInvoiceNo ?? '').startsWith('TI/2026/'), `FY 2026-27, got ${document.taxInvoiceNo}`);
+});
+
+check('"today" is the date in India', () => {
+  eq(isoDateInIndia(new Date('2026-07-31T18:29:59Z')), '2026-07-31', 'just before midnight IST');
+  eq(isoDateInIndia(new Date('2026-07-31T18:30:00Z')), '2026-08-01', 'midnight IST, still the 31st in UTC');
 });
 
 // --- helper ---------------------------------------------------------------

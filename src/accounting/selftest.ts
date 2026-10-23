@@ -315,31 +315,37 @@ suite('Maintenance billing and GST');
 
 check('GST is 18% of the taxable lines, split equally into CGST and SGST', () => {
   const ledger = new Ledger();
+  // Above the ₹7,500 per-member threshold, so the whole taxable value is taxed.
   const result = billMaintenance(ledger, {
     flatNo: 'A-101', period: 'Jul 2026', date: '2026-07-01', invoiceNo: 'INV-1',
     lines: [
-      { head: 'maintenance', amount: R(5000), taxable: true },
+      { head: 'maintenance', amount: R(9000), taxable: true },
       { head: 'sinking', amount: R(1000), taxable: false },
     ],
   }, DEMO_CONFIG, ACTOR);
 
-  eq(result.taxableValue, R(5000), 'taxable value');
-  eq(result.cgst + result.sgst, R(900), 'total GST');
-  eq(result.cgst, R(450), 'CGST');
-  eq(result.sgst, R(450), 'SGST');
-  eq(result.gross, R(6900), 'gross');
-  eq(ledger.balanceOf(A.MAINTENANCE_RECEIVABLE, { party: 'A-101' }), R(6900), 'receivable');
+  eq(result.taxableValue, R(9000), 'taxable value');
+  eq(result.cgst + result.sgst, R(1620), 'total GST');
+  eq(result.cgst, R(810), 'CGST');
+  eq(result.sgst, R(810), 'SGST');
+  eq(result.gross, R(11620), 'gross');
+  eq(ledger.balanceOf(A.MAINTENANCE_RECEIVABLE, { party: 'A-101' }), R(11620), 'receivable');
 });
 
-check('an odd GST amount still splits without losing a paisa', () => {
+check('CGST and SGST are each 9% of the taxable value, so they are always equal', () => {
   const ledger = new Ledger();
-  // 18% of ₹100.05 = ₹18.009 -> 1801 paise, which is odd.
+  // 9% of ₹7,500.05 is ₹675.0045, so each half is 67,500 paise. Taking 18% of
+  // the whole first gives 135,001 — odd — and splitting that put 67,501 on
+  // one half and 67,500 on the other, under an invoice that prints both at
+  // 9%.
   const result = billMaintenance(ledger, {
     flatNo: 'A-102', period: 'Jul 2026', date: '2026-07-01', invoiceNo: 'INV-2',
-    lines: [{ head: 'maintenance', amount: R(100.05), taxable: true }],
+    lines: [{ head: 'maintenance', amount: R(7500.05), taxable: true }],
   }, DEMO_CONFIG, ACTOR);
-  eq(result.cgst + result.sgst, percentOf(R(100.05), 18), 'CGST + SGST equals the tax');
-  truthy(Math.abs(result.cgst - result.sgst) <= 1, 'split is even to within a paisa');
+  eq(result.cgst, percentOf(R(7500.05), 9), 'CGST at half the rate');
+  eq(result.sgst, result.cgst, 'SGST equals CGST');
+  eq(result.cgst + result.sgst, 135_000, 'the total is the sum of the halves');
+  eq(ledger.balanceOf(A.CGST_OUTPUT) + ledger.balanceOf(A.SGST_OUTPUT), 135_000, 'and is what was posted');
 });
 
 check('GST liabilities reconcile with the tax invoices raised', () => {
@@ -355,6 +361,49 @@ check('GST liabilities reconcile with the tax invoices raised', () => {
   const onLedger =
     ledger.balanceOf(A.CGST_OUTPUT) + ledger.balanceOf(A.SGST_OUTPUT);
   eq(onLedger, expected, 'GST on the ledger vs GST on the invoices');
+});
+
+check('a member at or under the per-member threshold is not charged GST', () => {
+  const ledger = new Ledger();
+  const r = billMaintenance(ledger, {
+    flatNo: 'T-1', period: 'Jul 2026', date: '2026-07-01', invoiceNo: 'INV-T1',
+    lines: [{ head: 'maintenance', amount: R(7500), taxable: true }],
+  }, DEMO_CONFIG, ACTOR);
+  eq(r.cgst + r.sgst, 0, 'GST at exactly ₹7,500');
+  eq(r.taxableValue, 0, 'and no taxable value is reported for an exempt supply');
+  eq(r.gross, R(7500), 'gross');
+});
+
+check('above it, GST is due on the whole amount, not on the excess', () => {
+  const ledger = new Ledger();
+  const r = billMaintenance(ledger, {
+    flatNo: 'T-2', period: 'Jul 2026', date: '2026-07-01', invoiceNo: 'INV-T2',
+    lines: [{ head: 'maintenance', amount: R(7500.01), taxable: true }],
+  }, DEMO_CONFIG, ACTOR);
+  eq(r.taxableValue, R(7500.01), 'taxable value');
+  eq(r.cgst, percentOf(R(7500.01), 9), 'CGST on all of it');
+  eq(r.sgst, r.cgst, 'SGST equal');
+});
+
+check('a non-taxable sinking share does not push a member over the threshold', () => {
+  const ledger = new Ledger();
+  const r = billMaintenance(ledger, {
+    flatNo: 'T-3', period: 'Jul 2026', date: '2026-07-01', invoiceNo: 'INV-T3',
+    lines: [
+      { head: 'maintenance', amount: R(7000), taxable: true },
+      { head: 'sinking', amount: R(1000), taxable: false },
+    ],
+  }, DEMO_CONFIG, ACTOR);
+  eq(r.cgst + r.sgst, 0, 'GST');
+});
+
+check('the threshold is the config value, not a literal', () => {
+  const ledger = new Ledger();
+  const r = billMaintenance(ledger, {
+    flatNo: 'T-4', period: 'Jul 2026', date: '2026-07-01', invoiceNo: 'INV-T4',
+    lines: [{ head: 'maintenance', amount: R(5000), taxable: true }],
+  }, { ...DEMO_CONFIG, gstMemberThresholdRupees: 0 }, ACTOR);
+  eq(r.cgst + r.sgst, R(900), 'taxed with no exemption configured');
 });
 
 check('no GST is charged when the config says it does not apply', () => {
@@ -416,10 +465,10 @@ check('new billing computes its own tax rather than taking one', () => {
   const ledger = new Ledger();
   const result = billMaintenance(ledger, {
     flatNo: 'A-102', period: 'Jul 2026', date: '2026-07-01', invoiceNo: 'INV-NEW',
-    lines: [{ head: 'maintenance', amount: R(3100), taxable: true }],
+    lines: [{ head: 'maintenance', amount: R(9100), taxable: true }],
   }, DEMO_CONFIG, ACTOR);
-  eq(result.cgst + result.sgst, percentOf(R(3100), 18), 'computed at the configured rate');
-  eq(result.gross, R(3100) + percentOf(R(3100), 18), 'gross');
+  eq(result.cgst + result.sgst, percentOf(R(9100), 18), 'computed at the configured rate');
+  eq(result.gross, R(9100) + percentOf(R(9100), 18), 'gross');
 });
 
 // --- Partial payments and advances ---------------------------------------
@@ -647,10 +696,10 @@ check('a reversal mirrors the original and nets both to zero', () => {
   const ledger = new Ledger();
   const { entry } = billMaintenance(ledger, {
     flatNo: 'B-204', period: 'Jul 2026', date: '2026-07-01', invoiceNo: 'INV-R1',
-    lines: [{ head: 'maintenance', amount: R(5000), taxable: true }],
+    lines: [{ head: 'maintenance', amount: R(9000), taxable: true }],
   }, DEMO_CONFIG, ACTOR);
 
-  eq(ledger.balanceOf(A.MAINTENANCE_RECEIVABLE, { party: 'B-204' }), R(5900), 'before reversal');
+  eq(ledger.balanceOf(A.MAINTENANCE_RECEIVABLE, { party: 'B-204' }), R(10620), 'before reversal');
 
   const reversal = ledger.reverse(entry.id, {
     date: '2026-07-02', postedBy: 'selftest', reason: 'wrong period',
