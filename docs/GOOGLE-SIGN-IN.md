@@ -59,6 +59,14 @@ A member whose address is not a Google account (Yahoo, Rediffmail, …) cannot
 use the button; the office can either record a Google address for them or
 give them a password.
 
+Both are in **Office → Approvals & admin → Users & roles**, on a resident's
+row: **E-mail** changes the sign-in address (and the owner record's, when it
+was the same), **Set / Reset password** sets one and ends the member's
+sessions. Hand a password over in person, not by e-mail. These buttons appear
+only for resident accounts: an office-bearer's password is changed by that
+person alone, under **My password**, with their current password, so nobody
+can sign in as the treasurer and approve their own figures.
+
 ## How it works
 
 `server/src/routesGoogle.ts`: the authorization-code flow with PKCE and a

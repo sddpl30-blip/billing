@@ -2498,6 +2498,126 @@ await check('and cannot be done to your own account', async () => {
   matches(r.body.message, /lock you out/, 'message');
 });
 
+// --- a member's e-mail and password, set by the office ----------------------
+
+await check('the office changes a resident\'s e-mail; sign-in and the owner record move with it', async () => {
+  const flat = await manager.post('/api/flats', {
+    flatNo: `E-${stamp.slice(0, 3)}`, billingAreaSqFt: 800, areaBasis: 'carpet',
+  });
+  equal(flat.status, 201, 'flat');
+  const oldEmail = `mover.${stamp}@${domain}`;
+  const newEmail = `Mover.New.${stamp}@${domain}`;
+  const owner = await manager.post(`/api/flats/${flat.body.id}/owner`, {
+    fullName: 'Mover (test)', email: oldEmail, role: 'owner',
+    heldFrom: '2026-07-01', replaceCurrent: false,
+  });
+  equal(owner.status, 201, 'owner');
+  const created = await secretary.post('/api/users', {
+    email: oldEmail, roles: ['resident'], ownerId: owner.body.ownerId,
+    password: 'mover-password-123',
+  });
+  equal(created.status, 201, 'account');
+
+  const r = await secretary.post(`/api/users/${created.body.id}/email`, { email: newEmail });
+  equal(r.status, 200, 'status');
+  equal(r.body.email, newEmail.toLowerCase(), 'stored lower-case');
+  equal(r.body.ownerEmailUpdated, true, 'owner e-mail followed');
+
+  const client = new Client(base);
+  equal((await client.post('/api/auth/password', { email: oldEmail, password: 'mover-password-123' })).status,
+    401, 'old address no longer signs in');
+  await client.signIn(newEmail.toLowerCase(), 'mover-password-123');
+  equal(psql(`SELECT email FROM owners WHERE id = '${owner.body.ownerId}';`).out,
+    newEmail.toLowerCase(), 'owner record');
+  const trail = await auditor.get('/api/audit?action=user.email');
+  equal(trail.body.entries[0].detail.from, oldEmail, 'trail from');
+});
+
+await check('an e-mail another active account uses is refused', async () => {
+  const created = await secretary.post('/api/users', {
+    email: `dupe.${stamp}@${domain}`, roles: ['resident'],
+  });
+  const r = await secretary.post(`/api/users/${created.body.id}/email`, { email: residentEmail });
+  equal(r.status, 409, 'status');
+});
+
+await check('the office sets a resident\'s password; old sessions end and the new one works', async () => {
+  const email = `forgot.${stamp}@${domain}`;
+  const created = await secretary.post('/api/users', {
+    email, roles: ['resident'], password: 'first-password-123',
+  });
+  const old = new Client(base);
+  await old.signIn(email, 'first-password-123');
+
+  const short = await secretary.post(`/api/users/${created.body.id}/password`, { password: 'short' });
+  equal(short.status, 400, 'too short');
+
+  const r = await secretary.post(`/api/users/${created.body.id}/password`, {
+    password: 'second-password-123',
+  });
+  equal(r.status, 200, 'status');
+  truthy(r.body.sessionsRevoked >= 1, 'sessions revoked');
+  equal((await old.get('/api/auth/me')).status, 401, 'old session ended');
+
+  const fresh = new Client(base);
+  await fresh.signIn(email, 'second-password-123');
+  const trail = await auditor.get('/api/audit?action=user.password.set');
+  const detail = JSON.stringify(trail.body.entries[0].detail);
+  truthy(!detail.includes('second-password-123'), 'no password in the trail');
+});
+
+await check('an office-bearer\'s e-mail or password cannot be changed by the office', async () => {
+  const target = userOf('treasurer').id;
+  const p = await secretary.post(`/api/users/${target}/password`, { password: 'takeover-password-1' });
+  equal(p.status, 409, 'password');
+  matches(p.body.message, /Only a resident account/, 'message');
+  const e = await secretary.post(`/api/users/${target}/email`, { email: `takeover.${stamp}@${domain}` });
+  equal(e.status, 409, 'email');
+});
+
+await check('nor the secretary\'s own, and only the secretary may use these', async () => {
+  const self = userOf('secretary').id;
+  equal((await secretary.post(`/api/users/${self}/password`, { password: 'my-own-password-1' })).status,
+    409, 'self');
+  const users = await secretary.get('/api/users');
+  const res = users.body.users.find(u => u.email === residentEmail);
+  equal((await manager.post(`/api/users/${res.id}/password`, { password: 'manager-sets-this-1' })).status,
+    403, 'manager');
+  equal((await resident.post(`/api/users/${res.id}/email`, { email: `x.${stamp}@${domain}` })).status,
+    403, 'resident');
+});
+
+await check('anyone changes their own password with the current one; other sessions end', async () => {
+  const email = `self.${stamp}@${domain}`;
+  await secretary.post('/api/users', { email, roles: ['auditor'], password: 'self-password-one' });
+  const here = new Client(base);
+  const elsewhere = new Client(base);
+  await here.signIn(email, 'self-password-one');
+  await elsewhere.signIn(email, 'self-password-one');
+
+  const wrong = await here.post('/api/auth/password/change', {
+    currentPassword: 'not-the-password', newPassword: 'self-password-two',
+  });
+  equal(wrong.status, 400, 'wrong current password');
+  matches(wrong.body.message, /current password/, 'message');
+
+  const r = await here.post('/api/auth/password/change', {
+    currentPassword: 'self-password-one', newPassword: 'self-password-two',
+  });
+  equal(r.status, 200, 'status');
+  equal(r.body.otherSessionsEnded, 1, 'the other session');
+  equal((await here.get('/api/auth/me')).status, 200, 'this session stays');
+  equal((await elsewhere.get('/api/auth/me')).status, 401, 'the other one ends');
+  equal((await new Client(base).post('/api/auth/password', { email, password: 'self-password-one' })).status,
+    401, 'old password refused');
+  await new Client(base).signIn(email, 'self-password-two');
+  // Its session was ended above; it still carries a CSRF cookie, so this is
+  // refused for want of a session, not for want of the header.
+  equal((await elsewhere.post('/api/auth/password/change', {
+    currentPassword: 'self-password-two', newPassword: 'self-password-three',
+  })).status, 401, 'needs a session');
+});
+
 await check('a flat needs its area and basis together or neither', async () => {
   const r = await manager.post('/api/flats', {
     flatNo: `D-${stamp.slice(0, 3)}`,
