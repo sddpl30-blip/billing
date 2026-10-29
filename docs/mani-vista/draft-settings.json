@@ -70,8 +70,8 @@
       "status": "from the committee; secretary enters, treasurer approves"
     },
     "billing.sinkingFundPercent": {
-      "value": null,
-      "status": "committee answered \"NA\"; to confirm it means 0 (no sinking fund collected). The approach note worked example used 10%."
+      "value": 0,
+      "status": "committee answered \"NA\": read as no sinking fund collected, 0%. Secretary enters, treasurer approves; change if the AGM fixes a share later. The approach note worked example had used 10%."
     },
     "billing.dayOfMonth": {
       "value": 1,
@@ -109,15 +109,17 @@
     },
     "jointTreasurer": {
       "email": "modi_anilkr@yahoo.com",
-      "status": "from the committee; role in the app to confirm (second treasurer, or manager)"
+      "role": "manager",
+      "status": "proposed: raises bills and records payments, the treasurer approves them, which keeps maker and checker on two finance people. Change if the committee differs."
     },
     "president": {
       "email": "saha.mesuman@gmail.com",
-      "status": "from the committee; the app has no president role, role to confirm (auditor = read-only, or manager)"
+      "role": "auditor",
+      "status": "proposed: read-only view of every bill, payment and report, so the president can oversee without being able to change figures. Change if the committee differs."
     },
     "manager": {
-      "email": null,
-      "status": "not given: the manager raises bills and records payments, and cannot also be secretary or treasurer"
+      "email": "modi_anilkr@yahoo.com",
+      "status": "proposed, the joint treasurer (see above)"
     },
     "auditor": {
       "email": null,
