@@ -30,6 +30,7 @@ const { resolveEmailProvider } = await import(`${build}/providers/email.js`);
 const { runBilling } = await import(`${build}/billing.js`);
 const { pendingBillingTerms, writeSetting } = await import(`${build}/settings.js`);
 const { importFlats } = await import(`${build}/flatImport.js`);
+const { parseDeploymentAccounts, provisionInTransaction } = await import(`${build}/deploymentAccounts.js`);
 const {
   summariseTrialBalance, assembleBalanceSheet, registerAgreesWithLedger,
 } = await import(`${build}/reports.js`);
@@ -316,6 +317,91 @@ await check('setup creates one production society with its structure and secreta
         });
       } catch (err) { second = err; }
       truthy(second instanceof AlreadyBootstrappedError, 'a second setup is refused');
+      throw rollback;
+    });
+  } catch (err) {
+    if (err !== rollback) throw err;
+  } finally {
+    await pool.end();
+  }
+});
+
+await check('office accounts in the deployment settings are read strictly, and a mistake is reported, not thrown', async () => {
+  equal(parseDeploymentAccounts({}).kind, 'none', 'nothing set');
+  const bad = (env, pattern) => {
+    const r = parseDeploymentAccounts(env);
+    equal(r.kind, 'invalid', JSON.stringify(env));
+    matches(r.problem, pattern, 'problem');
+  };
+  bad({ OFFICE_ACCOUNTS: 'a@x.in=secretary' }, /OFFICE_START_PASSWORD is empty/);
+  bad({ OFFICE_ACCOUNTS: 'a@x.in=secretary', OFFICE_START_PASSWORD: 'short' }, /at least 12/);
+  bad({ OFFICE_ACCOUNTS: 'a@x.in=president', OFFICE_START_PASSWORD: 'a-long-enough-password' }, /not a role/);
+  bad({ OFFICE_ACCOUNTS: 'a@x.in=secretary,A@x.in=treasurer', OFFICE_START_PASSWORD: 'a-long-enough-password' }, /twice/);
+  const ok = parseDeploymentAccounts({
+    OFFICE_ACCOUNTS: ' Sec@x.in = secretary , t@x.in=treasurer ',
+    OFFICE_START_PASSWORD: 'a-long-enough-password', BOOTSTRAP_SOCIETY_NAME: 'Env Society',
+  });
+  equal(ok.kind, 'ok', 'parsed');
+  equal(ok.spec.accounts[0].email, 'sec@x.in', 'lower-cased and trimmed');
+  equal(ok.spec.society.invoicePrefix, 'MV', 'default prefix');
+});
+
+await check('the deployment settings create the society and its office accounts once, and never touch an existing account', async () => {
+  const pool = new PgPool(connectionFromEnv(process.env));
+  const rollback = new Error('rollback');
+  const log = createLogger({ logLevel: 'error', mode: 'test' });
+  const sec = `envsec-${stamp}@example.invalid`;
+  const tre = `envtre-${stamp}@example.invalid`;
+  const man = `envman-${stamp}@example.invalid`;
+  const spec = parseDeploymentAccounts({
+    OFFICE_ACCOUNTS: `${sec}=secretary,${tre}=treasurer,${man}=manager`,
+    OFFICE_START_PASSWORD: 'shared-start-password-1',
+    BOOTSTRAP_SOCIETY_NAME: `Env society ${stamp}`, BOOTSTRAP_STATE_CODE: '19',
+  }).spec;
+  try {
+    await pool.transaction(async (tx) => {
+      const first = await provisionInTransaction(tx, spec, log);
+      equal(first.societyCreated, true, 'society created');
+      equal(first.created.length, 3, 'three accounts');
+      const roles = await tx.query(
+        `SELECT u.email, r.role, u.password_hash FROM users u JOIN user_roles r ON r.user_id = u.id
+          JOIN societies s ON s.id = u.society_id AND s.mode = 'production' ORDER BY u.email`,
+      );
+      equal(roles.rows.map(r => `${r.email}=${r.role}`).join(','),
+        `${man}=manager,${sec}=secretary,${tre}=treasurer`, 'one role each');
+      truthy(roles.rows.every(r => r.password_hash.startsWith('scrypt$')), 'hashed, never stored as typed');
+
+      // The treasurer changes their password, the manager is deactivated:
+      // running again must leave both exactly as they are.
+      await tx.query(`UPDATE users SET password_hash = 'changed' WHERE email = $1`, [tre]);
+      await tx.query(`UPDATE users SET is_active = false WHERE email = $1`, [man]);
+      const again = await provisionInTransaction(tx, spec, log);
+      equal(again.societyCreated, false, 'no second society');
+      equal(again.created.length, 0, 'nothing new');
+      equal(again.alreadyThere.length, 3, 'all there');
+      const after = await tx.query(`SELECT email, password_hash, is_active FROM users WHERE email IN ($1, $2) ORDER BY email`, [tre, man]);
+      equal(after.rows.find(r => r.email === tre).password_hash, 'changed', 'a changed password is not reset');
+      truthy(['f', 'false'].includes(String(after.rows.find(r => r.email === man).is_active)), 'a deactivated account stays off');
+      throw rollback;
+    });
+  } catch (err) {
+    if (err !== rollback) throw err;
+  } finally {
+    await pool.end();
+  }
+});
+
+await check('without a society name the deployment settings wait, and create nothing', async () => {
+  const pool = new PgPool(connectionFromEnv(process.env));
+  const rollback = new Error('rollback');
+  const spec = parseDeploymentAccounts({
+    OFFICE_ACCOUNTS: `nosoc-${stamp}@example.invalid=secretary`, OFFICE_START_PASSWORD: 'shared-start-password-1',
+  }).spec;
+  try {
+    await pool.transaction(async (tx) => {
+      const r = await provisionInTransaction(tx, spec, createLogger({ logLevel: 'error', mode: 'test' }));
+      matches(r.problem, /BOOTSTRAP_SOCIETY_NAME/, 'says what is missing');
+      equal(r.created.length, 0, 'nothing created');
       throw rollback;
     });
   } catch (err) {
