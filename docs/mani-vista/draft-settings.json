@@ -1,37 +1,93 @@
 {
   "society": "Mani Vista Residents Association",
-  "source": "Mani Vista RWA Approach Note for Smooth Transition, 21 Oct 2026, as summarised in docs/SETUP-DATA-PROMPT.md and confirmed in chat",
+  "source": "Mani Vista RWA Approach Note for Smooth Transition, 21 Oct 2026, as summarised in docs/SETUP-DATA-PROMPT.md and confirmed in chat; committee answers received 29 Oct 2026",
   "status": "DRAFT: nothing here is saved in the app. Each value is entered by the secretary after setup and approved by the treasurer in the app.",
   "setup": {
-    "registeredName": { "value": "Mani Vista Residents Association", "status": "documented" },
-    "invoicePrefix": { "value": "MV", "status": "documented" },
-    "stateCode": { "value": "19", "status": "documented", "why": "intra-state, West Bengal" },
-    "registrationNo": { "value": null, "status": "pending-verification" },
-    "gstin": { "value": null, "status": "pending-verification", "note": "editable after setup in Society profile; must start with 19" },
-    "tan": { "value": null, "status": "pending-verification" },
-    "bankAccount": { "value": null, "status": "pending-verification" }
+    "registeredName": {
+      "value": "Mani Vista Residents Association",
+      "status": "documented"
+    },
+    "invoicePrefix": {
+      "value": "MV",
+      "status": "documented"
+    },
+    "stateCode": {
+      "value": "19",
+      "status": "documented",
+      "why": "intra-state, West Bengal"
+    },
+    "registrationNo": {
+      "value": null,
+      "status": "not given"
+    },
+    "gstin": {
+      "value": "19ABCAM7126R1ZV",
+      "status": "from the committee",
+      "note": "starts with 19 and its check digit is valid; enter in Society profile"
+    },
+    "tan": {
+      "value": null,
+      "status": "not given"
+    },
+    "bankAccount": {
+      "value": null,
+      "status": "not given (bank name, last 4 digits, IFSC)"
+    },
+    "address": {
+      "value": "3, NSC Bose Road, Manivista, Tollygunge, Kolkata- 700040",
+      "status": "from the committee"
+    },
+    "contactEmail": {
+      "value": "mvra2026@gmail.com",
+      "status": "from the committee"
+    },
+    "contactPhone": {
+      "value": "9836110900",
+      "status": "from the committee"
+    },
+    "pan": {
+      "value": "ABCAM7126R",
+      "status": "from the committee",
+      "note": "the app has no field for the society PAN; it is inside the GSTIN"
+    }
   },
   "settings": {
     "gst.treatment": {
-      "value": { "chargeGst": true, "ratePercent": 18, "memberThresholdRupees": 7500 },
+      "value": {
+        "chargeGst": true,
+        "ratePercent": 18,
+        "memberThresholdRupees": 7500
+      },
       "status": "documented, awaiting treasurer approval once entered",
       "note": "18% is split by the app into 9% CGST + 9% SGST",
       "openChoices": {
         "roundToRupee": "the note rounds GST to the rupee per invoice; confirm before saving",
-        "sinkingFundTaxable": "pending-verification: the note says committee to confirm"
+        "sinkingFundTaxable": "committee answered \"NA\" (moot if the sinking fund is 0)"
       }
     },
-    "billing.dueDays": { "value": null, "status": "pending-verification", "note": "production billing refuses until entered and approved" },
-    "billing.sinkingFundPercent": { "value": null, "status": "pending-verification", "note": "fixed by the AGM; production billing refuses until entered and approved" },
-    "billing.dayOfMonth": { "value": 1, "status": "setup default, not from the note" }
+    "billing.dueDays": {
+      "value": 10,
+      "status": "from the committee; secretary enters, treasurer approves"
+    },
+    "billing.sinkingFundPercent": {
+      "value": 0,
+      "status": "committee answered \"NA\": read as no sinking fund collected, 0%. Secretary enters, treasurer approves; change if the AGM fixes a share later. The approach note worked example had used 10%."
+    },
+    "billing.dayOfMonth": {
+      "value": 1,
+      "status": "setup default, not from the note"
+    }
   },
   "maintenanceRate": {
     "ratePerSqFtRupees": 4.5,
     "effectiveFrom": "2026-10-01",
     "firstBillingPeriod": "Oct 2026",
     "authority": "Approach note 21 Oct 2026: Rs 4.50 per sq ft per month as decided by the Association",
-    "areaBasis": { "value": null, "status": "pending-verification", "note": "carpet, built-up or super-built-up, as fixed by the bye-laws or AGM; the rate cannot be saved without it" },
-    "status": "draft, awaiting area basis, then treasurer approval"
+    "areaBasis": {
+      "value": "super-built-up",
+      "status": "from the committee"
+    },
+    "status": "draft, awaiting treasurer approval once entered"
   },
   "flats": {
     "expectedCount": 200,
@@ -43,8 +99,31 @@
     "status": "pending: flat-wise dues and advances, sinking fund balance and FDs, event funds; secretary drafts, treasurer approves and posts"
   },
   "committee": {
-    "treasurer": { "email": null, "status": "pending" },
-    "manager": { "email": null, "status": "pending" },
-    "auditor": { "email": null, "status": "optional, pending" }
+    "secretary": {
+      "email": "sanjoycommercial@yahoo.com",
+      "status": "from the committee; the setup account"
+    },
+    "treasurer": {
+      "email": "rajeshpuja@hotmail.com",
+      "status": "from the committee"
+    },
+    "jointTreasurer": {
+      "email": "modi_anilkr@yahoo.com",
+      "role": "manager",
+      "status": "proposed: raises bills and records payments, the treasurer approves them, which keeps maker and checker on two finance people. Change if the committee differs."
+    },
+    "president": {
+      "email": "saha.mesuman@gmail.com",
+      "role": "auditor",
+      "status": "proposed: read-only view of every bill, payment and report, so the president can oversee without being able to change figures. Change if the committee differs."
+    },
+    "manager": {
+      "email": "modi_anilkr@yahoo.com",
+      "status": "proposed, the joint treasurer (see above)"
+    },
+    "auditor": {
+      "email": null,
+      "status": "optional"
+    }
   }
 }
