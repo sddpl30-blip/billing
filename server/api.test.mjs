@@ -2704,6 +2704,49 @@ await check('anyone changes their own password with the current one; other sessi
   })).status, 401, 'needs a session');
 });
 
+// --- bank accounts, added from the Office -----------------------------------
+
+await check('the secretary adds the sinking fund account; last four and IFSC only', async () => {
+  const r = await secretary.post('/api/bank-accounts', {
+    purpose: 'sinking', bankName: 'ICICI Bank', last4: '2178', ifsc: 'icic0001064',
+  });
+  equal(r.status, 201, 'status');
+  equal(r.body.ledgerAccount, '1010', 'the sinking fund bank ledger');
+  const list = await secretary.get('/api/bank-accounts');
+  const added = list.body.accounts.find(a => a.id === r.body.id);
+  equal(added.ifsc, 'ICIC0001064', 'IFSC upper-cased');
+  equal(added.accountLast4, '2178', 'last four');
+  const trail = await auditor.get('/api/audit?action=bank_account.create');
+  equal(trail.body.entries[0].detail.last4, '2178', 'in the trail');
+});
+
+await check('a second active account on the same ledger is refused', async () => {
+  // The seeded society already has its operating account.
+  const r = await secretary.post('/api/bank-accounts', {
+    purpose: 'operating', bankName: 'Another Bank', last4: '9999', ifsc: 'ABCD0123456',
+  });
+  equal(r.status, 409, 'status');
+  matches(r.body.message, /already the society's operating account/, 'message');
+});
+
+await check('a bank account needs a real IFSC and four digits, and only the secretary adds one', async () => {
+  equal((await secretary.post('/api/bank-accounts', {
+    purpose: 'sinking', bankName: 'X Bank', last4: '12', ifsc: 'ICIC0001064',
+  })).status, 400, 'three digits');
+  equal((await secretary.post('/api/bank-accounts', {
+    purpose: 'sinking', bankName: 'X Bank', last4: '1234', ifsc: 'ICIC1001064',
+  })).status, 400, 'IFSC without its zero');
+  equal((await secretary.post('/api/bank-accounts', {
+    purpose: 'sinking', bankName: 'X Bank', last4: '1234', ifsc: 'ICIC0001064', accountNumber: '106405002178',
+  })).status, 400, 'a full account number is not accepted');
+  equal((await manager.post('/api/bank-accounts', {
+    purpose: 'sinking', bankName: 'X Bank', last4: '1234', ifsc: 'ICIC0001064',
+  })).status, 403, 'manager');
+  equal((await treasurer.post('/api/bank-accounts', {
+    purpose: 'sinking', bankName: 'X Bank', last4: '1234', ifsc: 'ICIC0001064',
+  })).status, 403, 'treasurer');
+});
+
 await check('a flat needs its area and basis together or neither', async () => {
   const r = await manager.post('/api/flats', {
     flatNo: `D-${stamp.slice(0, 3)}`,

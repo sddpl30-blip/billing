@@ -1605,6 +1605,58 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     });
   });
 
+  /**
+   * Records one of the society's bank accounts: the bank's name, the last
+   * four digits and the IFSC, never the full number (the table has no column
+   * for it). Each account is tied to its own ledger code, the operating
+   * account to 1000 and the sinking fund account to 1010, so a reconciliation
+   * compares one bank with one ledger; a second active account on the same
+   * code is refused rather than letting two banks share one balance.
+   */
+  const addBankAccount = route('POST', '/api/bank-accounts', async (ctx) => {
+    const principal = need(ctx, 'settings.manage');
+    const input = ctx.body(v.object({
+      purpose: v.enumOf(['operating', 'sinking'] as const),
+      bankName: v.string({ min: 2, max: 100 }),
+      last4: v.string({ pattern: /^[0-9]{4}$/, patternName: 'the last four digits' }),
+      ifsc: v.string({ pattern: /^[A-Za-z]{4}0[A-Za-z0-9]{6}$/, patternName: 'an IFSC code' }),
+      label: v.string({ min: 2, max: 60 }).optional(),
+    }));
+    const ledger = input.purpose === 'operating' ? A.BANK_OPERATING : A.BANK_SINKING;
+    const label = input.label?.trim()
+      || (input.purpose === 'operating' ? 'Operating account' : 'Sinking fund account');
+
+    const id = await pool.transaction(async (tx) => {
+      const taken = await tx.query<{ label: string }>(
+        'SELECT label FROM bank_accounts WHERE society_id = $1 AND ledger_account = $2 AND active = true',
+        [principal.societyId, ledger],
+      );
+      if (taken.rows[0] !== undefined) {
+        throw conflict(
+          `"${taken.rows[0].label}" is already the society's ${input.purpose} account. ` +
+          'Two banks on one ledger would share one balance and could not be reconciled.',
+        );
+      }
+      const inserted = await tx.query<{ id: string }>(
+        `INSERT INTO bank_accounts (society_id, label, bank_name, account_last4, ifsc, ledger_account, purpose)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [principal.societyId, label, input.bankName.trim(), input.last4, input.ifsc.toUpperCase(), ledger, input.purpose],
+      );
+      await audit(tx, {
+        societyId: principal.societyId,
+        actorUser: principal.userId,
+        actorLabel: principal.email,
+        action: 'bank_account.create',
+        subjectTable: 'bank_accounts',
+        subjectId: inserted.rows[0].id,
+        detail: { label, bankName: input.bankName.trim(), last4: input.last4, ifsc: input.ifsc.toUpperCase(), purpose: input.purpose },
+        requestId: ctx.requestId,
+      });
+      return inserted.rows[0].id;
+    });
+    return created({ id, label, ledgerAccount: ledger, purpose: input.purpose });
+  });
+
   const importStatement = route('POST', '/api/bank/imports', async (ctx) => {
     const principal = need(ctx, 'bank.import');
     const input = ctx.body(v.object({
@@ -2490,7 +2542,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     recordPayment, listPayments, reversePayment,
     listVendors, addVendor, addVendorBill, listVendorBills, approveVendorBill,
     bookVendorBillRoute, payVendorBill, remitTdsRoute,
-    listBankAccounts, importStatement, listBankTransactions, matchBankTransaction, reconcile,
+    listBankAccounts, addBankAccount, importStatement, listBankTransactions, matchBankTransaction, reconcile,
     reportTrialBalance, reportBalanceSheet, reportIncomeExpenditure, reportAgeing,
     reportCollections, reportGst, reportTds, reportStatement, readLedger, readAuditTrail,
     createTicket, listTickets, assignTicket, resolveTicket, confirmTicket,

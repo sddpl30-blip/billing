@@ -26,6 +26,7 @@ import { fundTreatment } from './settings';
 /** Account codes, matching the engine's chart. */
 export const A = {
   BANK_OPERATING: '1000',
+  BANK_SINKING: '1010',
   MAINTENANCE_RECEIVABLE: '1100',
   VENDOR_PAYABLE: '2000',
   TDS_194C: '2100',

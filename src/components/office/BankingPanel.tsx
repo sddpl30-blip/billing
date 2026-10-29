@@ -20,6 +20,7 @@ import { ImportDialog } from './bank/ImportDialog';
 import { MatchDialog } from './bank/MatchDialog';
 import { ReconcileDialog } from './bank/ReconcileDialog';
 import { ReconcileSummary } from './bank/ReconcileSummary';
+import { AddAccountDialog } from './bank/AddAccountDialog';
 import { card, primaryButton, rupees, secondaryButton } from './bank/ui';
 
 const LINE_VIEWS: ReadonlyArray<{ state: BankLineState; label: string }> = [
@@ -32,6 +33,7 @@ export default function BankingPanel({ ctx }: { ctx: OfficeContext }) {
   const mayImport = ctx.can('bank.import');
   const mayMatch = ctx.can('bank.match');
   const mayReconcile = ctx.can('bank.reconcile');
+  const mayAddAccount = ctx.can('settings.manage');
 
   const [accounts, setAccounts] = useState<BankAccount[] | null>(null);
   const [view, setView] = useState<BankLineState>('unmatched');
@@ -39,6 +41,7 @@ export default function BankingPanel({ ctx }: { ctx: OfficeContext }) {
   const [loadProblem, setLoadProblem] = useState<string | null>(null);
   const [dialog, setDialog] = useState<
     | { kind: 'import' }
+    | { kind: 'add-account' }
     | { kind: 'match'; line: BankLine }
     | { kind: 'reconcile'; accountId: string }
     | null
@@ -94,6 +97,7 @@ export default function BankingPanel({ ctx }: { ctx: OfficeContext }) {
   }
 
   const activeAccounts = accounts.filter(a => a.active);
+  const takenPurposes = activeAccounts.map(a => a.purpose).filter(p => p === 'operating' || p === 'sinking');
   const accountName = (id: string) => accounts.find(a => a.id === id)?.label ?? 'Bank account';
 
   return (
@@ -106,6 +110,12 @@ export default function BankingPanel({ ctx }: { ctx: OfficeContext }) {
             Bank accounts
           </h3>
           <div className="flex flex-wrap gap-2">
+            {mayAddAccount && takenPurposes.length < 2 && (
+              <button type="button" onClick={() => setDialog({ kind: 'add-account' })}
+                className={activeAccounts.length === 0 ? primaryButton : secondaryButton}>
+                Add bank account
+              </button>
+            )}
             {mayImport && activeAccounts.length > 0 && (
               <button type="button" onClick={() => setDialog({ kind: 'import' })} className={primaryButton}>
                 Import statement
@@ -124,7 +134,9 @@ export default function BankingPanel({ ctx }: { ctx: OfficeContext }) {
         </div>
         {accounts.length === 0 ? (
           <p className="text-xs text-[var(--mv-muted)]">
-            No bank account is on record. Accounts are set up on the server; this screen cannot add one yet.
+            No bank account is on record.{mayAddAccount
+              ? ' Add the operating account to import statements and reconcile.'
+              : ' The secretary adds the society\'s bank accounts here.'}
           </p>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">
@@ -267,6 +279,9 @@ export default function BankingPanel({ ctx }: { ctx: OfficeContext }) {
         )}
       </section>
 
+      {dialog?.kind === 'add-account' && (
+        <AddAccountDialog ctx={ctx} taken={takenPurposes} onClose={() => setDialog(null)} onAdded={afterWrite} />
+      )}
       {dialog?.kind === 'import' && (
         <ImportDialog ctx={ctx} accounts={activeAccounts} onClose={() => setDialog(null)} onImported={afterWrite} />
       )}
