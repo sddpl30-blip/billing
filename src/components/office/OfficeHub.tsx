@@ -34,7 +34,7 @@ const SECTIONS: readonly Section[] = [
   {
     key: 'bank', label: 'Banking',
     blurb: 'Bank accounts, statement import, matching and reconciliation sign-off.',
-    anyOf: ['bank.import', 'bank.match', 'bank.reconcile'],
+    anyOf: ['bank.import', 'bank.match', 'bank.reconcile', 'settings.manage'],
   },
   {
     key: 'governance', label: 'Approvals & admin',

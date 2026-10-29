@@ -144,3 +144,11 @@ export async function listReceipts(client: ApiClient, limit = 200): Promise<Rece
   const body = await client.get<{ payments: ReceiptSummary[] }>('/api/payments', { limit });
   return body.payments;
 }
+
+/** Records a bank account: name, last four digits and IFSC only. The secretary's to do. */
+export function addBankAccount(
+  client: ApiClient,
+  input: { purpose: 'operating' | 'sinking'; bankName: string; last4: string; ifsc: string; label?: string },
+): Promise<{ id: string; label: string; ledgerAccount: string; purpose: string }> {
+  return client.post('/api/bank-accounts', input);
+}
