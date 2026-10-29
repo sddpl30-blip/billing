@@ -20,11 +20,14 @@ import { AlreadyBootstrappedError, createProductionSociety, needsBootstrap } fro
 import type { PgPool } from './pg';
 import type { Config } from './config';
 import type { Logger } from './logger';
+import { parseDeploymentAccounts, provisionDeploymentAccounts, type ProvisionResult } from './deploymentAccounts';
 
 export interface SetupDependencies {
   readonly pool: PgPool;
   readonly config: Config;
   readonly log: Logger;
+  /** For OFFICE_ACCOUNTS and OFFICE_START_PASSWORD; see deploymentAccounts.ts. */
+  readonly env?: Record<string, string | undefined>;
 }
 
 const tokenMatches = (presented: string, expected: string): boolean => {
@@ -35,12 +38,50 @@ const tokenMatches = (presented: string, expected: string): boolean => {
 
 export function createSetupRoutes(deps: SetupDependencies): RouteDefinition[] {
   const { pool, config, log } = deps;
+  const fromDeployment = parseDeploymentAccounts(deps.env ?? {});
+  if (fromDeployment.kind === 'invalid') log.error('office accounts in the deployment settings', { problem: fromDeployment.problem });
 
+  // Once per process: the accounts exist after the first success, and every
+  // later run would only find them there. A failure is retried next time.
+  let provisioned: ProvisionResult | null = null;
+  const ensureDeploymentAccounts = async (): Promise<ProvisionResult | null> => {
+    if (fromDeployment.kind !== 'ok') return null;
+    if (provisioned !== null && provisioned.problem === undefined) return provisioned;
+    try {
+      provisioned = await provisionDeploymentAccounts(pool, fromDeployment.spec, log);
+    } catch (err) {
+      log.error('could not create the office accounts from the deployment settings', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { societyCreated: false, created: [], alreadyThere: [], problem: 'The accounts could not be created; see the server log.' };
+    }
+    return provisioned;
+  };
+
+  // The setup screen calls this on every visit, so the accounts named in the
+  // deployment settings appear as soon as anyone opens the site.
   const status = route('GET', '/api/setup', async () => {
+    const accounts = await ensureDeploymentAccounts();
     const required = await needsBootstrap(pool);
     return {
       status: 200,
-      body: { required, open: required && config.setupToken !== null },
+      body: {
+        required,
+        open: required && config.setupToken !== null,
+        // Counts only: the addresses themselves are not for a public route.
+        deploymentAccounts:
+          fromDeployment.kind === 'none' ? { status: 'not configured' }
+          : fromDeployment.kind === 'invalid' ? { status: 'invalid', problem: fromDeployment.problem }
+          : accounts?.problem !== undefined ? { status: 'waiting', problem: accounts.problem }
+          : {
+            status: 'done',
+            societyCreated: accounts?.societyCreated ?? false,
+            created: accounts?.created.length ?? 0,
+            alreadyThere: accounts?.alreadyThere.length ?? 0,
+            next: 'Remove OFFICE_ACCOUNTS and OFFICE_START_PASSWORD from the deployment, and ' +
+              'have each office-bearer change the starting password under My password.',
+          },
+      },
     };
   }, { authenticated: false });
 

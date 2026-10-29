@@ -222,6 +222,20 @@ in as. Either:
   that the screen is gone and the route refuses. Remove `SETUP_TOKEN` after.
 * **From a terminal.** `BOOTSTRAP_SOCIETY_NAME=... BOOTSTRAP_SECRETARY_EMAIL=...
   BOOTSTRAP_SECRETARY_PASSWORD=... DATABASE_URL_UNPOOLED=... npm run db:bootstrap`.
+* **From the Environment Variables alone.** Set `OFFICE_ACCOUNTS`
+  (`email=role` pairs, comma-separated, one role each, e.g.
+  `a@x.com=secretary,b@y.com=treasurer,c@z.com=manager,d@w.com=auditor`),
+  `OFFICE_START_PASSWORD` (12+ characters, the starting password every listed
+  account gets) and, if there is no society yet, `BOOTSTRAP_SOCIETY_NAME` (with
+  the optional `BOOTSTRAP_INVOICE_PREFIX`, `BOOTSTRAP_GSTIN`,
+  `BOOTSTRAP_STATE_CODE`, `BOOTSTRAP_REGISTRATION_NO`). Redeploy and open the
+  site: the society and the missing accounts are created on the first visit,
+  and `/api/setup` reports `"deploymentAccounts":{"status":"done",...}`. It
+  only adds: an address that already has an account is left exactly as it is,
+  so it never resets a password or revives a deactivated account. Then remove
+  `OFFICE_ACCOUNTS` and `OFFICE_START_PASSWORD`, and have each office-bearer
+  change the starting password under **Office → Approvals & admin → My
+  password**.
 
 The secretary then adds flats, owners, the treasurer and manager accounts, and
 the maintenance rate from the Office; the treasurer approves the rate.

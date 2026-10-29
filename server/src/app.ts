@@ -96,7 +96,7 @@ export function buildApp(
     // CRON_SECRET is set, so the standalone server and the serverless
     // deployment run the same routes.
     ...createCronRoutes({ pool, config, log, email }),
-    ...createSetupRoutes({ pool, config, log }),
+    ...createSetupRoutes({ pool, config, log, env }),
     ...createScheduleRoutes({ pool }),
     ...createGoogleRoutes({ config, log, auth }),
   ];
