@@ -2759,6 +2759,111 @@ await check('a bank account needs a real IFSC and four digits, and only the secr
   })).status, 403, 'treasurer');
 });
 
+// --- bulk payment upload -----------------------------------------------------
+
+const bulkFlatNo = `P-${stamp.slice(0, 4)}`;
+const paymentsCount = () => Number(psql('SELECT COUNT(*) FROM payments;').out);
+
+await check('a payments CSV is checked line by line and nothing is recorded by a check', async () => {
+  const flat = await manager.post('/api/flats', { flatNo: bulkFlatNo, billingAreaSqFt: 900, areaBasis: 'super-built-up' });
+  equal(flat.status, 201, 'test flat');
+  const before = paymentsCount();
+  const csv = [
+    'Flat No,Amount,Date,Mode,UTR',
+    `${bulkFlatNo},"4,500.00",15/09/2026,GPay,UTR-A1`,
+    `${bulkFlatNo},2000,2026-09-16,cheque,CHQ-77`,
+    'Z-999,100,15/09/2026,upi,',
+    `${bulkFlatNo},abc,15/09/2026,upi,`,
+    `${bulkFlatNo},100,31/02/2026,upi,`,
+    `${bulkFlatNo},100,15/09/2026,bitcoin,`,
+    `${bulkFlatNo},"4,500.00",15/09/2026,upi,UTR-A1`,
+  ].join('\n');
+  const r = await manager.post('/api/payments/import', { csv, confirm: false });
+  equal(r.status, 200, 'status');
+  equal(r.body.checked, 7, 'lines');
+  equal(r.body.problems, 5, 'problem lines');
+  const byLine = Object.fromEntries(r.body.lines.map(l => [l.line, l]));
+  equal(byLine[2].method, 'upi', 'GPay read as UPI');
+  equal(byLine[2].amountPaise, 450_000, 'Indian grouping read');
+  equal(byLine[3].method, 'cheque', 'cheque');
+  matches(byLine[4].problems[0], /no flat "Z-999"/, 'unknown flat');
+  matches(byLine[5].problems[0], /not rupees/, 'bad amount');
+  matches(byLine[6].problems[0], /not a date/, 'bad date');
+  matches(byLine[7].problems[0], /payment mode/, 'bad mode');
+  matches(byLine[8].problems[0], /repeats line 2/, 'a repeated line');
+  equal(paymentsCount(), before, 'nothing recorded');
+
+  const refused = await manager.post('/api/payments/import', { csv, confirm: true },
+    { 'Idempotency-Key': key('bulk-bad') });
+  equal(refused.status, 409, 'a file with problems is refused whole');
+  equal(paymentsCount(), before, 'still nothing recorded');
+});
+
+await check('a clean payments CSV records every line, and the same file cannot be taken twice', async () => {
+  const before = paymentsCount();
+  const csv = [
+    'flat_no,amount,received_on,method,reference',
+    `${bulkFlatNo},4500,15/09/2026,upi,UTR-B1`,
+    `${bulkFlatNo},2000,16/09/2026,neft,UTR-B2`,
+  ].join('\n');
+  const r = await manager.post('/api/payments/import', { csv, confirm: true },
+    { 'Idempotency-Key': key('bulk-good') });
+  equal(r.status, 200, 'status');
+  equal(r.body.recorded.length, 2, 'two receipts');
+  truthy(r.body.recorded.every(x => /^RC\/2026-09\//.test(x.receiptNo)), 'receipt numbers');
+  equal(paymentsCount(), before + 2, 'two payments on the books');
+
+  const again = await manager.post('/api/payments/import', { csv, confirm: false });
+  equal(again.body.problems, 2, 'both lines now flagged');
+  matches(again.body.lines[0].problems[0], /already recorded as receipt RC\/2026-09\//, 'says which receipt');
+
+  const r2 = await treasurer.get('/api/reports/trial-balance?asAt=2026-12-31');
+  equal(r2.body.tiesOut, true, 'the books still tie');
+});
+
+await check('only an account that records payments may upload them', async () => {
+  const csv = `flat_no,amount,received_on,method\n${bulkFlatNo},1,15/09/2026,cash`;
+  equal((await secretary.post('/api/payments/import', { csv, confirm: false })).status, 403, 'secretary');
+  equal((await resident.post('/api/payments/import', { csv, confirm: false })).status, 403, 'resident');
+  equal((await manager.post('/api/payments/import', { csv, confirm: true })).status, 400,
+    'confirming needs an Idempotency-Key');
+});
+
+// --- notices -----------------------------------------------------------------
+
+await check('the secretary publishes a notice: on the board, and e-mails queued to owners', async () => {
+  const r = await secretary.post('/api/notices', {
+    title: `Water tank cleaning ${stamp}`,
+    body: 'Water supply will be off on Sunday from 10 am to 2 pm.',
+    email: true,
+  });
+  equal(r.status, 201, 'status');
+  truthy(r.body.emailsQueued >= 5, 'e-mails queued to the owners');
+  const queued = psql(
+    `SELECT COUNT(*) FROM notifications WHERE template = 'notice' AND channel = 'email'
+        AND state = 'queued' AND subject = 'Water tank cleaning ${stamp}';`,
+  );
+  equal(Number(queued.out), r.body.emailsQueued, 'queued, not claimed sent');
+
+  const board = await resident.get('/api/notices');
+  equal(board.status, 200, 'a resident reads the board');
+  const mine = board.body.notices.find(n => n.title === `Water tank cleaning ${stamp}`);
+  truthy(mine !== undefined, 'the notice is on the board');
+  matches(mine.body, /Sunday/, 'its text');
+  const trail = await auditor.get('/api/audit?action=notice.publish');
+  equal(trail.body.entries[0].detail.title, `Water tank cleaning ${stamp}`, 'in the trail');
+});
+
+await check('a notice can be board-only, and only the secretary publishes', async () => {
+  const r = await secretary.post('/api/notices', { title: `AGM on 15 Nov ${stamp}`, body: 'Clubhouse, 6 pm.', email: false });
+  equal(r.status, 201, 'status');
+  equal(r.body.emailsQueued, 0, 'no e-mail');
+  equal((await manager.post('/api/notices', { title: 'Not mine', body: 'x', email: false })).status, 403, 'manager');
+  equal((await resident.post('/api/notices', { title: 'Not mine', body: 'x', email: false })).status, 403, 'resident');
+  equal((await secretary.post('/api/notices', { title: 'x', body: 'y', email: false })).status, 400, 'a title too short');
+  equal((await anonymous.get('/api/notices')).status, 401, 'the board needs a sign-in');
+});
+
 await check('a flat needs its area and basis together or neither', async () => {
   const r = await manager.post('/api/flats', {
     flatNo: `D-${stamp.slice(0, 3)}`,

@@ -18,8 +18,9 @@ import { HelpdeskSection } from './governance/HelpdeskSection';
 import { OpeningBalancesSection } from './governance/OpeningBalancesSection';
 import { SocietyProfileSection } from './governance/SocietyProfileSection';
 import { MyPasswordSection } from './governance/MyPasswordSection';
+import { NoticesSection } from './governance/NoticesSection';
 
-type TabKey = 'rates' | 'settings' | 'periods' | 'users' | 'flats' | 'opening' | 'profile' | 'helpdesk' | 'password';
+type TabKey = 'rates' | 'settings' | 'periods' | 'users' | 'flats' | 'opening' | 'profile' | 'helpdesk' | 'notices' | 'password';
 
 interface Tab {
   readonly key: TabKey;
@@ -37,6 +38,7 @@ const TABS: readonly Tab[] = [
   { key: 'opening', label: 'Opening balances', anyOf: ['settings.manage', 'period.close'] },
   { key: 'profile', label: 'Society profile', anyOf: ['settings.manage', 'report.read'] },
   { key: 'helpdesk', label: 'Helpdesk', anyOf: ['ticket.assign', 'ticket.resolve'] },
+  { key: 'notices', label: 'Notices', anyOf: ['notice.send'] },
   { key: 'password', label: 'My password', anyOf: [] },
 ];
 
@@ -79,6 +81,7 @@ export default function GovernancePanel({ ctx }: { ctx: OfficeContext }) {
         {current.key === 'opening' && <OpeningBalancesSection ctx={ctx} />}
         {current.key === 'profile' && <SocietyProfileSection ctx={ctx} />}
         {current.key === 'helpdesk' && <HelpdeskSection ctx={ctx} />}
+        {current.key === 'notices' && <NoticesSection ctx={ctx} />}
         {current.key === 'password' && <MyPasswordSection ctx={ctx} />}
       </div>
     </div>

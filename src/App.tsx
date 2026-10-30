@@ -72,6 +72,8 @@ import type { TicketResponse } from './api/client';
 import type { OfficeContext } from './components/office/types';
 import { SetupGate } from './components/SetupScreen';
 import { ScheduledRelease } from './components/ScheduledRelease';
+import { BulkPaymentsUpload } from './components/BulkPaymentsUpload';
+import { NoticeBoard } from './components/NoticeBoard';
 import { isoDateInIndia, periodLabel } from './accounting/clock';
 import { LoginScreen } from './components/LoginScreen';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
@@ -544,7 +546,11 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem(SESSION_EMAIL_KEY);
-    booksSource.signOut().catch((err: unknown) => toastError(err, 'Signing out on the server failed.'));
+    booksSource.signOut().catch(() => triggerToast(
+      'Signed out on this screen, but the server could not be reached to end the session. ' +
+      'Close this browser tab, or sign in and press Logout again.',
+      'error',
+    ));
     setSessionEmail(null);
     setIsAuthenticated(false);
     setCurrentRole('Resident');
@@ -1917,6 +1923,7 @@ export default function App() {
               {/* -------------------- HOME TAB -------------------- */}
               {activeTab === 'home' && (
                 <div className="space-y-6 max-w-7xl mx-auto animate-scale-up">
+                  {onServer && booksSource.client !== null && <NoticeBoard client={booksSource.client} />}
                   <div className="flex justify-between items-end">
                     <div>
                       {currentRole === 'Resident' ? (
@@ -2757,7 +2764,15 @@ export default function App() {
                               : 'Demonstration: recorded in this browser only. No bank or gateway is contacted.'}
                             
                           />
-                          ) : (
+                          ) : null}
+                          {mayRecordReceipts && onServer && booksSource.client !== null ? (
+                            <BulkPaymentsUpload
+                              client={booksSource.client}
+                              onRecorded={() => booksSource.reload()}
+                              toast={(m, tone) => triggerToast(m, tone)}
+                            />
+                          ) : null}
+                          {mayRecordReceipts ? null : (
                             <p className="text-xs text-[var(--mv-muted)] leading-relaxed">
                               Receipts are recorded by the manager. This account does not hold the
                               payment.record permission.
@@ -3263,6 +3278,7 @@ export default function App() {
              ========================================= */}
           {activeTab === 'home' && (
             <div className="space-y-4">
+              {onServer && booksSource.client !== null && <NoticeBoard client={booksSource.client} limit={3} />}
                         {/* Resident profile greetings banner */}
               {currentRole === 'Resident' && (
                 <>
@@ -4012,7 +4028,15 @@ export default function App() {
                             : 'Demonstration: recorded in this browser only. No bank or gateway is contacted.'}
                           compact
                         />
-                      ) : (
+                      ) : null}
+                      {mayRecordReceipts && onServer && booksSource.client !== null ? (
+                        <BulkPaymentsUpload
+                          client={booksSource.client}
+                          onRecorded={() => booksSource.reload()}
+                          toast={(m, tone) => triggerToast(m, tone)}
+                        />
+                      ) : null}
+                      {mayRecordReceipts ? null : (
                         <p className="text-xs text-[var(--mv-muted)] leading-relaxed">
                           Receipts are recorded by the manager. This account does not hold the
                           payment.record permission.

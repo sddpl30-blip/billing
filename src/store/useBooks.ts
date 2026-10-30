@@ -182,11 +182,18 @@ export function useBooks(options: UseBooksOptions): UseBooks {
     await afterSignIn(resolved);
   }, [resolved, afterSignIn]);
 
+  // The screen leaves first and the server is told second. Waiting for the
+  // server's answer before leaving left the page sitting in the resident view
+  // for as long as the request took — seconds on a cold start from India —
+  // and for good if it failed, so Logout looked like it switched the view
+  // instead of signing out. A failed request still rejects, so the caller
+  // can say the server-side session may be alive.
   const signOut = useCallback(async (): Promise<void> => {
+    if (mounted.current) {
+      setSession(null);
+      setStatus(resolved?.kind === 'server' ? 'needs-sign-in' : 'ready');
+    }
     if (resolved?.client !== undefined) await signOutApi(resolved.client);
-    if (!mounted.current) return;
-    setSession(null);
-    setStatus(resolved?.kind === 'server' ? 'needs-sign-in' : 'ready');
   }, [resolved]);
 
   const reload = useCallback(async (): Promise<void> => {

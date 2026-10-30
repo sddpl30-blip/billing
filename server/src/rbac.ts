@@ -57,7 +57,9 @@ export type Permission =
   // Administration
   | 'member.manage'
   | 'user.manage'
-  | 'settings.manage';
+  | 'settings.manage'
+  // Notices to residents
+  | 'notice.send';
 
 /**
  * What each role may do.
@@ -131,6 +133,7 @@ const GRANTS: Record<Role, readonly Permission[]> = {
     'member.manage',
     'user.manage',
     'settings.manage',
+    'notice.send',
   ],
 
   auditor: [
