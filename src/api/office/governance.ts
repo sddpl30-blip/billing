@@ -108,6 +108,8 @@ export interface UserAccount {
   readonly active: boolean;
   readonly hasPassword: boolean;
   readonly lastLoginAt: string | null;
+  /** When a welcome e-mail was last queued for the account; null if never. Absent from older servers. */
+  readonly welcomedAt?: string | null;
   readonly ownerName: string | null;
   readonly roles: readonly string[];
   readonly flats: readonly string[];
@@ -119,8 +121,8 @@ export async function listUsers(client: ApiClient): Promise<{ users: UserAccount
 
 export function addUser(
   client: ApiClient,
-  input: { email: string; roles: readonly string[]; password?: string },
-): Promise<{ id: string; email: string; roles: string[]; passwordSet: boolean }> {
+  input: { email: string; roles: readonly string[]; password?: string; sendWelcome?: boolean },
+): Promise<{ id: string; email: string; roles: string[]; passwordSet: boolean; welcomeQueued?: boolean }> {
   return client.post('/api/users', input);
 }
 
@@ -153,6 +155,38 @@ export function changeOwnPassword(
   client: ApiClient, currentPassword: string, newPassword: string,
 ): Promise<{ changed: true; otherSessionsEnded: number }> {
   return client.post('/api/auth/password/change', { currentPassword, newPassword });
+}
+
+/** Queues welcome e-mails: to the named accounts, or every resident not yet signed in or welcomed. */
+export function sendWelcome(
+  client: ApiClient, userIds?: readonly string[],
+): Promise<{ queued: number; emailDelivers: boolean; note: string }> {
+  return client.post('/api/users/welcome', userIds === undefined ? {} : { userIds });
+}
+
+/**
+ * Sends the society's queued e-mail in small batches until none is left,
+ * reporting progress. Each call is one short request, so no single request
+ * outlives the platform's time limit. Stops on the first batch that sends
+ * nothing (no provider, or every message failing).
+ */
+export async function sendQueuedNow(
+  client: ApiClient, onProgress?: (sent: number, remaining: number) => void,
+): Promise<{ sent: number; failed: number; remaining: number | null; delivered: boolean }> {
+  let sent = 0;
+  let failed = 0;
+  for (let round = 0; round < 200; round++) {
+    const r = await client.post<{ sent: number; failed: number; remaining: number | null; delivered: boolean }>(
+      '/api/notifications/send-now', {},
+    );
+    if (!r.delivered) return { sent, failed, remaining: r.remaining, delivered: false };
+    sent += r.sent; failed += r.failed;
+    onProgress?.(sent, r.remaining ?? 0);
+    if (r.remaining === 0 || r.remaining === null || r.sent === 0) {
+      return { sent, failed, remaining: r.remaining, delivered: true };
+    }
+  }
+  return { sent, failed, remaining: null, delivered: true };
 }
 
 // --- flats and owners ----------------------------------------------------

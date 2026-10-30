@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { OfficeContext } from '../types';
 import { listNotices } from '../../NoticeBoard';
+import { sendQueuedNow } from '../../../api/office/governance';
 import { Button, Card, LoadState, inputClass, labelClass, refusalOf, useLoad } from './ui';
 
 /**
@@ -14,6 +15,7 @@ export function NoticesSection({ ctx }: { ctx: OfficeContext }) {
   const [body, setBody] = useState('');
   const [email, setEmail] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const notices = loaded.data?.notices ?? [];
 
@@ -23,14 +25,28 @@ export function NoticesSection({ ctx }: { ctx: OfficeContext }) {
     setProblem(null);
     setBusy(true);
     try {
-      const r = await ctx.client.post<{ note: string }>('/api/notices', { title: title.trim(), body: body.trim(), email });
-      ctx.toast(r.note, 'info');
+      const r = await ctx.client.post<{ note: string; emailsQueued: number; emailDelivers: boolean }>(
+        '/api/notices', { title: title.trim(), body: body.trim(), email },
+      );
       setTitle(''); setBody('');
       await loaded.refresh();
+      if (r.emailsQueued > 0 && r.emailDelivers) {
+        // Sent now, in batches, rather than left for the next morning's run.
+        const sent = await sendQueuedNow(ctx.client, (n, left) => setProgress(`E-mailing… ${n} sent, ${left} to go`));
+        ctx.toast(
+          `Published on the notice board and e-mailed to ${sent.sent} owner${sent.sent === 1 ? '' : 's'}` +
+          (sent.failed > 0 ? `; ${sent.failed} could not be sent` : '') +
+          (sent.remaining !== null && sent.remaining > 0 ? `; ${sent.remaining} left for the 6 am run.` : '.'),
+          sent.failed > 0 ? 'error' : 'info',
+        );
+      } else {
+        ctx.toast(r.note, 'info');
+      }
     } catch (err) {
       setProblem(refusalOf(err));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   };
 
@@ -56,7 +72,7 @@ export function NoticesSection({ ctx }: { ctx: OfficeContext }) {
           <label htmlFor="notice-email" className="text-sm text-[var(--mv-ink)]">Also e-mail it to every owner</label>
         </div>
         {problem !== null && <p role="alert" className="text-xs text-red-700">{problem}</p>}
-        <Button tone="primary" type="submit" disabled={busy}>{busy ? 'Publishing…' : 'Publish notice'}</Button>
+        <Button tone="primary" type="submit" disabled={busy}>{progress ?? (busy ? 'Publishing…' : 'Publish notice')}</Button>
       </form>
 
       <div className="mt-6">

@@ -24,6 +24,8 @@ import {
   type Permission, type Principal, type Role,
 } from './rbac';
 import { audit } from './audit';
+import { welcomeMessage, welcomeTargets, type WelcomeTarget } from './welcome';
+import { sendQueuedEmails } from './jobs';
 import { buildSnapshot } from './snapshotView';
 import { generateDocument } from './documents';
 import { A, accountBalance, postEntry, type Leg } from './posting';
@@ -583,17 +585,95 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
 
   // --- users ---------------------------------------------------------------
 
+  /** Queues one welcome e-mail per target, in the caller's transaction. */
+  async function queueWelcome(tx: Queryable, societyId: string, targets: readonly WelcomeTarget[]): Promise<number> {
+    if (targets.length === 0) return 0;
+    const society = await tx.query<{ name: string; contact_email: string | null }>(
+      'SELECT name, contact_email FROM societies WHERE id = $1', [societyId],
+    );
+    const { name, contact_email: contactEmail } = society.rows[0];
+    for (const target of targets) {
+      const message = welcomeMessage({
+        societyName: name, portalUrl: deps.config.allowedOrigin, contactEmail, target,
+      });
+      await tx.query(
+        `INSERT INTO notifications (society_id, channel, template, to_user, to_address, subject, payload)
+         VALUES ($1, 'email', 'welcome', $2, $3, $4, $5::jsonb)`,
+        [societyId, target.userId, target.email, message.subject, JSON.stringify({ text: message.text })],
+      );
+    }
+    return targets.length;
+  }
+
+  const sendWelcome = route('POST', '/api/users/welcome', async (ctx) => {
+    const principal = need(ctx, 'user.manage');
+    const input = ctx.body(v.object({
+      /** Named accounts (a resend is allowed); absent means every resident not yet signed in or welcomed. */
+      userIds: v.array(v.uuid(), { min: 1, max: 1000 }).optional(),
+    }));
+    const queued = await pool.transaction(async (tx) => {
+      const targets = await welcomeTargets(tx, {
+        societyId: principal.societyId,
+        ...(input.userIds === undefined ? {} : { userIds: input.userIds }),
+      });
+      const n = await queueWelcome(tx, principal.societyId, targets);
+      await audit(tx, {
+        societyId: principal.societyId,
+        actorUser: principal.userId,
+        actorLabel: principal.email,
+        action: 'user.welcome',
+        subjectTable: 'users',
+        subjectId: input.userIds?.length === 1 ? input.userIds[0] : principal.societyId,
+        detail: { queued: n, scope: input.userIds === undefined ? 'not-yet-signed-in' : 'named' },
+        requestId: ctx.requestId,
+      });
+      return n;
+    });
+    return ok({
+      queued,
+      emailDelivers: deps.email.delivers,
+      note: queued === 0
+        ? 'Nobody to welcome: every resident has signed in or was already sent one.'
+        : deps.email.delivers
+          ? `${queued} welcome e-mail${queued === 1 ? '' : 's'} queued; sending now.`
+          : `${queued} welcome e-mail${queued === 1 ? ' is' : 's are'} queued, but no e-mail service is set up, so none has been sent.`,
+    });
+  });
+
+  /**
+   * Sends a small batch of the society's queued e-mail now. The screens call
+   * it in a loop after queueing, so a few hundred messages go out without any
+   * one request outliving the platform's time limit; the daily run sweeps up
+   * whatever a closed tab left behind.
+   */
+  const sendNow = route('POST', '/api/notifications/send-now', async (ctx) => {
+    const principal = who(ctx);
+    if (!(['user.manage', 'notice.send', 'billing.release'] as const).some(p => hasPermission(principal, p))) {
+      requirePermission(principal, 'user.manage');
+    }
+    if (!deps.email.delivers) {
+      return ok({ sent: 0, failed: 0, remaining: null, delivered: false,
+        note: 'No e-mail service is set up, so nothing can be sent yet.' });
+    }
+    const batch = await sendQueuedEmails(
+      { pool, log: deps.log, email: deps.email, now: today }, principal.societyId, 8,
+    );
+    return ok(batch);
+  });
+
   const listUsers = route('GET', '/api/users', async (ctx) => {
     const principal = need(ctx, 'user.manage');
     const result = await pool.query<{
       id: string; email: string; is_active: string; last_login_at: string | null;
       owner_name: string | null; roles: string | null; flats: string | null;
-      has_password: string;
+      has_password: string; welcomed_at: string | null;
     }>(
       `SELECT u.id, u.email, u.is_active::text, u.last_login_at::text,
               o.full_name AS owner_name,
               (u.password_hash IS NOT NULL)::text AS has_password,
               (SELECT string_agg(r.role, ',' ORDER BY r.role) FROM user_roles r WHERE r.user_id = u.id) AS roles,
+              (SELECT max(n.queued_at)::text FROM notifications n
+                WHERE n.to_user = u.id AND n.template = 'welcome') AS welcomed_at,
               (SELECT string_agg(f.flat_no, ',' ORDER BY f.flat_no)
                  FROM flat_ownership fo
                  JOIN flats f ON f.id = fo.flat_id
@@ -612,6 +692,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         // Whether one is set, never the hash itself.
         hasPassword: r.has_password === 't' || r.has_password === 'true',
         lastLoginAt: r.last_login_at,
+        welcomedAt: r.welcomed_at,
         ownerName: r.owner_name,
         roles: r.roles === null ? [] : r.roles.split(','),
         flats: r.flats === null ? [] : r.flats.split(','),
@@ -629,6 +710,8 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
       ownerId: v.uuid().optional(),
       /** Optional: an account with none signs in by emailed code only. */
       password: v.string({ min: 12, max: 200 }).optional(),
+      /** Queue the welcome e-mail with the account. */
+      sendWelcome: v.boolean().optional(),
     }));
 
     for (const role of input.roles) {
@@ -680,6 +763,11 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         requestId: ctx.requestId,
       });
 
+      if (input.sendWelcome === true) {
+        await queueWelcome(tx, principal.societyId, await welcomeTargets(tx, {
+          societyId: principal.societyId, userIds: [userId],
+        }));
+      }
       return userId;
     });
 
@@ -688,6 +776,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
       email: input.email,
       roles,
       passwordSet: input.password !== undefined,
+      welcomeQueued: input.sendWelcome === true,
     });
   });
 
@@ -1030,6 +1119,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     issueNote, listNotes,
     queueNotices, listNotifications,
     listUsers, addUser, setRoles, deactivateUser, changeUserEmail, setUserPassword,
+    sendWelcome, sendNow,
     addFlat, setOwner,
   ];
 }

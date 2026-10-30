@@ -32,7 +32,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { route, type RouteDefinition } from './http';
 import { ForbiddenError, hasPermission } from './rbac';
-import { requeueStalled, runDueJobs, type RunSummary } from './jobs';
+import { requeueStalled, runDueJobs, sendQueuedEmails, type RunSummary } from './jobs';
 import type { PgPool } from './pg';
 import type { Config } from './config';
 import type { Logger } from './logger';
@@ -162,6 +162,26 @@ export function createCronRoutes(deps: CronDependencies): RouteDefinition[] {
     const worker = `cron:${ctx.requestId}`;
     const result = await runPasses(worker);
 
+    // E-mail queued from the screens (notices, welcome messages) that their
+    // own send did not finish: swept here, in batches, while time remains.
+    let emailsSent = 0;
+    if (email.delivers) {
+      const waiting = await pool.query<{ society_id: string }>(
+        `SELECT DISTINCT society_id FROM notifications WHERE state = 'queued' AND channel = 'email'`,
+      );
+      const startedAt = clock();
+      for (const row of waiting.rows) {
+        for (;;) {
+          if (clock() - startedAt > budgetMs / 2) break;
+          const batch = await sendQueuedEmails(
+            { pool, log, email, now: () => isoDateInIndia() }, row.society_id, 20,
+          );
+          emailsSent += batch.sent;
+          if (batch.sent + batch.failed === 0 || batch.remaining === 0) break;
+        }
+      }
+    }
+
     ctx.log.info('scheduled run', {
       worker,
       passes: result.passes,
@@ -179,6 +199,7 @@ export function createCronRoutes(deps: CronDependencies): RouteDefinition[] {
         requeued: result.requeued,
         ...result.totals,
         stoppedBecause: result.stoppedBecause,
+        emailsSent,
         budgetMs,
       },
     };

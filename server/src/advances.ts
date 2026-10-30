@@ -11,7 +11,7 @@
  */
 
 import type { Queryable } from './pg';
-import { A, accountBalance, outstandingDocuments, postEntry, type Leg } from './posting';
+import { A, accountBalance, openForAllocation, postEntry, type Leg } from './posting';
 import { lockFlatBalance } from './series';
 
 export interface AdvanceApplication {
@@ -40,8 +40,8 @@ export async function applyAdvance(
   const none = { flatNo: input.flatNo, appliedPaise: 0, entryId: null, allocations: [] };
   if (advance <= 0) return none;
 
-  const open = await outstandingDocuments(tx, {
-    societyId: input.societyId, flatId: input.flatId, asAt: input.on,
+  const open = await openForAllocation(tx, {
+    societyId: input.societyId, flatId: input.flatId, on: input.on,
   });
   const allocations: Array<{ taxInvoiceNo: string; amount: number }> = [];
   let left = advance;

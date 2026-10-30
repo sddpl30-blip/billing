@@ -313,6 +313,32 @@ export async function outstandingDocuments(
     .filter(d => d.outstanding > 0);
 }
 
+/**
+ * What a receipt or an advance dated `on` may settle: the invoices already
+ * issued by that date, each capped at what it still owes today.
+ *
+ * Outstanding "as at `on`" alone ignored anything recorded later but dated
+ * after `on`. A cheque from July entered after an August payment had settled
+ * the invoice saw the invoice still open as at July and paid it a second
+ * time, leaving the receivable credit-side; two such receipts entered at the
+ * same moment did the same whenever the later-dated one won the flat's lock.
+ * Settlement is a fact about the invoice now, whatever the dates.
+ */
+export async function openForAllocation(
+  tx: Queryable,
+  input: { societyId: string; flatId: string; on: string },
+): Promise<OutstandingDocument[]> {
+  const asAt = await outstandingDocuments(tx, { societyId: input.societyId, flatId: input.flatId, asAt: input.on });
+  if (asAt.length === 0) return asAt;
+  const now = new Map(
+    (await outstandingDocuments(tx, { societyId: input.societyId, flatId: input.flatId }))
+      .map(d => [d.documentId, d.outstanding]),
+  );
+  return asAt
+    .map(d => ({ ...d, outstanding: Math.min(d.outstanding, now.get(d.documentId) ?? 0) }))
+    .filter(d => d.outstanding > 0);
+}
+
 // --- business transactions -------------------------------------------------
 
 export interface BillLine {
@@ -642,8 +668,8 @@ export async function recordReceipt(
 
   const converted: Array<{ documentId: string; taxInvoiceNo: string; gross: number }> = [];
   if (input.conversion !== undefined) {
-    const due = (await outstandingDocuments(tx, {
-      societyId: input.societyId, flatId: input.flatId, asAt: input.receivedOn,
+    const due = (await openForAllocation(tx, {
+      societyId: input.societyId, flatId: input.flatId, on: input.receivedOn,
     })).reduce((sum, d) => sum + d.outstanding, 0);
     let spare = input.amount - due;
 
@@ -682,8 +708,8 @@ export async function recordReceipt(
     }
   }
 
-  let open = await outstandingDocuments(tx, {
-    societyId: input.societyId, flatId: input.flatId, asAt: input.receivedOn,
+  let open = await openForAllocation(tx, {
+    societyId: input.societyId, flatId: input.flatId, on: input.receivedOn,
   });
   if (input.againstDocumentId !== undefined) {
     open = open.filter(d => d.documentId === input.againstDocumentId);
