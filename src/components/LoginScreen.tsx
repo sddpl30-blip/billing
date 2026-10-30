@@ -59,6 +59,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  // Whether the server can actually deliver a one-time code. Without a
+  // provider, offering "Send OTP" sends people to wait for a code that never
+  // comes, so the code path is hidden and the password is the way in.
+  const [codesDelivered, setCodesDelivered] = useState(server === undefined);
 
   // Whether the server offers Google sign-in, and what it said if a Google
   // attempt was just refused (it sends the reason back in ?login_error=).
@@ -68,6 +72,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
     void fetch(`${apiBase()}/api/auth/google/status`, { credentials: 'include' })
       .then(r => (r.ok ? r.json() : { enabled: false }))
       .then((b: { enabled?: unknown }) => { if (live) setGoogleEnabled(b.enabled === true); })
+      .catch(() => undefined);
+    void fetch(`${apiBase()}/api/health`, { credentials: 'include' })
+      .then(r => (r.ok ? r.json() : {}))
+      .then((b: { providers?: { otp?: unknown } }) => {
+        if (live) setCodesDelivered(typeof b.providers?.otp === 'string' && b.providers.otp !== 'none');
+      })
       .catch(() => undefined);
     const params = new URLSearchParams(window.location.search);
     const problem = params.get('login_error');
@@ -198,10 +208,24 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 <ChevronLeft className="w-3.5 h-3.5" /> Back
               </button>
 
-              <h1 className="text-lg font-extrabold text-[var(--mv-ink)]">Sign in</h1>
-              <p className="text-xs text-[var(--mv-muted)] mt-1 mb-5">
-                <span className="font-bold text-[var(--mv-ink)]">{email}</span>
-              </p>
+              <h1 className="text-lg font-extrabold text-[var(--mv-ink)] mb-4">Sign in</h1>
+
+              {/* Always here, filled in if it was typed already: arriving at
+                  this form with no e-mail used to leave nowhere to type one. */}
+              <label htmlFor="login-password-email" className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Email Address</label>
+              <div className="mt-1.5 mb-4 flex items-center gap-2 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl px-3 focus-within:border-[var(--mv-accent)] transition-colors">
+                <Mail className="w-4 h-4 text-[var(--mv-muted)] shrink-0" />
+                <input
+                  id="login-password-email"
+                  type="email"
+                  autoComplete="username"
+                  autoFocus={!isValidEmail(email)}
+                  value={email}
+                  onChange={(e) => { setEmail(e.target.value); setError(''); }}
+                  placeholder="you@example.com"
+                  className="w-full py-3 bg-transparent outline-none text-sm font-semibold text-[var(--mv-ink)] placeholder:text-[var(--mv-muted)] placeholder:font-normal"
+                />
+              </div>
 
               <label htmlFor="login-password" className="text-[10px] font-bold text-[var(--mv-muted)] uppercase tracking-wider">Password</label>
               <div className="mt-1.5 flex items-center gap-2 bg-[var(--mv-page)] border border-[var(--mv-border)] rounded-xl px-3 focus-within:border-[var(--mv-accent)] transition-colors">
@@ -209,7 +233,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 <input
                   id="login-password"
                   type="password"
-                  autoFocus
+                  autoComplete="current-password"
+                  autoFocus={isValidEmail(email)}
                   value={password}
                   onChange={(e) => { setPassword(e.target.value); setError(''); }}
                   placeholder="Your password"
@@ -230,7 +255,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
               </button>
             </form>
           ) : step === 'email' ? (
-            <form onSubmit={googleEnabled ? continueWithPassword : handleSendOtp}>
+            <form onSubmit={googleEnabled || !codesDelivered ? continueWithPassword : handleSendOtp}>
               <h1 className="text-lg font-extrabold text-[var(--mv-ink)]">Member Login</h1>
               {googleEnabled ? (
                 <>
@@ -254,7 +279,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 </>
               ) : (
                 <p className="text-xs text-[var(--mv-muted)] mt-1 mb-5">
-                  Enter your registered email to receive a one-time password.
+                  {codesDelivered
+                    ? 'Enter your registered email to receive a one-time password.'
+                    : 'Enter your registered email, then your password.'}
                 </p>
               )}
 
@@ -281,10 +308,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
                 disabled={busy}
                 className="mt-5 w-full py-3 bg-[var(--mv-accent)] text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 hover:opacity-90 active:scale-[0.99] transition-all disabled:opacity-60"
               >
-                {busy ? 'Working\u2026' : googleEnabled ? 'Continue with password' : 'Send OTP'} <ArrowRight className="w-4 h-4" />
+                {busy ? 'Working\u2026' : googleEnabled ? 'Continue with password' : codesDelivered ? 'Send OTP' : 'Continue'} <ArrowRight className="w-4 h-4" />
               </button>
 
-              {server !== undefined && (googleEnabled ? (
+              {server !== undefined && codesDelivered && (googleEnabled ? (
                 <button
                   type="button"
                   onClick={() => handleSendOtp()}

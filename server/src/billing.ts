@@ -110,10 +110,23 @@ export async function runBilling(
   // for that month's service.
   const rate = await rateOnDate(tx, { societyId: input.societyId, on: bounds.startsOn });
   if (rate === null) {
+    // A rate that starts later is the usual reason, and saying so saves a
+    // search for a rate that is plainly on the Rates screen.
+    const later = await tx.query<{ effective_from: string }>(
+      `SELECT effective_from::text FROM maintenance_rates
+        WHERE society_id = $1 AND effective_from > $2::date ORDER BY effective_from LIMIT 1`,
+      [input.societyId, bounds.startsOn],
+    );
+    const startsLater = later.rows[0]?.effective_from;
     throw badRequest(
-      `No maintenance rate is on record as effective on or before ${bounds.startsOn}, the ` +
-      `start of ${period}. Record the rate the committee approved before running a ` +
-      `billing cycle.`,
+      startsLater === undefined
+        ? `No maintenance rate is on record as effective on or before ${bounds.startsOn}, the ` +
+          `start of ${period}. Record the rate the committee approved before running a ` +
+          `billing cycle.`
+        : `The maintenance rate on record starts on ${startsLater}, after the start of ` +
+          `${period} (${bounds.startsOn}), so ${period} cannot be billed at it. If the rate ` +
+          `applies from ${period}, record it again effective ${bounds.startsOn} and have the ` +
+          `treasurer approve it.`,
     );
   }
   if (rate.approvedBy === undefined || rate.approvedOn === undefined) {

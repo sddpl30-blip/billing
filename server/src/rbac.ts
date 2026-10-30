@@ -116,12 +116,14 @@ const GRANTS: Record<Role, readonly Permission[]> = {
     'ticket.read.any',
   ],
 
+  // No billing.approve: the committee decided bills are approved by the
+  // treasurer alone. The secretary may still release what the treasurer
+  // has approved.
   secretary: [
     'invoice.read.any',
     'payment.read.any',
     'report.read',
     'ledger.read',
-    'billing.approve',
     'billing.release',
     'period.reopen',
     'ticket.read.any',

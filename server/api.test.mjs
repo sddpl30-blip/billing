@@ -2495,6 +2495,18 @@ await check('a new account cannot be created as secretary and treasurer at once'
   equal(r.status, 400, 'status');
 });
 
+await check('only the treasurer approves bills; the secretary no longer can', async () => {
+  const me = await secretary.get('/api/auth/me');
+  truthy(!me.body.permissions.includes('billing.approve'), 'secretary has no billing.approve');
+  truthy(me.body.permissions.includes('billing.release'), 'secretary can still release');
+  const docs = await treasurer.get('/api/billing/documents');
+  const draft = (docs.body.documents ?? docs.body).find?.(d => d.state === 'draft');
+  if (draft !== undefined) {
+    equal((await secretary.post(`/api/billing/documents/${draft.id}/approve`, { on: draft.issuedOn })).status,
+      403, 'secretary approving a draft');
+  }
+});
+
 await check('only the secretary may list accounts', async () => {
   equal((await treasurer.get('/api/users')).status, 403, 'treasurer');
   equal((await manager.get('/api/users')).status, 403, 'manager');

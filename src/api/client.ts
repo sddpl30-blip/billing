@@ -229,6 +229,11 @@ export interface SnapshotResponse {
     readonly ratePerSqFt: number; readonly basis: string;
     readonly effectiveFrom: string; readonly authority: string; readonly approved: boolean;
   } | null;
+  /** The next rate, when one starts after today. Absent from older servers. */
+  readonly upcomingRate?: {
+    readonly ratePerSqFt: number; readonly basis: string;
+    readonly effectiveFrom: string; readonly approved: boolean;
+  } | null;
 }
 
 export interface TicketResponse {
