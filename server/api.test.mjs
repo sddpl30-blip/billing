@@ -23,7 +23,7 @@ const build = '../.server-build/server/src';
 const { buildApp } = await import(`${build}/app.js`);
 const { seed } = await import(`${build}/seed.js`);
 const { PgPool, connectionFromEnv } = await import(`${build}/pg.js`);
-const { runDueJobs, backoffMinutes } = await import(`${build}/jobs.js`);
+const { runDueJobs, backoffMinutes, sendQueuedEmails } = await import(`${build}/jobs.js`);
 const { createLogger } = await import(`${build}/logger.js`);
 const { createProductionSociety, AlreadyBootstrappedError } = await import(`${build}/bootstrap.js`);
 const { resolveEmailProvider } = await import(`${build}/providers/email.js`);
@@ -2864,6 +2864,87 @@ await check('a notice can be board-only, and only the secretary publishes', asyn
   equal((await anonymous.get('/api/notices')).status, 401, 'the board needs a sign-in');
 });
 
+// --- welcome e-mail -----------------------------------------------------------
+
+await check('the secretary welcomes every resident not yet signed in, once; nobody twice', async () => {
+  const first = await secretary.post('/api/users/welcome', {});
+  equal(first.status, 200, 'status');
+  truthy(first.body.queued >= 5, 'residents who never signed in');
+  const again = await secretary.post('/api/users/welcome', {});
+  equal(again.body.queued, 0, 'nobody is welcomed twice');
+  matches(again.body.note, /Nobody to welcome/, 'says so');
+
+  // The resident used throughout this suite has signed in, so is not welcomed.
+  const signedIn = psql(
+    `SELECT COUNT(*) FROM notifications n JOIN users u ON u.id = n.to_user
+      WHERE n.template = 'welcome' AND u.email = '${residentEmail}';`,
+  );
+  equal(signedIn.out, '0', 'a resident who has signed in gets none');
+});
+
+await check('a welcome says where and how to sign in, names the flat, and never carries a password', async () => {
+  const row = psql(
+    `SELECT n.subject || '|' || (n.payload->>'text') FROM notifications n JOIN users u ON u.id = n.to_user
+      WHERE n.template = 'welcome' AND u.email = 'owner.a101@${domain}' LIMIT 1;`,
+  ).out;
+  matches(row, /portal is ready/, 'subject');
+  matches(row, /Sign in as: owner\.a101@/, 'the address to use');
+  matches(row, /Flat: A-101/, 'the flat');
+  matches(row, /Sign in with Google/, 'how');
+  truthy(!row.includes(PASSWORD), 'no password in the message');
+  truthy(!/password: /i.test(row), 'no password line');
+});
+
+await check('a welcome can be sent to one person again, and with a new account', async () => {
+  const users = await secretary.get('/api/users');
+  const a101 = users.body.users.find(u => u.email === `owner.a101@${domain}`);
+  truthy(a101.welcomedAt !== null, 'the listing says when');
+  const resend = await secretary.post('/api/users/welcome', { userIds: [a101.id] });
+  equal(resend.body.queued, 1, 'resent on request');
+
+  const created = await secretary.post('/api/users', {
+    email: `newbie.${stamp}@${domain}`, roles: ['resident'], sendWelcome: true,
+  });
+  equal(created.status, 201, 'account');
+  equal(created.body.welcomeQueued, true, 'welcome queued with it');
+  equal(psql(`SELECT COUNT(*) FROM notifications WHERE template = 'welcome' AND to_address = 'newbie.${stamp}@${domain}';`).out,
+    '1', 'one welcome');
+});
+
+await check('welcoming is the secretary\'s, and sending now says honestly when nothing can be sent', async () => {
+  equal((await manager.post('/api/users/welcome', {})).status, 403, 'manager');
+  equal((await resident.post('/api/users/welcome', {})).status, 403, 'resident');
+  equal((await resident.post('/api/notifications/send-now', {})).status, 403, 'a resident cannot send');
+  const r = await secretary.post('/api/notifications/send-now', {});
+  equal(r.status, 200, 'status');
+  equal(r.body.delivered, false, 'no provider in this suite');
+  equal(r.body.sent, 0, 'nothing claimed sent');
+});
+
+await check('queued e-mail goes out in batches and is marked sent only on the provider\'s answer', async () => {
+  const pool = new PgPool(connectionFromEnv(process.env));
+  const sentTo = [];
+  const stub = {
+    name: `stub-${stamp}`, delivers: true,
+    async send(message) { sentTo.push(message.to); return { provider: `stub-${stamp}`, providerMessageId: `m-${sentTo.length}` }; },
+  };
+  try {
+    const before = Number(psql(`SELECT COUNT(*) FROM notifications WHERE society_id = '${fixture.societyId}' AND channel = 'email' AND state = 'queued';`).out);
+    truthy(before >= 3, 'something queued');
+    const batch = await sendQueuedEmails(
+      { pool, log: createLogger({ logLevel: 'error', mode: 'test' }), email: stub, now: () => '2026-10-30' },
+      fixture.societyId, 3,
+    );
+    equal(batch.sent, 3, 'one batch of three');
+    equal(batch.remaining, before - 3, 'the rest still queued');
+    equal(sentTo.length, 3, 'three handed to the provider');
+    const marked = psql(`SELECT COUNT(*) FROM notifications WHERE provider = 'stub-${stamp}' AND state = 'sent' AND provider_message_id LIKE 'm-%';`).out;
+    equal(marked, '3', 'marked sent with the provider\'s id');
+  } finally {
+    await pool.end();
+  }
+});
+
 await check('a flat needs its area and basis together or neither', async () => {
   const r = await manager.post('/api/flats', {
     flatNo: `D-${stamp.slice(0, 3)}`,
@@ -3671,6 +3752,28 @@ await check('a festival collection is credited to the festival fund by default',
       WHERE entry_id = '${r.body.entryId}' AND account_code IN ('3010', '4020');`,
   );
   equal(legs.out, '3010:50000', 'the fund, not festival income');
+});
+
+await check('a back-dated cheque entered after a later payment settled the invoice goes to the advance, not on the invoice again', async () => {
+  // The everyday case behind the race above: August's payment is entered
+  // first, then a July cheque turns up. Settlement is a fact about the
+  // invoice now, so July's receipt finds nothing left to settle.
+  const flatId = dFlat('C-302').id;
+  const owed = (await dManager.get(`/api/flats/${flatId}/dues?asAt=2026-12-31`)).body.outstandingPaise;
+  truthy(owed > 0, 'C-302 owes its July invoice');
+  const august = await dManager.post('/api/payments', {
+    flatId, amountPaise: owed, receivedOn: '2026-08-05', method: 'neft',
+  }, { 'Idempotency-Key': dKey('c302-august') });
+  equal(august.status, 201, 'August');
+  equal(august.body.appliedToDues, owed, 'August settles it');
+  const july = await dManager.post('/api/payments', {
+    flatId, amountPaise: 10_000, receivedOn: '2026-07-25', method: 'cheque', instrumentRef: 'CHQ-LATE',
+  }, { 'Idempotency-Key': dKey('c302-july') });
+  equal(july.status, 201, 'July');
+  equal(july.body.appliedToDues, 0, 'nothing applied to the settled invoice');
+  equal(july.body.heldAsAdvance, 10_000, 'held as an advance');
+  const after = await dManager.get(`/api/flats/${flatId}/dues?asAt=2026-12-31`);
+  equal(after.body.outstandingPaise, 0, 'not credit-side');
 });
 
 await check('and routing it through income needs a sign-off first', async () => {

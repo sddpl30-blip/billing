@@ -193,8 +193,8 @@ const notificationDispatch: Handler = async (job, ctx) => {
     `SELECT id, to_address, subject, payload::text FROM notifications
       WHERE society_id = $1 AND state = 'queued' AND channel = 'email'
       ORDER BY queued_at
-      LIMIT 100`,
-    [societyId],
+      LIMIT $2`,
+    [societyId, typeof job.payload.limit === 'number' ? job.payload.limit : 100],
   );
 
   let sent = 0;
@@ -268,6 +268,36 @@ const notificationDispatch: Handler = async (job, ctx) => {
     summary: { sent, failed, attached, provider: ctx.email.name, delivered: sent > 0 },
   };
 };
+
+/**
+ * Sends a society's queued e-mail now, outside the job queue.
+ *
+ * Nothing scheduled a dispatch job on its own, so a notice or welcome e-mail
+ * queued from a screen waited until someone thought to run one. The screens
+ * that queue e-mail call this straight after, and the daily cron run calls it
+ * for every society with something waiting. Same handler, same evidence rule:
+ * a row is marked sent only on the provider's own answer.
+ */
+export async function sendQueuedEmails(
+  ctx: JobContext, societyId: string, limit = 100,
+): Promise<{ sent: number; failed: number; remaining: number; delivered: boolean }> {
+  const outcome = await notificationDispatch({
+    id: 'inline', societyId, kind: 'notification-dispatch', runKey: 'inline',
+    attempts: 0, maxAttempts: 1, payload: { limit },
+  }, ctx);
+  const summary = outcome.summary as { sent?: number; failed?: number };
+  const left = await ctx.pool.query<{ n: string }>(
+    `SELECT COUNT(*)::text AS n FROM notifications
+      WHERE society_id = $1 AND state = 'queued' AND channel = 'email'`,
+    [societyId],
+  );
+  return {
+    sent: summary.sent ?? 0,
+    failed: summary.failed ?? 0,
+    remaining: Number(left.rows[0]?.n ?? '0'),
+    delivered: ctx.email.delivers,
+  };
+}
 
 /**
  * Releases a period's approved proformas and emails them, at the time the

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
-  addUser, changeUserEmail, deactivateUser, listUsers, setRoles, setUserPassword, type UserAccount,
+  addUser, changeUserEmail, deactivateUser, listUsers, sendQueuedNow, sendWelcome, setRoles, setUserPassword,
+  type UserAccount,
 } from '../../../api/office/governance';
 import type { OfficeContext } from '../types';
 import {
@@ -29,6 +30,34 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
   const [deactivating, setDeactivating] = useState<UserAccount | null>(null);
   const [emailing, setEmailing] = useState<UserAccount | null>(null);
   const [resetting, setResetting] = useState<UserAccount | null>(null);
+  const [sending, setSending] = useState<string | null>(null);
+
+  /** Queues welcome e-mails, then sends them in batches with progress in the toast. */
+  const welcome = async (userIds?: string[]) => {
+    if (userIds === undefined && !window.confirm(
+      'Send a welcome e-mail to every resident who has not signed in yet and has not had one?',
+    )) return;
+    setSending('Queuing…');
+    try {
+      const queued = await sendWelcome(ctx.client, userIds);
+      ctx.toast(queued.note, 'info');
+      if (queued.queued > 0 && queued.emailDelivers) {
+        const result = await sendQueuedNow(ctx.client, (sent, remaining) =>
+          setSending(`Sending… ${sent} sent, ${remaining} to go`));
+        ctx.toast(
+          `${result.sent} e-mail${result.sent === 1 ? '' : 's'} sent` +
+          (result.failed > 0 ? `, ${result.failed} failed (see the log)` : '') +
+          (result.remaining !== null && result.remaining > 0 ? `; ${result.remaining} left for the 6 am run.` : '.'),
+          result.failed > 0 ? 'error' : 'info',
+        );
+      }
+      await loaded.refresh();
+    } catch (err) {
+      ctx.toast(err instanceof Error ? err.message : 'The welcome e-mails could not be sent.', 'error');
+    } finally {
+      setSending(null);
+    }
+  };
   const [showInactive, setShowInactive] = useState(false);
   const users = loaded.data?.users ?? [];
   const roles = loaded.data?.availableRoles ?? [];
@@ -37,7 +66,14 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
   return (
     <Card
       title="Users and roles"
-      actions={<Button tone="primary" onClick={() => setAdding(true)} disabled={loaded.data === null}>Add a user</Button>}
+      actions={(
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => { void welcome(); }} disabled={loaded.data === null || sending !== null}>
+            {sending ?? 'Send welcome e-mails'}
+          </Button>
+          <Button tone="primary" onClick={() => setAdding(true)} disabled={loaded.data === null}>Add a user</Button>
+        </div>
+      )}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-[var(--mv-muted)] flex-1 min-w-[200px]">
@@ -58,6 +94,11 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
                 <span className="font-bold">{u.email}</span>
                 {u.ownerName !== null && <span className="block text-[10px] text-[var(--mv-muted)]">{u.ownerName}</span>}
                 {!u.active && <span className="block mt-1"><Badge tone="muted">Deactivated</Badge></span>}
+                {u.active && u.lastLoginAt === null && (
+                  <span className="block text-[10px] text-[var(--mv-muted)] mt-0.5 break-normal">
+                    {u.welcomedAt ? `Welcomed ${u.welcomedAt.slice(0, 10)}, not signed in yet` : 'Not signed in yet'}
+                  </span>
+                )}
               </td>
               <td className={cellClass}>
                 <div className="flex flex-wrap gap-1">
@@ -72,6 +113,8 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
                     <Button onClick={() => setEditing(u)} aria-label={`Change roles for ${u.email}`}>Roles</Button>
                     {isResidentOnly(u) && (
                       <>
+                        <Button onClick={() => { void welcome([u.id]); }} disabled={sending !== null}
+                          aria-label={`Send a welcome e-mail to ${u.email}`}>Welcome</Button>
                         <Button onClick={() => setEmailing(u)} aria-label={`Change e-mail for ${u.email}`}>E-mail</Button>
                         <Button onClick={() => setResetting(u)} aria-label={`Set password for ${u.email}`}>
                           {u.hasPassword ? 'Reset password' : 'Set password'}
@@ -93,7 +136,10 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
           onClose={() => setAdding(false)}
           onSubmit={async input => {
             const done = await run('add', () => addUser(ctx.client, input), `${input.email} added.`);
-            if (done) setAdding(false);
+            if (done) {
+              setAdding(false);
+              if (input.sendWelcome === true) void sendQueuedNow(ctx.client).catch(() => undefined);
+            }
           }}
         />
       )}
@@ -251,11 +297,12 @@ function RoleChecks({ idPrefix, roles, selected, onChange }: {
 
 function AddUserDialog({ roles, busy, onClose, onSubmit }: {
   roles: readonly string[]; busy: boolean; onClose: () => void;
-  onSubmit: (input: { email: string; roles: string[]; password?: string }) => void;
+  onSubmit: (input: { email: string; roles: string[]; password?: string; sendWelcome?: boolean }) => void;
 }) {
   const [email, setEmail] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
   const [password, setPassword] = useState('');
+  const [welcomeIt, setWelcomeIt] = useState(true);
   const [problem, setProblem] = useState<string | null>(null);
   return (
     <FormDialog
@@ -270,7 +317,10 @@ function AddUserDialog({ roles, busy, onClose, onSubmit }: {
         if (selected.length === 0) { setProblem('Give the account at least one role.'); return; }
         if (password !== '' && password.length < 12) { setProblem('A password is at least 12 characters.'); return; }
         setProblem(null);
-        onSubmit({ email: email.trim(), roles: selected, ...(password === '' ? {} : { password }) });
+        onSubmit({
+          email: email.trim(), roles: selected, ...(password === '' ? {} : { password }),
+          ...(welcomeIt ? { sendWelcome: true } : {}),
+        });
       }}
     >
       <div>
@@ -283,6 +333,11 @@ function AddUserDialog({ roles, busy, onClose, onSubmit }: {
         <label htmlFor="gov-user-password" className={labelClass}>Password (optional, 12+ characters)</label>
         <input id="gov-user-password" type="password" className={inputClass} value={password}
           onChange={e => setPassword(e.target.value)} autoComplete="new-password" />
+      </div>
+      <div className="flex items-center gap-2">
+        <input id="gov-user-welcome" type="checkbox" checked={welcomeIt} onChange={e => setWelcomeIt(e.target.checked)}
+          className="w-4 h-4 accent-[var(--mv-accent)]" />
+        <label htmlFor="gov-user-welcome" className="text-sm text-[var(--mv-ink)]">Send a welcome e-mail (how to sign in; never the password)</label>
       </div>
       {problem !== null && <p role="alert" className="text-xs text-red-700">{problem}</p>}
     </FormDialog>
