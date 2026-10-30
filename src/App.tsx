@@ -72,6 +72,7 @@ import type { TicketResponse } from './api/client';
 import type { OfficeContext } from './components/office/types';
 import { SetupGate } from './components/SetupScreen';
 import { ScheduledRelease } from './components/ScheduledRelease';
+import { isoDateInIndia, periodLabel } from './accounting/clock';
 import { LoginScreen } from './components/LoginScreen';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import { downloadInvoice, pdfFilename, saveBlob } from './invoiceExport';
@@ -268,6 +269,11 @@ export default function App() {
   });
   const books = booksSource.store;
   const onServer = booksSource.kind === 'server';
+  // The demo's books are July's; a live society bills the month it is in, so
+  // the billing run opens on this month in India rather than on "Jul 2026".
+  useEffect(() => {
+    if (onServer) setWizardPeriod(p => (p === 'Jul 2026' ? periodLabel(isoDateInIndia()) : p));
+  }, [onServer]);
   const booksVersion = booksSource.version;
   /** Changes only when the books were reloaded, not on every busy flag. */
   const booksLoadedAt = books?.snapshot().savedAt ?? null;
@@ -737,6 +743,16 @@ export default function App() {
       reload: () => booksSourceRef.current.reload(),
     }
   ), [booksSource.client, triggerToast]);
+
+  /**
+   * The signed-in account's roles as the server holds them, for the sidebar.
+   * The demo's fixed titles stay for the demo; on the server a secretary must
+   * not be labelled "RWA Treasurer".
+   */
+  const serverRoles = onServer ? booksSource.server?.context()?.roles ?? [] : [];
+  const serverRoleLabel = serverRoles.length === 0
+    ? null
+    : serverRoles.map(r => r.charAt(0).toUpperCase() + r.slice(1)).join(' · ');
 
   /** GST as the screens should state it: from the settings, never a constant. */
   const gstSetting = onServer
@@ -1373,7 +1389,7 @@ export default function App() {
 
     const period = wizardPeriod.trim();
     if (periodToIso(period) === null) {
-      triggerToast(`"${period}" is not a month and year. Use a form like "Jul 2026".`, 'error');
+      triggerToast(`"${period}" is not a month and year. Use a form like "Oct 2026".`, 'error');
       return;
     }
 
@@ -1553,7 +1569,7 @@ export default function App() {
               type="text"
               value={wizardPeriod}
               onChange={(e) => setWizardPeriod(e.target.value)}
-              placeholder="e.g. Jul 2026"
+              placeholder="e.g. Oct 2026"
               className={input}
             />
           </div>
@@ -1804,7 +1820,7 @@ export default function App() {
                   <User className="w-4.5 h-4.5" />
                 </div>
                 <div className="min-w-0">
-                  <p className="font-bold text-white">{currentRole === 'Resident' ? residentName : currentRole === 'Manager' ? 'Finance Supt' : 'RWA Treasurer'}</p>
+                  <p className="font-bold text-white">{currentRole === 'Resident' ? residentName : (serverRoleLabel ?? (currentRole === 'Manager' ? 'Finance Supt' : 'RWA Treasurer'))}</p>
                   <span className="text-[9px] text-white/70 font-bold block uppercase leading-none mt-0.5">{currentRole} Mode</span>
                   <span className="text-[9px] text-white/70 block truncate leading-none mt-1" title={sessionEmail || ''}>{sessionEmail}</span>
                 </div>

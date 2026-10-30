@@ -122,13 +122,11 @@ export function ScheduledRelease({ client, approvedPeriods, mayRelease, toast, r
                 {approvedPeriods.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
             ) : (
-              <input
-                id="sr-period"
-                value={period}
-                onChange={e => setPeriod(e.target.value)}
-                placeholder="Oct 2026"
-                className="rounded-xl border border-[var(--mv-border)] bg-[var(--mv-surface)] px-3 py-2 text-sm text-[var(--mv-ink)] w-32"
-              />
+              // Only a period with approved bills can be released, so there is
+              // nothing to type: a free-text box here only invited "OCT1".
+              <p id="sr-period" className="rounded-xl border border-dashed border-[var(--mv-border)] px-3 py-2 text-xs text-[var(--mv-muted)] max-w-xs">
+                No approved bills yet. Run and approve a period&apos;s bills first; it then appears here.
+              </p>
             )}
           </div>
           <div>
