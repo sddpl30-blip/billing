@@ -143,6 +143,17 @@ export interface BooksSnapshotView {
     readonly authority: string;
     readonly approved: boolean;
   } | null;
+  /**
+   * The next rate, when one starts after today. Without it, a rate recorded
+   * from next month made this month read as having "no rate", which sent
+   * people looking for a rate that was there all along.
+   */
+  readonly upcomingRate: {
+    readonly ratePerSqFt: number;
+    readonly basis: string;
+    readonly effectiveFrom: string;
+    readonly approved: boolean;
+  } | null;
 }
 
 const bool = (value: string | null): boolean => value === 't' || value === 'true';
@@ -434,6 +445,17 @@ export async function buildSnapshot(
     [societyId, input.today],
   );
   const rate = rateRow.rows[0];
+  const upcomingRow = await tx.query<{
+    rate_paise_per_sqft: string; area_basis: string; effective_from: string; approved_by: string | null;
+  }>(
+    `SELECT rate_paise_per_sqft::text, area_basis, effective_from::text, approved_by
+       FROM maintenance_rates
+      WHERE society_id = $1 AND effective_from > $2::date
+      ORDER BY effective_from
+      LIMIT 1`,
+    [societyId, input.today],
+  );
+  const upcoming = upcomingRow.rows[0];
 
   return {
     societyId,
@@ -469,6 +491,14 @@ export async function buildSnapshot(
           effectiveFrom: rate.effective_from,
           authority: rate.authority,
           approved: rate.approved_by !== null,
+        },
+    upcomingRate: upcoming === undefined
+      ? null
+      : {
+          ratePerSqFt: Number(upcoming.rate_paise_per_sqft) / 100,
+          basis: upcoming.area_basis,
+          effectiveFrom: upcoming.effective_from,
+          approved: upcoming.approved_by !== null,
         },
   };
 }

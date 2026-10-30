@@ -18,6 +18,13 @@ interface Props {
   onReleaseApproved: () => void;
   onConvertDue: () => void;
   compact?: boolean;
+  /**
+   * Which of the actions this account may take, as the server decides. A
+   * button the server would refuse is replaced by who does it instead; an
+   * offered button that always fails reads as either broken or permitted.
+   * Absent (the demonstration) means all of them.
+   */
+  may?: { approve: boolean; release: boolean; convert: boolean };
 }
 
 const STATE_LABEL: Record<RegisterView['state'], string> = {
@@ -37,7 +44,7 @@ const STATE_STYLE: Record<RegisterView['state'], string> = {
 };
 
 export const BillingWorkflow: React.FC<Props> = ({
-  documents, problems, today, onApproveAll, onReleaseApproved, onConvertDue, compact,
+  documents, problems, today, onApproveAll, onReleaseApproved, onConvertDue, compact, may,
 }) => {
   const count = (state: RegisterView['state']) => documents.filter(d => d.state === state).length;
   const dueForConversion = documents.filter(
@@ -46,7 +53,7 @@ export const BillingWorkflow: React.FC<Props> = ({
 
   const Stage: React.FC<{
     icon: React.ReactNode; title: string; detail: string; n: number;
-    action?: { label: string; onClick: () => void; disabled: boolean };
+    action?: { label: string; onClick: () => void; disabled: boolean; allowed?: boolean; who?: string };
   }> = ({ icon, title, detail, n, action }) => (
     <div className="p-3.5 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl space-y-2">
       <div className="flex items-start justify-between gap-3">
@@ -59,7 +66,12 @@ export const BillingWorkflow: React.FC<Props> = ({
         </div>
         <span className="font-mono font-bold text-base text-[var(--mv-ink)] shrink-0">{n}</span>
       </div>
-      {action && (
+      {action && action.allowed === false && (
+        <p className="w-full py-2 text-center rounded-lg border border-dashed border-[var(--mv-border)] text-[10px] font-bold text-[var(--mv-muted)]">
+          {action.who}
+        </p>
+      )}
+      {action && action.allowed !== false && (
         <button
           onClick={action.onClick}
           disabled={action.disabled}
@@ -93,6 +105,8 @@ export const BillingWorkflow: React.FC<Props> = ({
             label: 'Approve all drafts',
             onClick: onApproveAll,
             disabled: count('draft') === 0,
+            allowed: may?.approve,
+            who: 'Only the treasurer approves bills',
           }}
         />
         <Stage
@@ -104,6 +118,8 @@ export const BillingWorkflow: React.FC<Props> = ({
             label: 'Release for dispatch',
             onClick: onReleaseApproved,
             disabled: count('approved') === 0,
+            allowed: may?.release,
+            who: 'The treasurer or secretary releases bills',
           }}
         />
         <Stage
@@ -115,6 +131,8 @@ export const BillingWorkflow: React.FC<Props> = ({
             label: 'Convert what has fallen due',
             onClick: onConvertDue,
             disabled: dueForConversion === 0,
+            allowed: may?.convert,
+            who: 'The treasurer converts due bills',
           }}
         />
         <Stage

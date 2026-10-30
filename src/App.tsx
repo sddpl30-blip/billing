@@ -754,6 +754,15 @@ export default function App() {
     ? null
     : serverRoles.map(r => r.charAt(0).toUpperCase() + r.slice(1)).join(' · ');
 
+  /** Which billing actions this account may take; undefined in the demonstration. */
+  const billingMay = onServer
+    ? {
+        approve: booksSource.can('billing.approve'),
+        release: booksSource.can('billing.release'),
+        convert: booksSource.can('billing.convert'),
+      }
+    : undefined;
+
   /** GST as the screens should state it: from the settings, never a constant. */
   const gstSetting = onServer
     ? booksSource.server?.context()?.settings.gst ?? null
@@ -773,10 +782,19 @@ export default function App() {
   const rateLabel = onServer
     ? (() => {
         const rate = booksSource.server?.context()?.rate ?? null;
+        const next = booksSource.server?.context()?.upcomingRate ?? null;
+        const nextNote = next === null
+          ? ''
+          : ` The rate of ₹${next.ratePerSqFt.toFixed(2)}/sq ft on ${next.basis} area starts on ` +
+            `${next.effectiveFrom}${next.approved ? '' : ' (not yet approved)'}; months before that ` +
+            'cannot be billed at it. To bill an earlier month, the secretary records the rate ' +
+            'again from that month and the treasurer approves it.';
         return rate === null
-          ? 'No maintenance rate is on record — the server will refuse the run until one is approved.'
+          ? (next === null
+            ? 'No maintenance rate is on record. The secretary records it under Office → Approvals & admin → Rates, and the treasurer approves it.'
+            : `No rate is in force yet.${nextNote}`)
           : `₹${rate.ratePerSqFt.toFixed(2)}/sq ft on ${rate.basis} area, from ${rate.effectiveFrom}` +
-            `${rate.approved ? '' : ' (not yet approved)'}`;
+            `${rate.approved ? '' : ' (not yet approved)'}.${nextNote}`;
       })()
     : (() => {
         const m = books?.snapshot().config.maintenance;
@@ -1483,6 +1501,15 @@ export default function App() {
         `provider is configured, so nothing was sent to any member.`,
       );
       reportBatch('proformas released', result);
+      if (result.done > 0) {
+        // Said separately and plainly: "released" reads as "sent", and with no
+        // e-mail provider set up nothing reached any owner.
+        triggerToast(
+          `${result.done} bill${result.done === 1 ? '' : 's'} marked as released. E-mail is not set up yet, ` +
+          'so no owner has been sent anything. Download the PDFs from the bill list to share them.',
+          'error',
+        );
+      }
     }, 'The release did not go through.');
   };
 
@@ -1825,7 +1852,11 @@ export default function App() {
                   <span className="text-[9px] text-white/70 block truncate leading-none mt-1" title={sessionEmail || ''}>{sessionEmail}</span>
                 </div>
               </div>
-              {isAuthenticated && currentRole !== 'Resident' && (
+              {/* The demo's "lock": it only switches the view back to the
+                  resident's. On the server that left the session signed in
+                  while looking signed out, so there it is not offered;
+                  Logout is the way out. */}
+              {!onServer && isAuthenticated && currentRole !== 'Resident' && (
                 <button
                   onClick={handleLockAdminMode}
                   className="w-full mt-2 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-200 font-bold uppercase text-[9px] rounded-lg tracking-wider transition-colors"
@@ -2164,8 +2195,8 @@ export default function App() {
                       {/* Operation launch pad */}
                       <div className="col-span-4 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-2xl p-6 shadow-xs flex flex-col justify-between">
                         <div>
-                          <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider mb-4 border-b border-[var(--mv-border)] pb-2 text-left">Quick Admin Dispatch</h4>
-                          <p className="text-xs text-[var(--mv-muted)] leading-relaxed mb-6">Launch water supply assessments, common lift backups operations, parking space levies, and non-occupancy utility taxes across core residential registry ledgers.</p>
+                          <h4 className="font-bold text-sm text-[var(--mv-ink)] uppercase tracking-wider mb-4 border-b border-[var(--mv-border)] pb-2 text-left">Quick actions</h4>
+                          <p className="text-xs text-[var(--mv-muted)] leading-relaxed mb-6">Raise this month's maintenance bills, or see which flats still owe.</p>
                         </div>
                         <div className="space-y-3.5">
                           <button
@@ -2283,13 +2314,17 @@ export default function App() {
                       <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Receivables Ledger Directory</h2>
                       <p className="text-xs text-[var(--mv-muted)]">Fully compliant regulatory invoices generated for Mani Vista residents</p>
                     </div>
-                    {currentRole !== 'Resident' && (
+                    {/* On the server, only an account that may run billing (the
+                        manager) is offered the button; the server refuses
+                        anyone else anyway, and an offered button that always
+                        fails reads as broken. */}
+                    {currentRole !== 'Resident' && (!onServer || booksSource.can('billing.run')) && (
                       <button
                         onClick={() => setShowBillingWizard(!showBillingWizard)}
                         aria-expanded={showBillingWizard}
                         className="py-2.5 px-4 bg-[var(--mv-ink)] hover:bg-black text-white text-xs font-bold uppercase rounded-xl shadow-md flex items-center gap-1.5"
                       >
-                        <Plus className="w-4 h-4" /> {showBillingWizard ? 'Minimize Billing' : 'Launch New Campaign'}
+                        <Plus className="w-4 h-4" /> {showBillingWizard ? 'Close billing run' : 'Run monthly billing'}
                       </button>
                     )}
                   </div>
@@ -2304,6 +2339,7 @@ export default function App() {
                         onApproveAll={handleApproveAllDrafts}
                         onReleaseApproved={handleReleaseApproved}
                         onConvertDue={handleConvertDue}
+                        may={billingMay}
                       />
                       {onServer && booksSource.client !== null && (booksSource.can('billing.release') || booksSource.can('report.read')) && (
                         <div className="mt-4">
@@ -3207,7 +3243,7 @@ export default function App() {
         </header>
 
         {/* Dynamic Warning Notification if admin acts as tester */}
-        {isAuthenticated && currentRole !== 'Resident' && (
+        {!onServer && isAuthenticated && currentRole !== 'Resident' && (
           <div className="bg-[var(--mv-ink)] text-white text-[10px] font-bold px-4 py-1.5 flex justify-between items-center z-10 border-b border-white/10 uppercase tracking-widest">
             <span>🛡️ MODE: SECURE ADMIN ({currentRole})</span>
             <button
@@ -3646,6 +3682,7 @@ export default function App() {
                     onReleaseApproved={handleReleaseApproved}
                     onConvertDue={handleConvertDue}
                     compact
+                    may={billingMay}
                   />
                   {onServer && booksSource.client !== null && (booksSource.can('billing.release') || booksSource.can('report.read')) && (
                     <div className="mt-4">

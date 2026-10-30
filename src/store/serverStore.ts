@@ -54,6 +54,7 @@ export interface ServerContext {
   readonly flats: SnapshotResponse['flats'];
   readonly settings: SnapshotResponse['settings'];
   readonly rate: SnapshotResponse['rate'];
+  readonly upcomingRate: NonNullable<SnapshotResponse['upcomingRate']> | null;
 }
 
 export interface ServerBooksStore extends BooksReader {
@@ -196,6 +197,7 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
         flats: next.flats,
         settings: next.settings,
         rate: next.rate,
+        upcomingRate: next.upcomingRate ?? null,
       };
 
       flatIds.clear();
