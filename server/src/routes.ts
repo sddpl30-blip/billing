@@ -15,7 +15,7 @@
  * provider configured that is false, and the response says so.
  */
 
-import type { PgPool } from './pg';
+import type { PgPool, Queryable } from './pg';
 import type { Config } from './config';
 import type { Logger } from './logger';
 import type { AuthService } from './auth';
@@ -47,6 +47,7 @@ import {
   tdsSummary, trialBalance,
 } from './reports';
 import { gstTreatment, invoicePrefix, readSettings, writeSetting } from './settings';
+import { BULK_PAYMENTS_MAX_BYTES, checkBulkPayments } from './bulkPayments';
 
 export interface RouteDependencies {
   readonly pool: PgPool;
@@ -99,6 +100,88 @@ function idempotencyKey(ctx: RequestContext): string {
 }
 
 const today = (): string => isoDateInIndia(); // India's date, not UTC's: see clock.ts
+
+/**
+ * One receipt, inside the caller's transaction: the flat's balance lock, the
+ * receipt number, the posting and the audit row. Shared by the single
+ * payment screen and the bulk upload, so the two cannot drift apart.
+ */
+async function takePayment(
+  tx: Queryable,
+  principal: Principal,
+  input: {
+    flatId: string; flatNo: string; amountPaise: number; receivedOn: string;
+    method: string; instrumentRef?: string; bankAccountId?: string; againstDocumentId?: string;
+  },
+  key: string,
+  requestId: string,
+) {
+  // The flat's balance lock first, before the receipt series. The receipt
+  // series is per month, so it did not serialise two receipts for one
+  // flat dated in different months: both read the same open invoice and
+  // both allocated against it. See lockFlatBalance.
+  await lockFlatBalance(tx, { societyId: principal.societyId, flatId: input.flatId });
+
+  // A receipt number per month, with the series locked so two payments
+  // taken at the same moment cannot be given the same number. Before the
+  // lock, seven of eight concurrent payments were refused on the unique
+  // index — see series.ts.
+  const month = input.receivedOn.slice(0, 7);
+  const receiptNo = await allocateNumber(
+    tx,
+    { societyId: principal.societyId, kind: 'receipt', scope: month },
+    async () => {
+      const next = await tx.query<{ next: string }>(
+        `SELECT COALESCE(MAX(NULLIF(regexp_replace(receipt_no, '^.*/', ''), '')::int), 0) + 1 AS next
+           FROM payments WHERE society_id = $1 AND receipt_no LIKE $2`,
+        [principal.societyId, `RC/${month}/%`],
+      );
+      return `RC/${month}/${String(next.rows[0].next).padStart(4, '0')}`;
+    },
+  );
+
+  const receipt = await recordReceipt(tx, {
+    societyId: principal.societyId,
+    flatId: input.flatId,
+    flatNo: input.flatNo,
+    amount: input.amountPaise,
+    receivedOn: input.receivedOn,
+    method: input.method,
+    receiptNo,
+    idempotencyKey: key,
+    bankAccountId: input.bankAccountId ?? null,
+    instrumentRef: input.instrumentRef ?? null,
+    postedBy: principal.userId,
+    postedByLabel: principal.email,
+    ...(input.againstDocumentId !== undefined
+      ? { againstDocumentId: input.againstDocumentId }
+      : {}),
+    // A payment for a proforma converts it, as the browser's register
+    // does; see recordReceipt.
+    conversion: {
+      gst: await gstTreatment(tx, principal.societyId),
+      invoicePrefix: await invoicePrefix(tx, principal.societyId),
+    },
+  });
+
+  await audit(tx, {
+    societyId: principal.societyId,
+    actorUser: principal.userId,
+    actorLabel: principal.email,
+    action: 'payment.record',
+    subjectTable: 'payments',
+    subjectId: receipt.paymentId,
+    detail: {
+      receiptNo: receipt.receiptNo,
+      amountPaise: input.amountPaise,
+      appliedToDues: receipt.appliedToDues,
+      heldAsAdvance: receipt.heldAsAdvance,
+      converted: receipt.converted.map(c => c.taxInvoiceNo),
+    },
+    requestId,
+  });
+  return receipt;
+}
 
 /** `asAt` from the query string, defaulting to today. */
 function asAtOf(ctx: RequestContext): string {
@@ -973,72 +1056,9 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
         [input.flatId, principal.societyId],
       );
       if (flat.rows[0] === undefined) throw notFound('That flat');
-
-      // The flat's balance lock first, before the receipt series. The receipt
-      // series is per month, so it did not serialise two receipts for one
-      // flat dated in different months: both read the same open invoice and
-      // both allocated against it. See lockFlatBalance.
-      await lockFlatBalance(tx, { societyId: principal.societyId, flatId: input.flatId });
-
-      // A receipt number per month, with the series locked so two payments
-      // taken at the same moment cannot be given the same number. Before the
-      // lock, seven of eight concurrent payments were refused on the unique
-      // index — see series.ts.
-      const month = input.receivedOn.slice(0, 7);
-      const receiptNo = await allocateNumber(
-        tx,
-        { societyId: principal.societyId, kind: 'receipt', scope: month },
-        async () => {
-          const next = await tx.query<{ next: string }>(
-            `SELECT COALESCE(MAX(NULLIF(regexp_replace(receipt_no, '^.*/', ''), '')::int), 0) + 1 AS next
-               FROM payments WHERE society_id = $1 AND receipt_no LIKE $2`,
-            [principal.societyId, `RC/${month}/%`],
-          );
-          return `RC/${month}/${String(next.rows[0].next).padStart(4, '0')}`;
-        },
-      );
-
-      const receipt = await recordReceipt(tx, {
-        societyId: principal.societyId,
-        flatId: input.flatId,
-        flatNo: flat.rows[0].flat_no,
-        amount: input.amountPaise,
-        receivedOn: input.receivedOn,
-        method: input.method,
-        receiptNo,
-        idempotencyKey: key,
-        bankAccountId: input.bankAccountId ?? null,
-        instrumentRef: input.instrumentRef ?? null,
-        postedBy: principal.userId,
-        postedByLabel: principal.email,
-        ...(input.againstDocumentId !== undefined
-          ? { againstDocumentId: input.againstDocumentId }
-          : {}),
-        // A payment for a proforma converts it, as the browser's register
-        // does; see recordReceipt.
-        conversion: {
-          gst: await gstTreatment(tx, principal.societyId),
-          invoicePrefix: await invoicePrefix(tx, principal.societyId),
-        },
-      });
-
-      await audit(tx, {
-        societyId: principal.societyId,
-        actorUser: principal.userId,
-        actorLabel: principal.email,
-        action: 'payment.record',
-        subjectTable: 'payments',
-        subjectId: receipt.paymentId,
-        detail: {
-          receiptNo: receipt.receiptNo,
-          amountPaise: input.amountPaise,
-          appliedToDues: receipt.appliedToDues,
-          heldAsAdvance: receipt.heldAsAdvance,
-          converted: receipt.converted.map(c => c.taxInvoiceNo),
-        },
-        requestId: ctx.requestId,
-      });
-      return receipt;
+      return takePayment(tx, principal, {
+        ...input, flatNo: flat.rows[0].flat_no,
+      }, key, ctx.requestId);
     });
 
     return created({
@@ -1048,6 +1068,67 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
       note:
         'Recorded in the books. This is a receipt for money already received; no bank or ' +
         'gateway was contacted by this request.',
+    });
+  });
+
+  /**
+   * Many receipts from one CSV. Without `confirm` it only checks, line by
+   * line; with it, and only if every line passed, it records them all in one
+   * transaction, each through takePayment. The Idempotency-Key covers the
+   * whole file: each line's own key is derived from it and the line number,
+   * so sending the same confirmed upload twice cannot take the money twice.
+   */
+  const importPayments = route('POST', '/api/payments/import', async (ctx) => {
+    const principal = need(ctx, 'payment.record');
+    const input = ctx.body(v.object({
+      csv: v.string({ min: 1, max: BULK_PAYMENTS_MAX_BYTES }),
+      confirm: v.boolean(),
+      bankAccountId: v.uuid().optional(),
+    }));
+    const key = input.confirm ? idempotencyKey(ctx) : null;
+
+    const outcome = await pool.transaction(async (tx) => {
+      const lines = await checkBulkPayments(tx, {
+        societyId: principal.societyId, csv: input.csv, today: today(),
+      });
+      const bad = lines.filter(l => l.problems.length > 0);
+      if (key === null || bad.length > 0) return { lines, receipts: null };
+
+      const receipts = [];
+      for (const line of lines) {
+        const receipt = await takePayment(tx, principal, {
+          flatId: line.flatId as string,
+          flatNo: line.flatNo,
+          amountPaise: line.amountPaise as number,
+          receivedOn: line.receivedOn as string,
+          method: line.method as string,
+          ...(line.reference === null ? {} : { instrumentRef: line.reference }),
+          ...(input.bankAccountId === undefined ? {} : { bankAccountId: input.bankAccountId }),
+        }, `${key}:line-${line.line}`, ctx.requestId);
+        receipts.push({ line: line.line, flatNo: line.flatNo, receiptNo: receipt.receiptNo, amountPaise: line.amountPaise });
+      }
+      return { lines, receipts };
+    });
+
+    const totalPaise = outcome.lines.reduce((sum, l) => sum + (l.amountPaise ?? 0), 0);
+    const problems = outcome.lines.filter(l => l.problems.length > 0).length;
+    if (input.confirm && outcome.receipts === null) {
+      throw conflict(
+        `${problems} of ${outcome.lines.length} lines have problems, so nothing was recorded. ` +
+        'Fix them in the file and check it again.',
+      );
+    }
+    return ok({
+      checked: outcome.lines.length,
+      problems,
+      totalPaise,
+      lines: outcome.lines,
+      recorded: outcome.receipts,
+      note: outcome.receipts === null
+        ? (problems === 0
+          ? `All ${outcome.lines.length} lines are ready. Nothing has been recorded yet.`
+          : `${problems} line${problems === 1 ? ' has' : 's have'} a problem. Nothing has been recorded.`)
+        : `${outcome.receipts.length} receipts recorded. No bank or gateway was contacted.`,
     });
   });
 
@@ -2539,7 +2620,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     listRates, addRate, approveRate,
     billingRun, listBillingDocuments, approveDocument, releaseDocument, convertDocument,
     cancelDocument,
-    recordPayment, listPayments, reversePayment,
+    recordPayment, importPayments, listPayments, reversePayment,
     listVendors, addVendor, addVendorBill, listVendorBills, approveVendorBill,
     bookVendorBillRoute, payVendorBill, remitTdsRoute,
     listBankAccounts, addBankAccount, importStatement, listBankTransactions, matchBankTransaction, reconcile,

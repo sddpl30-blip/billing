@@ -18,6 +18,7 @@ import { createRoutes } from './routes';
 import { createAdminRoutes } from './routesAdmin';
 import { createCronRoutes } from './routesCron';
 import { createSetupRoutes } from './routesSetup';
+import { createNoticeRoutes } from './routesNotices';
 import { createScheduleRoutes } from './routesSchedule';
 import { createGoogleRoutes } from './routesGoogle';
 import { createOnboardingRoutes } from './routesOnboarding';
@@ -97,6 +98,7 @@ export function buildApp(
     // deployment run the same routes.
     ...createCronRoutes({ pool, config, log, email }),
     ...createSetupRoutes({ pool, config, log, env }),
+    ...createNoticeRoutes({ pool, email }),
     ...createScheduleRoutes({ pool }),
     ...createGoogleRoutes({ config, log, auth }),
   ];
