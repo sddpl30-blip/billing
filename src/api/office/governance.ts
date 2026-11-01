@@ -110,6 +110,8 @@ export interface UserAccount {
   readonly lastLoginAt: string | null;
   /** When a welcome e-mail was last queued for the account; null if never. Absent from older servers. */
   readonly welcomedAt?: string | null;
+  /** Other addresses that sign in to this account (resident accounts only). Absent from older servers. */
+  readonly alsoSignsInAs?: readonly string[];
   readonly ownerName: string | null;
   readonly roles: readonly string[];
   readonly flats: readonly string[];
@@ -187,6 +189,38 @@ export async function sendQueuedNow(
     }
   }
   return { sent, failed, remaining: null, delivered: true };
+}
+
+/** Lets another address sign in to a resident's account (Google or password). */
+export function addLoginEmail(client: ApiClient, id: string, email: string): Promise<{ note: string }> {
+  return client.post(`/api/users/${encodeURIComponent(id)}/login-emails`, { email });
+}
+
+export function removeLoginEmail(client: ApiClient, id: string, email: string): Promise<{ removed: string }> {
+  return client.post(`/api/users/${encodeURIComponent(id)}/login-emails/remove`, { email });
+}
+
+export type BulkAudience = 'owners' | 'portal-users' | 'flats';
+
+export function previewBulkEmail(
+  client: ApiClient, input: { subject: string; body: string; audience: BulkAudience; flats?: string[] },
+): Promise<{ recipients: number; sample: string[] }> {
+  return client.post('/api/emails/bulk', { ...input, preview: true });
+}
+
+export function sendBulkEmail(
+  client: ApiClient, input: { subject: string; body: string; audience: BulkAudience; flats?: string[] },
+): Promise<{ queued: number; emailDelivers: boolean; note: string }> {
+  return client.post('/api/emails/bulk', input);
+}
+
+export interface BulkSend {
+  readonly id: string; readonly subject: string; readonly by: string; readonly queuedAt: string;
+  readonly sent: number; readonly failed: number; readonly waiting: number;
+}
+
+export function listBulkEmails(client: ApiClient): Promise<{ sends: BulkSend[] }> {
+  return client.get('/api/emails/bulk');
 }
 
 // --- flats and owners ----------------------------------------------------

@@ -33,6 +33,35 @@ export interface SignInResult {
   readonly expiresAt: string;
 }
 
+/**
+ * The active account an address signs in to: its own address first, then an
+ * address the secretary linked to a resident (migration 011). Before 011 is
+ * applied the second table does not exist; that is checked with to_regclass,
+ * which never errors, rather than by a query that would abort the sign-in's
+ * transaction.
+ */
+async function accountForAddress(
+  tx: Queryable, email: string,
+): Promise<{ id: string; society_id: string; email: string; password_hash: string | null } | undefined> {
+  const own = await tx.query<{ id: string; society_id: string; email: string; password_hash: string | null }>(
+    `SELECT id, society_id, email, password_hash FROM users
+      WHERE lower(email) = lower($1) AND is_active = true LIMIT 1`,
+    [email],
+  );
+  if (own.rows[0] !== undefined) return own.rows[0];
+  const table = await tx.query<{ present: string }>(
+    `SELECT (to_regclass('user_login_emails') IS NOT NULL)::text AS present`,
+  );
+  if (!['t', 'true'].includes(table.rows[0]?.present ?? '')) return undefined;
+  const linked = await tx.query<{ id: string; society_id: string; email: string; password_hash: string | null }>(
+    `SELECT u.id, u.society_id, u.email, u.password_hash
+       FROM user_login_emails l JOIN users u ON u.id = l.user_id
+      WHERE l.email = lower($1) AND u.is_active = true LIMIT 1`,
+    [email],
+  );
+  return linked.rows[0];
+}
+
 export class AuthService {
   constructor(
     private readonly pool: PgPool,
@@ -244,14 +273,7 @@ export class AuthService {
     }
 
     return this.pool.transaction(async (tx) => {
-      const found = await tx.query<{
-        id: string; society_id: string; email: string; password_hash: string | null;
-      }>(
-        `SELECT id, society_id, email, password_hash FROM users
-          WHERE email = $1 AND is_active = true LIMIT 1`,
-        [input.email],
-      );
-      const user = found.rows[0];
+      const user = await accountForAddress(tx, input.email);
 
       // Verify against a dummy hash when the user is unknown, so the response
       // time does not reveal whether the address exists.
@@ -288,12 +310,7 @@ export class AuthService {
       throw new RateLimitError('Too many sign-in attempts. Try again shortly.', decision.retryAfterSeconds);
     }
     return this.pool.transaction(async (tx) => {
-      const found = await tx.query<{ id: string; society_id: string; email: string }>(
-        `SELECT id, society_id, email FROM users
-          WHERE lower(email) = lower($1) AND is_active = true LIMIT 1`,
-        [input.email],
-      );
-      const user = found.rows[0];
+      const user = await accountForAddress(tx, input.email);
       if (user === undefined) {
         throw new AuthError('That account is not registered with the society.');
       }

@@ -13,6 +13,7 @@
 
 import type { Logger } from '../logger';
 import { smtpProvider, smtpSettingsFromEnv } from './smtp';
+import { brevoProvider, brevoSettingsFromEnv } from './brevo';
 import { ProviderNotConfiguredError } from './otp';
 
 export interface EmailMessage {
@@ -71,10 +72,17 @@ export function noneEmailProvider(): EmailProvider {
  * response and no notification row claims a send when one of them is in use.
  */
 export function resolveEmailProvider(
-  which: 'local-dev' | 'none' | 'smtp',
+  which: 'local-dev' | 'none' | 'smtp' | 'brevo',
   log: Logger,
   env: Record<string, string | undefined> = {},
 ): EmailProvider {
+  if (which === 'brevo') {
+    const settings = brevoSettingsFromEnv(env, (env.NODE_ENV ?? '') === 'production');
+    if (settings === null) {
+      throw new ProviderNotConfiguredError('brevo: BREVO_API_KEY or EMAIL_FROM is not set');
+    }
+    return brevoProvider(settings, log);
+  }
   if (which === 'smtp') {
     const settings = smtpSettingsFromEnv(env);
     if (settings === null) {

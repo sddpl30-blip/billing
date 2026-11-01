@@ -43,7 +43,7 @@ export interface Config {
    * credentials where the server requires them; without SMTP_HOST the server
    * refuses to start in that mode rather than silently delivering nothing.
    */
-  readonly emailProvider: 'local-dev' | 'none' | 'smtp';
+  readonly emailProvider: 'local-dev' | 'none' | 'smtp' | 'brevo';
   readonly logLevel: 'debug' | 'info' | 'warn' | 'error';
   /** Where generated documents and uploads go. */
   readonly storageDir: string;
@@ -143,13 +143,12 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   if (otpProvider !== 'local-dev' && otpProvider !== 'none' && otpProvider !== 'email') {
     throw new ConfigError(`OTP_PROVIDER must be email, local-dev or none, got "${otpProvider}"`);
   }
-  if (isProduction && otpProvider === 'email' && (env.EMAIL_PROVIDER ?? 'none') !== 'smtp') {
+  if (isProduction && otpProvider === 'email' && !['smtp', 'brevo'].includes(env.EMAIL_PROVIDER ?? 'none')) {
     // Codes by email through an email provider that sends nothing would leave
     // every member unable to sign in, quietly.
     throw new ConfigError(
-      'OTP_PROVIDER=email sends codes through the email provider, and EMAIL_PROVIDER is not ' +
-      'smtp. Configure SMTP (EMAIL_PROVIDER=smtp, SMTP_HOST, SMTP_FROM) or choose another ' +
-      'OTP provider.',
+      'OTP_PROVIDER=email sends codes through the email provider, and EMAIL_PROVIDER is neither ' +
+      'smtp nor brevo. Configure one of them or choose another OTP provider.',
     );
   }
   if (isProduction && otpProvider === 'local-dev') {
@@ -161,9 +160,15 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   }
 
   const emailProvider = (env.EMAIL_PROVIDER ?? (isProduction ? 'none' : 'local-dev'));
-  if (emailProvider !== 'local-dev' && emailProvider !== 'none' && emailProvider !== 'smtp') {
+  if (emailProvider !== 'local-dev' && emailProvider !== 'none' && emailProvider !== 'smtp' && emailProvider !== 'brevo') {
     throw new ConfigError(
-      `EMAIL_PROVIDER must be smtp, local-dev or none, got "${emailProvider}"`,
+      `EMAIL_PROVIDER must be brevo, smtp, local-dev or none, got "${emailProvider}"`,
+    );
+  }
+  if (emailProvider === 'brevo' && ((env.BREVO_API_KEY ?? '').trim() === '' || (env.EMAIL_FROM ?? env.SMTP_FROM ?? '').trim() === '')) {
+    throw new ConfigError(
+      'EMAIL_PROVIDER=brevo needs BREVO_API_KEY and EMAIL_FROM (a sender address verified in ' +
+      'Brevo). Without them the first e-mail would fail rather than the deployment.',
     );
   }
   if (emailProvider === 'smtp' && (env.SMTP_HOST ?? '').trim() === '') {

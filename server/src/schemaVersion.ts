@@ -11,4 +11,4 @@
  * bare 500 — on the Neon database, the books snapshot did exactly that until
  * migration 010 was applied. Health says so instead.
  */
-export const EXPECTED_SCHEMA_VERSION = '010_opening_balances.sql';
+export const EXPECTED_SCHEMA_VERSION = '011_login_emails.sql';

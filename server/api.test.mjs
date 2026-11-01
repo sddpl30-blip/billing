@@ -24,6 +24,7 @@ const { buildApp } = await import(`${build}/app.js`);
 const { seed } = await import(`${build}/seed.js`);
 const { PgPool, connectionFromEnv } = await import(`${build}/pg.js`);
 const { runDueJobs, backoffMinutes, sendQueuedEmails } = await import(`${build}/jobs.js`);
+const { brevoProvider } = await import(`${build}/providers/brevo.js`);
 const { createLogger } = await import(`${build}/logger.js`);
 const { createProductionSociety, AlreadyBootstrappedError } = await import(`${build}/bootstrap.js`);
 const { resolveEmailProvider } = await import(`${build}/providers/email.js`);
@@ -2942,6 +2943,116 @@ await check('queued e-mail goes out in batches and is marked sent only on the pr
     equal(marked, '3', 'marked sent with the provider\'s id');
   } finally {
     await pool.end();
+  }
+});
+
+// --- linked sign-in addresses (migration 011) ------------------------------------
+
+await check('the secretary links another address to a resident; it signs in to the same account', async () => {
+  const email = `linked.${stamp}@${domain}`;
+  const created = await secretary.post('/api/users', { email, roles: ['resident'], password: 'linked-password-1' });
+  const alias = `Phone.Gmail.${stamp}@${domain}`;
+  const r = await secretary.post(`/api/users/${created.body.id}/login-emails`, { email: alias });
+  equal(r.status, 201, `linked: ${JSON.stringify(r.body)}`);
+  const viaAlias = new Client(base);
+  const me = await viaAlias.signIn(alias.toLowerCase(), 'linked-password-1');
+  equal(me.user.email, email, 'the same account, under its own address');
+  const listed = (await secretary.get('/api/users')).body.users.find(u => u.id === created.body.id);
+  equal(JSON.stringify(listed.alsoSignsInAs), JSON.stringify([alias.toLowerCase()]), 'listed on the row');
+  const trail = await auditor.get('/api/audit?action=user.login-email.add');
+  equal(trail.body.entries[0].detail.alsoSignsInAs, alias.toLowerCase(), 'in the trail');
+
+  const removed = await secretary.post(`/api/users/${created.body.id}/login-emails/remove`, { email: alias });
+  equal(removed.status, 200, 'unlinked');
+  equal((await new Client(base).post('/api/auth/password', { email: alias.toLowerCase(), password: 'linked-password-1' })).status,
+    401, 'the old address no longer signs in');
+});
+
+await check('a linked address signs in with Google too', async () => {
+  const email = `glinked.${stamp}@${domain}`;
+  const created = await secretary.post('/api/users', { email, roles: ['resident'] });
+  const alias = `glinked-phone.${stamp}@gmail.example`;
+  equal((await secretary.post(`/api/users/${created.body.id}/login-emails`, { email: alias })).status, 201, 'linked');
+  const { callback } = await googleSignIn(googleClaims(alias));
+  equal(callback.status, 302, 'redirect');
+  truthy(!/login_error/.test(callback.headers.get('location')), `back to the app: ${callback.headers.get('location')}`);
+  const cookies = callback.headers.getSetCookie().map(c => c.split(';')[0]).filter(c => /^sb_(session|csrf)=/.test(c));
+  const me = await fetch(`${base}/api/auth/me`, { headers: { Cookie: cookies.join('; ') } });
+  equal(me.status, 200, 'signed in');
+  equal((await me.json()).email, email, 'as the account the address was linked to');
+});
+
+await check('linking is refused for office-bearers, for an address already in use, and to anyone but the secretary', async () => {
+  equal((await secretary.post(`/api/users/${userOf('treasurer').id}/login-emails`, { email: `tr-alias.${stamp}@${domain}` })).status,
+    409, 'not on an office-bearer');
+  const res = (await secretary.get('/api/users')).body.users.find(u => u.email === residentEmail);
+  equal((await secretary.post(`/api/users/${res.id}/login-emails`, { email: `treasurer@${domain}` })).status,
+    409, 'not another account\'s own address');
+  equal((await manager.post(`/api/users/${res.id}/login-emails`, { email: `m.${stamp}@${domain}` })).status, 403, 'manager');
+});
+
+// --- bulk e-mail ----------------------------------------------------------------
+
+await check('bulk e-mail: a preview counts, a send queues one per address, and the history adds up', async () => {
+  const preview = await secretary.post('/api/emails/bulk', {
+    subject: 'Generator test', body: 'Testing on Sunday.', audience: 'owners', preview: true,
+  });
+  equal(preview.status, 200, 'preview');
+  truthy(preview.body.recipients >= 5, 'owners counted');
+  const sent = await secretary.post('/api/emails/bulk', {
+    subject: `Generator test ${stamp}`, body: 'Testing on Sunday.', audience: 'owners',
+  });
+  equal(sent.status, 201, 'queued');
+  equal(sent.body.queued, preview.body.recipients, 'one per owner address');
+  const flats = await secretary.post('/api/emails/bulk', {
+    subject: `Two flats ${stamp}`, body: 'Only you two.', audience: 'flats', flats: ['a-101', ' A-102 '],
+  });
+  equal(flats.body.queued, 2, 'the owners of the two flats named');
+  const history = await secretary.get('/api/emails/bulk');
+  const mine = history.body.sends.find(h => h.subject === `Generator test ${stamp}`);
+  equal(mine.waiting + mine.sent + mine.failed, sent.body.queued, 'the history adds up');
+  equal((await manager.post('/api/emails/bulk', { subject: 'x y z', body: 'b', audience: 'owners' })).status, 403, 'manager');
+  equal((await secretary.post('/api/emails/bulk', { subject: 'x y z', body: 'b', audience: 'flats' })).status, 400, 'flats named');
+});
+
+// --- Brevo ------------------------------------------------------------------------
+
+await check('Brevo: the API key, sender and message go to Brevo, and only its messageId counts as sent', async () => {
+  const seen = [];
+  const fake = createHttpServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      seen.push({ key: req.headers['api-key'], body: JSON.parse(body) });
+      if (JSON.parse(body).to[0].email === 'bounce@example.invalid') {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ code: 'invalid_parameter', message: 'email is not valid' }));
+        return;
+      }
+      res.writeHead(201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ messageId: '<abc@smtp-relay.brevo.com>' }));
+    });
+  });
+  await new Promise(r => fake.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${fake.address().port}/v3/smtp/email`;
+  try {
+    const brevo = brevoProvider({ apiKey: 'test-key', from: 'mvra@example.invalid', fromName: 'MVRA', apiUrl: url, timeoutMs: 5000 },
+      createLogger({ logLevel: 'error', mode: 'test' }));
+    const d = await brevo.send({ to: 'owner@example.invalid', subject: 'Hello', text: 'Body',
+      attachments: [{ filename: 'bill.pdf', contentType: 'application/pdf', body: Buffer.from('%PDF') }] });
+    equal(d.provider, 'brevo', 'provider');
+    equal(d.providerMessageId, '<abc@smtp-relay.brevo.com>', 'Brevo\'s own id');
+    equal(seen[0].key, 'test-key', 'the API key header');
+    equal(seen[0].body.sender.email, 'mvra@example.invalid', 'sender');
+    equal(seen[0].body.sender.name, 'MVRA', 'sender name');
+    equal(seen[0].body.textContent, 'Body', 'text');
+    equal(seen[0].body.attachment[0].content, Buffer.from('%PDF').toString('base64'), 'attachment, base64');
+    let refused = null;
+    try { await brevo.send({ to: 'bounce@example.invalid', subject: 'x', text: 'y' }); } catch (err) { refused = err; }
+    truthy(refused !== null, 'a refusal throws');
+    matches(refused.message, /email is not valid/, 'with Brevo\'s reason');
+  } finally {
+    fake.close();
   }
 });
 
