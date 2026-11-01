@@ -170,8 +170,10 @@ In **Project → Settings → Environment Variables**. Set these for
 | `ALLOWED_ORIGIN` | `https://your-domain` | only used if you ever call the API cross-origin; same-origin needs no CORS |
 | `VITE_DATA_SOURCE` | `server` | **build-time.** Makes an unreachable API an error on screen instead of a silent fall back to demonstration figures |
 | `VITE_API_BASE` | *(empty)* | **build-time.** Empty means same origin |
-| `EMAIL_PROVIDER` | `smtp`, or `none` until you have a mail provider | see *What is still not connected* |
+| `EMAIL_PROVIDER` | `brevo`, `smtp`, or `none` until you have a mail provider | see *What is still not connected* |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_FROM_NAME` | your mail provider's | required when `EMAIL_PROVIDER=smtp` |
+| `BREVO_API_KEY` | Brevo → SMTP & API → API keys | required when `EMAIL_PROVIDER=brevo` |
+| `EMAIL_FROM`, `EMAIL_FROM_NAME` | a sender address verified in Brevo, and its display name | `EMAIL_FROM` required when `EMAIL_PROVIDER=brevo` (falls back to `SMTP_FROM`) |
 | `OTP_PROVIDER` | `none` | there is no SMS adapter yet; `none` makes the server decline to issue codes rather than pretend |
 
 Leave these alone unless you have a reason:

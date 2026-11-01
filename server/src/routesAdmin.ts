@@ -661,6 +661,75 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     return ok(batch);
   });
 
+  /** Whether migration 011 (linked sign-in addresses) is applied. */
+  const hasLoginEmails = async (q: Queryable): Promise<boolean> =>
+    ['t', 'true'].includes((await q.query<{ present: string }>(
+      `SELECT (to_regclass('user_login_emails') IS NOT NULL)::text AS present`,
+    )).rows[0]?.present ?? '');
+  const NEEDS_011 =
+    'Linking another sign-in address needs database migration 011. Run docs/neon/011-apply.sql ' +
+    'in Neon (societybooks database) once, then try again.';
+
+  const addLoginEmail = route('POST', '/api/users/:id/login-emails', async (ctx) => {
+    const principal = need(ctx, 'user.manage');
+    const input = ctx.body(v.object({ email: v.email() }));
+    await pool.transaction(async (tx) => {
+      if (!(await hasLoginEmails(tx))) throw conflict(NEEDS_011);
+      const user = await residentAccount(tx, principal, ctx.params.id);
+      if (user.email.toLowerCase() === input.email) throw badRequest('That is already the account\'s own e-mail.');
+      const taken = await tx.query<{ email: string }>(
+        `SELECT email FROM users WHERE lower(email) = $1 AND is_active = true
+         UNION ALL SELECT email FROM user_login_emails WHERE email = $1`,
+        [input.email],
+      );
+      if (taken.rows[0] !== undefined) {
+        throw conflict('That address already signs in to an account. One address, one account.');
+      }
+      await tx.query(
+        `INSERT INTO user_login_emails (society_id, user_id, email, added_by) VALUES ($1, $2, $3, $4)`,
+        [principal.societyId, ctx.params.id, input.email, principal.userId],
+      );
+      await audit(tx, {
+        societyId: principal.societyId,
+        actorUser: principal.userId,
+        actorLabel: principal.email,
+        action: 'user.login-email.add',
+        subjectTable: 'users',
+        subjectId: ctx.params.id,
+        detail: { account: user.email, alsoSignsInAs: input.email },
+        requestId: ctx.requestId,
+      });
+    });
+    return created({
+      id: ctx.params.id, alsoSignsInAs: input.email,
+      note: `${input.email} now signs in to this account too, with Google or with the account's password.`,
+    });
+  });
+
+  const removeLoginEmail = route('POST', '/api/users/:id/login-emails/remove', async (ctx) => {
+    const principal = need(ctx, 'user.manage');
+    const input = ctx.body(v.object({ email: v.email() }));
+    await pool.transaction(async (tx) => {
+      if (!(await hasLoginEmails(tx))) throw conflict(NEEDS_011);
+      const removed = await tx.query(
+        `DELETE FROM user_login_emails WHERE user_id = $1 AND society_id = $2 AND email = $3`,
+        [ctx.params.id, principal.societyId, input.email],
+      );
+      if (removed.rowCount === 0) throw notFound('That linked address');
+      await audit(tx, {
+        societyId: principal.societyId,
+        actorUser: principal.userId,
+        actorLabel: principal.email,
+        action: 'user.login-email.remove',
+        subjectTable: 'users',
+        subjectId: ctx.params.id,
+        detail: { removed: input.email },
+        requestId: ctx.requestId,
+      });
+    });
+    return ok({ id: ctx.params.id, removed: input.email });
+  });
+
   const listUsers = route('GET', '/api/users', async (ctx) => {
     const principal = need(ctx, 'user.manage');
     const result = await pool.query<{
@@ -684,8 +753,17 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         ORDER BY u.email`,
       [principal.societyId],
     );
+    const linked = new Map<string, string[]>();
+    if (await hasLoginEmails(pool)) {
+      const rows = await pool.query<{ user_id: string; email: string }>(
+        'SELECT user_id, email FROM user_login_emails WHERE society_id = $1 ORDER BY email',
+        [principal.societyId],
+      );
+      for (const row of rows.rows) linked.set(row.user_id, [...(linked.get(row.user_id) ?? []), row.email]);
+    }
     return ok({
       users: result.rows.map(r => ({
+        alsoSignsInAs: linked.get(r.id) ?? [],
         id: r.id,
         email: r.email,
         active: r.is_active === 't' || r.is_active === 'true',
@@ -1119,7 +1197,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     issueNote, listNotes,
     queueNotices, listNotifications,
     listUsers, addUser, setRoles, deactivateUser, changeUserEmail, setUserPassword,
-    sendWelcome, sendNow,
+    sendWelcome, sendNow, addLoginEmail, removeLoginEmail,
     addFlat, setOwner,
   ];
 }

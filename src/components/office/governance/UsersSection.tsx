@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
-  addUser, changeUserEmail, deactivateUser, listUsers, sendQueuedNow, sendWelcome, setRoles, setUserPassword,
-  type UserAccount,
+  addLoginEmail, addUser, changeUserEmail, deactivateUser, listUsers, removeLoginEmail, sendQueuedNow, sendWelcome,
+  setRoles, setUserPassword, type UserAccount,
 } from '../../../api/office/governance';
 import type { OfficeContext } from '../types';
 import {
@@ -31,6 +31,7 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
   const [emailing, setEmailing] = useState<UserAccount | null>(null);
   const [resetting, setResetting] = useState<UserAccount | null>(null);
   const [sending, setSending] = useState<string | null>(null);
+  const [linking, setLinking] = useState<UserAccount | null>(null);
 
   /** Queues welcome e-mails, then sends them in batches with progress in the toast. */
   const welcome = async (userIds?: string[]) => {
@@ -94,6 +95,20 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
                 <span className="font-bold">{u.email}</span>
                 {u.ownerName !== null && <span className="block text-[10px] text-[var(--mv-muted)]">{u.ownerName}</span>}
                 {!u.active && <span className="block mt-1"><Badge tone="muted">Deactivated</Badge></span>}
+                {(u.alsoSignsInAs ?? []).map(alias => (
+                  <span key={alias} className="block text-[10px] text-[var(--mv-ink)] mt-0.5 break-all">
+                    Also signs in as <strong>{alias}</strong>
+                    <button
+                      type="button"
+                      aria-label={`Stop ${alias} signing in to ${u.email}`}
+                      className="ml-1 text-red-700 font-bold"
+                      onClick={() => {
+                        if (!window.confirm(`Stop ${alias} signing in to this account?`)) return;
+                        void run('unlink', () => removeLoginEmail(ctx.client, u.id, alias), `${alias} no longer signs in to ${u.email}.`);
+                      }}
+                    >×</button>
+                  </span>
+                ))}
                 {u.active && u.lastLoginAt === null && (
                   <span className="block text-[10px] text-[var(--mv-muted)] mt-0.5 break-normal">
                     {u.welcomedAt ? `Welcomed ${u.welcomedAt.slice(0, 10)}, not signed in yet` : 'Not signed in yet'}
@@ -107,7 +122,8 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
               </td>
               <td className={cellClass}>{u.flats.length === 0 ? '—' : u.flats.join(', ')}</td>
               <td className={`${cellClass} whitespace-nowrap`}>{u.lastLoginAt === null ? 'never' : u.lastLoginAt.slice(0, 16)}</td>
-              <td className={`${cellClass} text-right whitespace-nowrap space-x-2`}>
+              <td className={`${cellClass} text-right`}>
+                <div className="flex flex-wrap justify-end gap-2">
                 {u.active && (
                   <>
                     <Button onClick={() => setEditing(u)} aria-label={`Change roles for ${u.email}`}>Roles</Button>
@@ -116,6 +132,7 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
                         <Button onClick={() => { void welcome([u.id]); }} disabled={sending !== null}
                           aria-label={`Send a welcome e-mail to ${u.email}`}>Welcome</Button>
                         <Button onClick={() => setEmailing(u)} aria-label={`Change e-mail for ${u.email}`}>E-mail</Button>
+                        <Button onClick={() => setLinking(u)} aria-label={`Link another sign-in e-mail to ${u.email}`}>Link e-mail</Button>
                         <Button onClick={() => setResetting(u)} aria-label={`Set password for ${u.email}`}>
                           {u.hasPassword ? 'Reset password' : 'Set password'}
                         </Button>
@@ -124,6 +141,7 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
                     <Button onClick={() => setDeactivating(u)} aria-label={`Deactivate ${u.email}`}>Deactivate</Button>
                   </>
                 )}
+                </div>
               </td>
             </tr>
           ))}
@@ -185,6 +203,18 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
           }}
         />
       )}
+      {linking !== null && (
+        <LinkEmailDialog
+          user={linking}
+          busy={busy === 'link'}
+          onClose={() => setLinking(null)}
+          onSubmit={async email => {
+            const done = await run('link', () => addLoginEmail(ctx.client, linking.id, email),
+              `${email} now signs in to ${linking.email} too.`);
+            if (done) setLinking(null);
+          }}
+        />
+      )}
       {resetting !== null && (
         <PasswordDialog
           user={resetting}
@@ -227,6 +257,37 @@ function EmailDialog({ user, busy, onClose, onSubmit }: {
       <div>
         <label htmlFor="gov-user-new-email" className={labelClass}>New e-mail</label>
         <input id="gov-user-new-email" type="email" data-autofocus className={inputClass} value={email}
+          onChange={e => setEmail(e.target.value)} autoComplete="off" required />
+      </div>
+      {problem !== null && <p role="alert" className="text-xs text-red-700">{problem}</p>}
+    </FormDialog>
+  );
+}
+
+function LinkEmailDialog({ user, busy, onClose, onSubmit }: {
+  user: UserAccount; busy: boolean; onClose: () => void; onSubmit: (email: string) => void;
+}) {
+  const [email, setEmail] = useState('');
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <FormDialog
+      id="gov-user-link-email"
+      title={`Another sign-in e-mail for ${user.email}`}
+      intro="For a resident whose Google account is not the address on record. This address will sign in to the same account, with the same flat and bills. Their own address keeps working, and bills still go to it."
+      submitLabel="Link e-mail"
+      busy={busy}
+      onClose={onClose}
+      onSubmit={() => {
+        const next = email.trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(next)) { setProblem('Enter an e-mail address.'); return; }
+        if (next.toLowerCase() === user.email.toLowerCase()) { setProblem('That is already the account\'s own address.'); return; }
+        setProblem(null);
+        onSubmit(next);
+      }}
+    >
+      <div>
+        <label htmlFor="gov-user-link-address" className={labelClass}>Their other e-mail (e.g. the Gmail on their phone)</label>
+        <input id="gov-user-link-address" type="email" data-autofocus className={inputClass} value={email}
           onChange={e => setEmail(e.target.value)} autoComplete="off" required />
       </div>
       {problem !== null && <p role="alert" className="text-xs text-red-700">{problem}</p>}
