@@ -4719,6 +4719,32 @@ await check('a later receipt settles the opening due first, like an invoice', as
   equal(statement.body.closing, 200_000, 'the flat statement agrees');
 });
 
+await check('one flat\'s opening due is corrected in place, with the books following', async () => {
+  const docs = await oManager.get(`/api/flats/${oFlat('A-101').id}/dues?asAt=2026-10-01`);
+  const due = docs.body.invoices[0];
+  const old = due.outstanding ?? due.grossPaise ?? 500_000;
+  const docId = due.documentId;
+  const before = Number(psql(`SELECT gross FROM billing_documents WHERE id = '${docId}';`).out);
+  const tbBefore = (await oTreasurer.get(`/api/reports/trial-balance?asAt=2026-10-31`)).body;
+
+  equal((await oManager.post(`/api/billing/documents/${docId}/amend-opening`, { newDuePaise: before + 10_000, on: '2026-10-05', reason: 'x' })).status, 403, 'the manager may not');
+  equal((await oTreasurer.post(`/api/billing/documents/${docId}/amend-opening`, { newDuePaise: before + 10_000, on: '2026-09-01', reason: 'x' })).status, 400, 'not before the opening date');
+  const up = await oTreasurer.post(`/api/billing/documents/${docId}/amend-opening`, { newDuePaise: before + 10_000, on: '2026-10-05', reason: 'Ledger showed Rs 100 more' });
+  equal(up.status, 200, `amend ${JSON.stringify(up.body).slice(0, 300)}`);
+  equal(Number(psql(`SELECT gross FROM billing_documents WHERE id = '${docId}';`).out), before + 10_000, 'the bill shows the new due');
+  const tbAfter = (await oTreasurer.get(`/api/reports/trial-balance?asAt=2026-10-31`)).body;
+  equal(tbAfter.tiesOut, true, 'the books still tie out');
+  const line = (tb, code) => (tb.lines.find(l => l.code === code) ?? { debit: 0 }).debit;
+  equal(line(tbAfter, '1100') - line(tbBefore, '1100'), 10_000, 'the receivable rose by the correction');
+  const tooLow = await oTreasurer.post(`/api/billing/documents/${docId}/amend-opening`, { newDuePaise: 100, on: '2026-10-06', reason: 'too low' });
+  equal(tooLow.status, 400, 'not below what the flat has already paid');
+  matches(tooLow.body.message, /already paid/, 'and it says why');
+  const back = await oTreasurer.post(`/api/billing/documents/${docId}/amend-opening`, { newDuePaise: before, on: '2026-10-07', reason: 'Put back' });
+  equal(back.status, 200, 'put back');
+  equal(oCount(`SELECT count(*) FROM audit_log WHERE society_id = '${oFixture.societyId}' AND action = 'opening.amend';`), 2, 'each correction is audited, and the refused one is not');
+  void old;
+});
+
 await check('an opening advance is applied to the next bill', async () => {
   const run = await oManager.post('/api/billing/run', { period: 'Oct 2026', issuedOn: '2026-10-01' });
   equal(run.status, 201, 'billing run');
