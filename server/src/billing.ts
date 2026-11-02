@@ -543,3 +543,77 @@ export async function listDocuments(
     };
   });
 }
+
+
+/**
+ * Works a proforma's lines, tax and total out again from the flat's recorded
+ * area and the rate for the month it is billed for, as `runBilling` would.
+ * Used when a draft is corrected (its month, or the flat's area, changed).
+ * Only an unsent proforma (draft or approved) is touched, and nothing is
+ * posted. Returns the new total, or throws a clear refusal.
+ */
+export async function recalculateProforma(
+  tx: Queryable,
+  input: { societyId: string; documentId: string; period?: string },
+): Promise<{ proformaNo: string; period: string; gross: number }> {
+  const found = await tx.query<{
+    proforma_no: string; period: string; state: string; flat_no: string;
+    billing_area_sqft: string | null; area_basis: string | null; opening_batch_id: string | null;
+  }>(
+    `SELECT d.proforma_no, d.period, d.state, d.opening_batch_id, f.flat_no, f.billing_area_sqft::text, f.area_basis
+       FROM billing_documents d JOIN flats f ON f.id = d.flat_id
+      WHERE d.id = $1 AND d.society_id = $2 FOR UPDATE OF d`,
+    [input.documentId, input.societyId],
+  );
+  const doc = found.rows[0];
+  if (doc === undefined) throw badRequest('That document does not exist.');
+  if (doc.opening_batch_id !== null) {
+    throw badRequest('An opening due is corrected through the opening balances, not as a bill.');
+  }
+  if (doc.state !== 'draft' && doc.state !== 'approved') {
+    throw badRequest(
+      `${doc.proforma_no} is ${doc.state}, so it can no longer be recalculated. An issued invoice is ` +
+      'corrected with a credit or debit note.',
+    );
+  }
+  const bounds = periodBounds(input.period ?? doc.period);
+  if (doc.billing_area_sqft === null || doc.area_basis === null) {
+    throw badRequest(`Flat ${doc.flat_no} has no billing area and basis on record. Enter them first.`);
+  }
+  const rate = await rateOnDate(tx, { societyId: input.societyId, on: bounds.startsOn });
+  if (rate === null || rate.approvedBy === undefined) {
+    throw badRequest(`There is no approved maintenance rate in force for ${bounds.period}.`);
+  }
+  let maintenance: number;
+  try {
+    maintenance = computeMaintenance(
+      { flatNo: doc.flat_no, billingAreaSqFt: Number(doc.billing_area_sqft), areaBasis: doc.area_basis as AreaBasis },
+      rate,
+    );
+  } catch (err) {
+    if (err instanceof RateError) throw badRequest(err.message);
+    throw err;
+  }
+  const gst = await gstTreatment(tx, input.societyId);
+  const sinkingPercent = await sinkingFundPercent(tx, input.societyId);
+  const lines: BillLine[] = [{ head: 'maintenance', amount: maintenance, taxable: true }];
+  if (sinkingPercent > 0) {
+    const sinking = percentOf(maintenance, sinkingPercent);
+    if (sinking > 0) lines.push({ head: 'sinking', amount: sinking, taxable: gst.sinkingFundTaxable });
+  }
+  const net = lines.reduce((sum, l) => sum + l.amount, 0);
+  const estimatedTax = computeBillTax(lines, gst).total;
+
+  await tx.query('DELETE FROM billing_document_lines WHERE document_id = $1', [input.documentId]);
+  for (const [position, line] of lines.entries()) {
+    await tx.query(
+      `INSERT INTO billing_document_lines (document_id, head, amount, taxable, position) VALUES ($1,$2,$3,$4,$5)`,
+      [input.documentId, line.head, line.amount, line.taxable, position],
+    );
+  }
+  await tx.query(
+    'UPDATE billing_documents SET period = $2, estimated_tax = $3, gross = $4 WHERE id = $1',
+    [input.documentId, bounds.period, estimatedTax, net + estimatedTax],
+  );
+  return { proformaNo: doc.proforma_no, period: bounds.period, gross: net + estimatedTax };
+}

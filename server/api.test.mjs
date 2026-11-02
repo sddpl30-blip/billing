@@ -4602,6 +4602,67 @@ await check('opening dues do not block that month\'s bill; the PI prints in the 
   psql(`UPDATE billing_documents SET state = 'cancelled', cancelled_reason = 'test cleanup' WHERE id = '${a101.documentId}';`);
 });
 
+await check('unsent bills, flats, owners and pending rates can be corrected in place, with the audit trail', async () => {
+  const flatA = oFlat('A-101'), flatB = oFlat('A-102');
+  const run = await oManager.post('/api/billing/run', { period: 'Sep 2026', issuedOn: '2026-10-05', flatIds: [flatA.id, flatB.id] });
+  equal(run.status, 201, `run ${JSON.stringify(run.body).slice(0, 200)}`);
+  const docA = run.body.issued.find(d => d.flatNo === 'A-101'), docB = run.body.issued.find(d => d.flatNo === 'A-102');
+
+  // The due date of a draft.
+  const due = await oManager.post(`/api/billing/documents/${docA.documentId}/edit`, { dueOn: '2026-10-20', reason: 'test' });
+  equal(due.status, 200, `due ${JSON.stringify(due.body).slice(0, 200)}`);
+  equal(psql(`SELECT due_on::text FROM billing_documents WHERE id = '${docA.documentId}';`).out, '2026-10-20', 'due date changed');
+  equal((await oManager.post(`/api/billing/documents/${docA.documentId}/edit`, { dueOn: '2026-10-01', reason: '' })).status, 400, 'a reason is required');
+
+  // A whole run moved to the right month; the numbers stay.
+  const moved = await oManager.post('/api/billing/periods/Sep%202026/change-month', { to: 'Oct 2026', reason: 'Raised for the wrong month' });
+  equal(moved.status, 200, `moved ${JSON.stringify(moved.body).slice(0, 300)}`);
+  equal(moved.body.moved, 2, 'both moved');
+  equal(psql(`SELECT period || ' ' || proforma_no FROM billing_documents WHERE id = '${docA.documentId}';`).out, `Oct 2026 ${docA.proformaNo}`, 'period moved, number kept');
+  equal((await oSecretary.post('/api/billing/periods/Oct%202026/change-month', { to: 'Nov 2026', reason: 'x' })).status, 403, 'the secretary may not');
+
+  // An approved bill goes back to draft for approval again.
+  const approved = await oTreasurer.post(`/api/billing/documents/${docB.documentId}/approve`, { on: '2026-10-05' });
+  equal(approved.status, 200, `approve ${JSON.stringify(approved.body).slice(0, 200)}`);
+  const redone = await oManager.post(`/api/billing/documents/${docB.documentId}/edit`, { recalculate: true, reason: 'check' });
+  equal(redone.status, 200, `redo ${JSON.stringify(redone.body).slice(0, 200)}`);
+  equal(redone.body.backToDraft, true, 'sent back to draft');
+  equal(psql(`SELECT state FROM billing_documents WHERE id = '${docB.documentId}';`).out, 'draft', 'draft again');
+  equal(oCount(`SELECT count(*) FROM approvals WHERE subject_id = '${docB.documentId}' AND decision IS NULL;`), 1, 'one fresh pending approval');
+  equal((await oTreasurer.post(`/api/billing/documents/${docB.documentId}/approve`, { on: '2026-10-05' })).status, 200, 'the treasurer approves the correction');
+
+  // A flat's area, then the bill follows on recalculate.
+  const before = psql(`SELECT billing_area_sqft::text FROM flats WHERE id = '${flatA.id}';`).out;
+  const grossBefore = psql(`SELECT gross FROM billing_documents WHERE id = '${docA.documentId}';`).out;
+  const newArea = Math.round(Number(before)) + 100;
+  const flat = await oManager.post(`/api/flats/${flatA.id}/edit`, { billingAreaSqFt: newArea, areaBasis: 'super-built-up', reason: 'Survey' });
+  equal(flat.status, 200, `flat ${JSON.stringify(flat.body).slice(0, 200)}`);
+  matches(flat.body.note, /unsent bill/, 'says the bill still carries the old figure');
+  await oManager.post(`/api/billing/documents/${docA.documentId}/edit`, { recalculate: true, reason: 'New area' });
+  truthy(Number(psql(`SELECT gross FROM billing_documents WHERE id = '${docA.documentId}';`).out) > Number(grossBefore), 'the bill follows the new area');
+  equal(oCount(`SELECT count(*) FROM audit_log WHERE society_id = '${oFixture.societyId}' AND action IN ('billing.edit','billing.change-month','flat.edit');`) >= 4, true, 'each correction is audited');
+
+  // An owner's typo, apart from a change of owner.
+  const ownerId = psql(`SELECT o.id FROM owners o JOIN flat_ownership fo ON fo.owner_id = o.id WHERE fo.flat_id = '${flatA.id}' AND fo.held_until IS NULL LIMIT 1;`).out;
+  const owner = await oManager.post(`/api/owners/${ownerId}/correct`, { fullName: 'Corrected Name', phone: '9830012345', reason: 'Typo' });
+  equal(owner.status, 200, `owner ${JSON.stringify(owner.body).slice(0, 200)}`);
+  equal(psql(`SELECT full_name FROM owners WHERE id = '${ownerId}';`).out, 'Corrected Name', 'name corrected');
+
+  // A rate still waiting for approval can be edited; an approved one cannot.
+  const rate = await oSecretary.post('/api/rates', { paisePerSqFt: 450, basis: 'super-built-up', effectiveFrom: '2031-04-01', authority: 'Test rate' });
+  equal(rate.status, 201, `rate ${JSON.stringify(rate.body).slice(0, 200)}`);
+  equal((await oSecretary.post(`/api/rates/${rate.body.id}/edit`, { paisePerSqFt: 475 })).status, 200, 'pending rate edited');
+  equal(psql(`SELECT rate_paise_per_sqft FROM maintenance_rates WHERE id = '${rate.body.id}';`).out, '475', 'new rate stored');
+  await oTreasurer.post(`/api/rates/${rate.body.id}/approve`, { on: '2026-10-05' });
+  equal((await oSecretary.post(`/api/rates/${rate.body.id}/edit`, { paisePerSqFt: 500 })).status, 409, 'an approved rate is not edited in place');
+
+  // Put things back for the tests that follow.
+  psql(`UPDATE billing_documents SET state = 'cancelled', cancelled_reason = 'test cleanup', approved_by = approved_by
+         WHERE id IN ('${docA.documentId}', '${docB.documentId}');`);
+  psql(`UPDATE flats SET billing_area_sqft = ${before} WHERE id = '${flatA.id}';`);
+  psql(`DELETE FROM maintenance_rates WHERE id = '${rate.body.id}';`);
+});
+
 await check('a correction is a reversal and a fresh batch, both audited', async () => {
   const r = await oTreasurer.post(`/api/opening-balances/${batchId}/reverse`, { reason: 'Bank figure was the passbook, not the statement' });
   equal(r.status, 200, `status ${JSON.stringify(r.body).slice(0, 200)}`);

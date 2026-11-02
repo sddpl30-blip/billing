@@ -19,6 +19,7 @@ import { createAdminRoutes } from './routesAdmin';
 import { createCronRoutes } from './routesCron';
 import { createSetupRoutes } from './routesSetup';
 import { createNoticeRoutes } from './routesNotices';
+import { createEditRoutes } from './routesEdit';
 import { createScheduleRoutes } from './routesSchedule';
 import { createGoogleRoutes } from './routesGoogle';
 import { createOnboardingRoutes } from './routesOnboarding';
@@ -99,6 +100,7 @@ export function buildApp(
     ...createCronRoutes({ pool, config, log, email }),
     ...createSetupRoutes({ pool, config, log, env }),
     ...createNoticeRoutes({ pool, email }),
+    ...createEditRoutes({ pool }),
     ...createScheduleRoutes({ pool }),
     ...createGoogleRoutes({ config, log, auth }),
   ];
