@@ -5,7 +5,7 @@
  * with the period of the opening date, so a cut-over on 1 Oct 2026 shows as
  * "Oct 2026", which reads like October's maintenance. It is what the flat
  * owed before the portal started, and carries no GST. It is shown as
- * "Opening dues (up to Sep 2026)" instead; the stored period, its number
+ * "Arrears upto Sep 2026" instead (the committee's wording); the stored period, its number
  * and its amount are unchanged, so nothing that matches on them moves.
  */
 
@@ -37,14 +37,19 @@ export function billPeriodLabel(
   openingAsAt ??= knownOpeningDates[documentNo as string];
   if (openingAsAt !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(openingAsAt)) {
     return openingAsAt.endsWith('-01')
-      ? `Opening dues (up to ${periodLabel(addMonths(openingAsAt, -1))})`
-      : `Opening dues (up to ${openingAsAt.slice(8, 10)} ${periodLabel(openingAsAt)})`;
+      ? `Arrears upto ${periodLabel(addMonths(openingAsAt, -1))}`
+      : `Arrears upto ${openingAsAt.slice(8, 10)} ${periodLabel(openingAsAt)}`;
   }
   const iso = periodToIso(period);
-  return iso === null ? 'Opening dues' : `Opening dues (up to ${periodLabel(addMonths(iso, -1))})`;
+  return iso === null ? 'Arrears' : `Arrears upto ${periodLabel(addMonths(iso, -1))}`;
 }
 
-/** A bill's title: "Oct 2026 Maintenance", or the opening dues label. */
+/** A bill's title: "Oct 2026 Maintenance", or "Arrears upto Sep 2026". */
 export function billTitle(period: string, documentNo: string | null | undefined): string {
   return isOpeningDocument(documentNo) ? billPeriodLabel(period, documentNo) : `${period} Maintenance`;
+}
+
+/** The one line an opening due shows instead of a breakdown: "Previous outstanding upto Sep 2026". */
+export function openingLineLabel(period: string, documentNo: string | null | undefined): string {
+  return billPeriodLabel(period, documentNo).replace(/^Arrears/, 'Previous outstanding');
 }

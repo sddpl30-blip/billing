@@ -53,6 +53,72 @@ export function periodBounds(period: string): {
   };
 }
 
+/** Whether a migration is recorded as applied, for code that must work either side of it. */
+export async function migrationApplied(tx: Queryable, version: string): Promise<boolean> {
+  const found = await tx.query<{ version: string }>(
+    'SELECT version FROM schema_migrations WHERE version = $1', [version],
+  );
+  return found.rows.length > 0;
+}
+
+/** "Mani Vista Residents Association" to "MVRA": the first letter of each word. */
+export function societyInitials(name: string): string {
+  // "(demo)" or "(MVRA)" after the name is not part of it.
+  const letters = name.replace(/\([^)]*\)/g, ' ').split(/[^A-Za-z0-9]+/).filter(w => w !== '').map(w => w[0].toUpperCase()).join('');
+  return letters === '' ? 'SOC' : letters.slice(0, 8);
+}
+
+/** The financial year (April to March) of an ISO date, as "2026-27". */
+export function financialYearLabel(isoDate: string): string {
+  const year = Number(isoDate.slice(0, 4));
+  const start = Number(isoDate.slice(5, 7)) >= 4 ? year : year - 1;
+  return `${start}-${String((start + 1) % 100).padStart(2, '0')}`;
+}
+
+async function proformaSeries(
+  tx: Queryable, societyId: string, issuedOn: string,
+): Promise<{ prefix: string; scope: string }> {
+  const found = await tx.query<{ name: string }>('SELECT name FROM societies WHERE id = $1', [societyId]);
+  const fy = financialYearLabel(issuedOn);
+  return {
+    prefix: `${societyInitials(found.rows[0]?.name ?? '')}/PI/${fy}/`,
+    scope: `PI ${fy}`,
+  };
+}
+
+/**
+ * When a proforma goes out, the flat's unpaid arrears (opening dues brought
+ * forward) fall due the society's days-to-pay after that day: the
+ * association's notes give a member ten days from receiving the bill. Opening
+ * dues were imported with the date they were first due, which made every flat
+ * overdue before any bill had been sent. The proforma keeps its own due date
+ * (its issue date plus the days to pay). A due date moves only later, never
+ * earlier, and only on arrears still owed; nothing is posted, so no figure
+ * changes.
+ */
+export async function alignDueDatesOnRelease(
+  tx: Queryable,
+  input: { societyId: string; documentId: string; releasedOn: string },
+): Promise<{ dueOn: string; openingMoved: number }> {
+  const dueOn = addDays(input.releasedOn, await dueDays(tx, input.societyId));
+  const flat = (await tx.query<{ flat_id: string }>(
+    'SELECT flat_id FROM billing_documents WHERE id = $1 AND society_id = $2',
+    [input.documentId, input.societyId],
+  )).rows[0]?.flat_id;
+  if (flat === undefined) return { dueOn, openingMoved: 0 };
+  const opening = await tx.query<{ id: string }>(
+    `UPDATE billing_documents d SET due_on = $3::date
+      WHERE d.society_id = $1 AND d.flat_id = $2 AND d.opening_batch_id IS NOT NULL
+        AND d.state <> 'cancelled' AND d.due_on < $3::date
+        AND COALESCE((SELECT SUM(p.debit - p.credit) FROM journal_postings p
+                       WHERE p.society_id = d.society_id AND p.account_code = '1100'
+                         AND p.doc_ref = d.tax_invoice_no), 0) > 0
+      RETURNING d.id`,
+    [input.societyId, flat, dueOn],
+  );
+  return { dueOn, openingMoved: opening.rows.length };
+}
+
 function addDays(isoDate: string, days: number): string {
   const d = new Date(`${isoDate}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
@@ -169,30 +235,42 @@ export async function runBilling(
   // "the database refused this change" rather than the "already billed" the
   // flat deserved. Locked first, the second run reads the first run's
   // committed documents and skips those flats, saying why.
+  // Numbered MVRA/PI/2026-27/001: the society's initials, PI, the financial
+  // year of the invoice date, and a serial that runs through the year — the
+  // association's own format. The series is locked per year, so two runs in
+  // one year (for different months) cannot take the same number.
+  const series = await proformaSeries(tx, input.societyId, input.issuedOn);
   const firstNumber = await allocateNumber(
     tx,
-    { societyId: input.societyId, kind: 'proforma', scope: bounds.label },
+    { societyId: input.societyId, kind: 'proforma', scope: series.scope },
     async () => {
       const next = await tx.query<{ next: string }>(
         `SELECT COALESCE(MAX(NULLIF(regexp_replace(proforma_no, '^.*/', ''), '')::int), 0) + 1 AS next
            FROM billing_documents
           WHERE society_id = $1 AND proforma_no LIKE $2`,
-        [input.societyId, `PI/${bounds.label}/%`],
+        [input.societyId, `${series.prefix}%`],
       );
       return String(next.rows[0]?.next ?? '1');
     },
   );
   let sequence = Number(firstNumber);
+  const openingExempt = await migrationApplied(tx, '012_opening_dues_and_pi_details.sql');
 
   const flats = await tx.query<{
     id: string; flat_no: string; billing_area_sqft: string | null; area_basis: string | null;
-    live_document: string | null;
+    live_document: string | null; opening_document: string | null;
   }>(
     `SELECT f.id, f.flat_no, f.billing_area_sqft::text, f.area_basis,
             (SELECT d.proforma_no FROM billing_documents d
               WHERE d.society_id = f.society_id AND d.flat_id = f.id
                 AND d.period = $${params.length + 1} AND d.state <> 'cancelled'
-              LIMIT 1) AS live_document
+                AND d.opening_batch_id IS NULL
+              LIMIT 1) AS live_document,
+            (SELECT d.proforma_no FROM billing_documents d
+              WHERE d.society_id = f.society_id AND d.flat_id = f.id
+                AND d.period = $${params.length + 1} AND d.state <> 'cancelled'
+                AND d.opening_batch_id IS NOT NULL
+              LIMIT 1) AS opening_document
        FROM flats f
       WHERE f.society_id = $1${flatFilter}
       ORDER BY f.flat_no`,
@@ -210,6 +288,17 @@ export async function runBilling(
       skipped.push({
         flatNo: flat.flat_no,
         why: `already billed for ${period} as ${flat.live_document}`,
+      });
+      continue;
+    }
+    if (flat.opening_document !== null && !openingExempt) {
+      // Before migration 012 the database counts an opening due as the
+      // month's bill and would refuse this proforma.
+      skipped.push({
+        flatNo: flat.flat_no,
+        why: `its opening dues (${flat.opening_document}) are filed under ${period}, and the ` +
+          'database still counts them as that month\'s bill. Apply docs/neon/012-apply.sql ' +
+          'in Neon, then run this month again.',
       });
       continue;
     }
@@ -257,7 +346,7 @@ export async function runBilling(
     // that reaches the ledger is recomputed at conversion from the lines as
     // they then stand.
     const estimatedTax = computeBillTax(lines, gst).total;
-    const proformaNo = `PI/${bounds.label}/${String(sequence).padStart(4, '0')}`;
+    const proformaNo = `${series.prefix}${String(sequence).padStart(3, '0')}`;
     sequence += 1;
 
     const document = await tx.query<{ id: string }>(

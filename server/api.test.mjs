@@ -29,7 +29,8 @@ const { billPeriodLabel, billTitle } = await import(`${build}/../../src/accounti
 const { createLogger } = await import(`${build}/logger.js`);
 const { createProductionSociety, AlreadyBootstrappedError } = await import(`${build}/bootstrap.js`);
 const { resolveEmailProvider } = await import(`${build}/providers/email.js`);
-const { runBilling } = await import(`${build}/billing.js`);
+const { runBilling, societyInitials, financialYearLabel } = await import(`${build}/billing.js`);
+const { rupeesInWords } = await import(`${build}/documents.js`);
 const { pendingBillingTerms, writeSetting } = await import(`${build}/settings.js`);
 const { importFlats } = await import(`${build}/flatImport.js`);
 const { parseDeploymentAccounts, provisionInTransaction } = await import(`${build}/deploymentAccounts.js`);
@@ -4124,8 +4125,8 @@ await check('an approved proforma\'s PDF shows the estimated halves, not "No GST
   const text = Buffer.from(await response.arrayBuffer()).toString('latin1');
   // ₹10,125 + ₹1,012.50 taxable: 9% is ₹1,002.375, so ₹1,002 a half.
   matches(text, /1,002\.00/, 'each half, to the rupee');
-  // Parentheses are escaped inside a PDF string.
-  matches(text, /SGST @ 9\.00% \\\(estimate\\\)/, 'marked as an estimate');
+  // The association's proforma format, which names the halves as it does.
+  matches(text, /Add: SGST @ 9%/, 'the SGST half, as the association writes it');
   matches(text, /13,141\.50/, 'the total');
   truthy(!/No GST charged/.test(text), 'no claim that nothing is charged');
 });
@@ -4491,9 +4492,9 @@ await check('an opening due is not cancelled on its own, and carries no GST row 
   matches(db.out, /not a supply/, 'the reason');
 });
 
-await check('an opening due reads as "Opening dues (up to …)", on screen and on its PDF, not as a tax invoice', async () => {
-  equal(billPeriodLabel('Oct 2026', 'OB/1/00142'), 'Opening dues (up to Sep 2026)', 'cut-over on the 1st');
-  equal(billPeriodLabel('Sep 2026', 'OB/1/00001', '2026-09-30'), 'Opening dues (up to 30 Sep 2026)', 'cut-over at a month end');
+await check('an opening due reads as "Arrears upto …", on screen and on its PDF, not as a tax invoice', async () => {
+  equal(billPeriodLabel('Oct 2026', 'OB/1/00142'), 'Arrears upto Sep 2026', 'cut-over on the 1st');
+  equal(billPeriodLabel('Sep 2026', 'OB/1/00001', '2026-09-30'), 'Arrears upto 30 Sep 2026', 'cut-over at a month end');
   equal(billPeriodLabel('Oct 2026', 'PI/2026-10/0001'), 'Oct 2026', 'an ordinary bill is unchanged');
   equal(billTitle('Oct 2026', 'MV/2026/00012'), 'Oct 2026 Maintenance', 'an ordinary title');
 
@@ -4507,9 +4508,9 @@ await check('an opening due reads as "Opening dues (up to …)", on screen and o
   });
   equal(response.status, 200, 'status');
   const text = Buffer.from(await response.arrayBuffer()).toString('latin1');
-  matches(text, /STATEMENT OF OPENING DUES/, 'its own heading');
+  matches(text, /STATEMENT OF ARREARS/, 'its own heading');
   // PDF strings escape brackets as \( and \).
-  matches(text, /Opening dues \\?\(up to 30 Sep 2026\\?\)/, 'what it is for');
+  matches(text, /Arrears upto 30 Sep 2026/, 'what it is for');
   matches(text, /not a\s/, 'says it is not a tax invoice');
   truthy(!/TAX INVOICE/.test(text), 'never headed TAX INVOICE');
 
@@ -4521,8 +4522,84 @@ await check('an opening due reads as "Opening dues (up to …)", on screen and o
     headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') },
   });
   const old = Buffer.from(await reprint.arrayBuffer()).toString('latin1');
-  matches(old, /STATEMENT OF OPENING DUES/, 'an older saved copy is relabelled too');
+  matches(old, /STATEMENT OF ARREARS/, 'an older saved copy is relabelled too');
   truthy(!/TAX INVOICE/.test(old), 'and is not headed TAX INVOICE');
+});
+
+await check('opening dues do not block that month\'s bill; the PI prints in the association\'s format; release moves due dates', async () => {
+  // The opening date is 30 Sep, so the opening dues are filed under Sep 2026,
+  // the month billed here. Before migration 012 this flat was skipped as
+  // "already billed for Sep 2026".
+  const run = await oManager.post('/api/billing/run', {
+    period: 'Sep 2026', issuedOn: '2026-10-05', flatIds: [oFlat('A-101').id, oFlat('A-102').id],
+  });
+  equal(run.status, 201, `run ${JSON.stringify(run.body).slice(0, 400)}`);
+  equal(run.body.skipped.length, 0, `skipped: ${JSON.stringify(run.body.skipped)}`);
+  equal(run.body.issued.length, 2, 'both flats billed');
+  for (const d of run.body.issued) matches(d.proformaNo, /^[A-Z0-9]+\/PI\/2026-27\/\d{3}$/, 'numbered SOC/PI/2026-27/NNN');
+  equal(societyInitials('Mani Vista Residents Association'), 'MVRA', 'the association\'s initials');
+  equal(societyInitials('Mani Vista Residents Association (demo)'), 'MVRA', 'a bracketed note is not part of the name');
+  equal(financialYearLabel('2026-03-31'), '2025-26', 'March is the old year');
+  equal(financialYearLabel('2026-04-01'), '2026-27', 'April starts the new one');
+  equal(rupeesInWords(929300), 'Rupees Nine Thousand Two Hundred Ninety Three Only', 'in words');
+  equal(rupeesInWords(1234567890), 'Rupees One Crore Twenty Three Lakh Forty Five Thousand Six Hundred Seventy Eight and Ninety Paise Only', 'crore and lakh');
+  const a101 = run.body.issued.find(d => d.flatNo === 'A-101');
+  const a102 = run.body.issued.find(d => d.flatNo === 'A-102');
+
+  const approve = await oTreasurer.post(`/api/billing/documents/${a101.documentId}/approve`, { on: '2026-10-05' });
+  equal(approve.status, 200, `approve ${JSON.stringify(approve.body).slice(0, 200)}`);
+
+  const pdf = await fetch(`${base}/api/billing/documents/${a101.documentId}/pdf`, {
+    headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') },
+  });
+  equal(pdf.status, 200, 'pdf status');
+  const text = Buffer.from(await pdf.arrayBuffer()).toString('latin1');
+  matches(text, /PROFORMA INVOICE/, 'heading');
+  matches(text, /01\.09\.2026 to 30\.09\.2026/, 'billing period dates');
+  matches(text, /998599/, 'the CAM SAC code');
+  matches(text, /Previous Outstanding/, 'previous outstanding line');
+  matches(text, /5,000\.00/, 'the arrears as previous outstanding');
+  matches(text, /Rupees [A-Z][a-z]+/, 'the total in words');
+  matches(text, /Not yet entered in the society profile/, 'says the bank details are missing rather than inventing them');
+
+  // With bank details in the profile, the next copy prints them. Written
+  // directly, so the profile check further on still counts its own changes.
+  const profile = await oSecretary.get('/api/society');
+  const bad = await oSecretary.put('/api/society', { name: profile.body.name, payBankName: 'X', payAccountNo: '12', payIfsc: 'TEST0001234' });
+  equal(bad.status, 400, 'a short account number is refused');
+  const partial = await oSecretary.put('/api/society', { name: profile.body.name, payBankName: 'X' });
+  equal(partial.status, 400, 'a bank name without the account and IFSC is refused');
+  truthy(psql(`UPDATE societies SET pay_bank_name = 'Test Bank', pay_branch = 'Main', pay_account_no = '123456789012',
+    pay_ifsc = 'TEST0001234' WHERE id = '${oFixture.societyId}';`).ok, 'bank details recorded');
+  const fresh = await fetch(`${base}/api/billing/documents/${a101.documentId}/pdf?regenerate=true`, {
+    headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') },
+  });
+  matches(Buffer.from(await fresh.arrayBuffer()).toString('latin1'), /123456789012/, 'the account number is printed');
+  psql(`UPDATE societies SET pay_bank_name = NULL, pay_branch = NULL, pay_account_no = NULL, pay_ifsc = NULL
+         WHERE id = '${oFixture.societyId}';`);
+
+  // Released today: the PI and the flat's unpaid arrears fall due the days to
+  // pay after today, not on the date the arrears were imported with.
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  const release = await oTreasurer.post(`/api/billing/documents/${a101.documentId}/release`, { channel: 'in-app' });
+  equal(release.status, 200, `release ${JSON.stringify(release.body).slice(0, 200)}`);
+  truthy(release.body.arrearsDueOn > today, `arrears due after today: ${release.body.arrearsDueOn}`);
+  equal(release.body.arrearsMoved, 1, 'one opening due moved');
+  const openingDue = psql(`SELECT due_on::text FROM billing_documents
+    WHERE flat_id = '${oFlat('A-101').id}' AND opening_batch_id IS NOT NULL AND state <> 'cancelled';`);
+  equal(openingDue.out, release.body.arrearsDueOn, 'the arrears fall due ten days after the PI is sent');
+
+  // A run for the wrong month is cancelled in one step; what went out stays.
+  const cancel = await oTreasurer.post('/api/billing/periods/Sep%202026/cancel-unsent', { reason: 'raised for the wrong month' });
+  equal(cancel.status, 200, `cancel ${JSON.stringify(cancel.body).slice(0, 200)}`);
+  equal(cancel.body.cancelled, 1, 'only the unsent one');
+  equal(psql(`SELECT state FROM billing_documents WHERE id = '${a102.documentId}';`).out, 'cancelled', 'A-102 cancelled');
+  equal(psql(`SELECT state FROM billing_documents WHERE id = '${a101.documentId}';`).out, 'released', 'A-101 untouched');
+  const manager = await oManager.post('/api/billing/periods/Sep%202026/cancel-unsent', { reason: 'x' });
+  equal(manager.status, 403, 'the manager may not');
+
+  // Clear the released proforma, so the batch reversal below sees only the opening dues.
+  psql(`UPDATE billing_documents SET state = 'cancelled', cancelled_reason = 'test cleanup' WHERE id = '${a101.documentId}';`);
 });
 
 await check('a correction is a reversal and a fresh batch, both audited', async () => {

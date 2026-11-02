@@ -4,7 +4,7 @@ import { Invoice } from '../types';
 import { formatRupee } from '../utils';
 import { Dialog } from './Dialog';
 import { downloadInvoice } from '../invoiceExport';
-import { billPeriodLabel } from '../accounting/billLabel';
+import { billPeriodLabel, isOpeningDocument, openingLineLabel } from '../accounting/billLabel';
 
 interface InvoiceDetailModalProps {
   invoice: Invoice | null;
@@ -64,6 +64,23 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
           </span>
         );
     }
+  };
+
+  /** The same PDF, opened in the browser's own viewer: the bill as it is printed, on screen. */
+  const handleView = () => {
+    if (onDownloadPdf === undefined) return;
+    // Opened at once, so a pop-up blocker treats it as the click's own window.
+    const viewer = window.open('', '_blank');
+    setDownloadError(null);
+    onDownloadPdf(invoice)
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        if (viewer !== null) viewer.location.href = url; else window.location.href = url;
+      })
+      .catch((err: unknown) => {
+        viewer?.close();
+        setDownloadError(err instanceof Error ? err.message : 'The document could not be fetched.');
+      });
   };
 
   const handleDownload = () => {
@@ -138,6 +155,13 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
           <div className="space-y-2 text-left">
             <h5 className="text-[10px] font-bold text-[var(--mv-ink)] tracking-wider uppercase mb-1">Billing Head Allocations</h5>
 
+            {isOpeningDocument(invoice.invoiceNo) ? (
+              <div className="flex justify-between items-center text-xs py-1">
+                <span className="text-[var(--mv-muted)] font-medium">{openingLineLabel(invoice.period, invoice.invoiceNo)}</span>
+                <span className="font-bold text-[var(--mv-ink)] font-mono">{formatRupee(invoice.total)}</span>
+              </div>
+            ) : (
+              <>
             <div className="flex justify-between items-center text-xs py-1">
               <span className="text-[var(--mv-muted)] font-medium">1. Society Maintenance</span>
               <span className="font-bold text-[var(--mv-ink)] font-mono">{formatRupee(invoice.maintenance)}</span>
@@ -162,6 +186,9 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
               <span className="text-[var(--mv-muted)] font-medium">5. Non-Occupancy Surcharges</span>
               <span className="font-bold text-[var(--mv-ink)] font-mono">{formatRupee(invoice.nonOccupancyCharges)}</span>
             </div>
+
+              </>
+            )}
 
             {(cgst > 0 || sgst > 0) && (
               <>
@@ -195,7 +222,7 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
 
           <div className="text-[10px] text-[var(--mv-muted)] bg-[var(--mv-page)] p-2.5 rounded-lg border border-[var(--mv-border)] flex flex-col gap-0.5 leading-snug text-left">
             <span>• Regular due date is fixed as: <strong>{invoice.dueDate}</strong></span>
-            <span>• Standard RWA grace terms apply. Non-payment generates compounding overdue penalty.</span>
+            <span>• Late payment may attract interest as the association&apos;s notes state; none is added by this portal on its own.</span>
           </div>
         </div>
 
@@ -209,6 +236,14 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
             <Download className="w-3.5 h-3.5 text-[var(--mv-muted)]" />
             {downloading ? 'Fetching\u2026' : onDownloadPdf ? 'Download PDF' : 'Export summary'}
           </button>
+          {onDownloadPdf !== undefined && (
+            <button
+              onClick={handleView}
+              className="py-2.5 px-3 bg-[var(--mv-surface)] border border-[var(--mv-border)] rounded-xl text-xs text-[var(--mv-ink)] font-bold hover:bg-[var(--mv-soft)] transition-all flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
+            >
+              View bill
+            </button>
+          )}
 
           {invoice.status !== 'Paid' && role === 'Resident' && onPayNow && (
             <button

@@ -21,6 +21,11 @@ export interface SocietyProfile {
   readonly address: string | null;
   readonly contactEmail: string | null;
   readonly contactPhone: string | null;
+  /** The account members pay into, printed on proforma invoices (migration 012). */
+  readonly payBankName: string | null;
+  readonly payBranch: string | null;
+  readonly payAccountNo: string | null;
+  readonly payIfsc: string | null;
 }
 
 export type ProfileField = Exclude<keyof SocietyProfile, 'mode'>;
@@ -34,15 +39,33 @@ const COLUMN: Record<ProfileField, string> = {
   address: 'address',
   contactEmail: 'contact_email',
   contactPhone: 'contact_phone',
+  payBankName: 'pay_bank_name',
+  payBranch: 'pay_branch',
+  payAccountNo: 'pay_account_no',
+  payIfsc: 'pay_ifsc',
 };
 
+const BANK_FIELDS: readonly ProfileField[] = ['payBankName', 'payBranch', 'payAccountNo', 'payIfsc'];
+
+/** Whether the bank-details columns exist yet (migration 012). */
+export async function hasBankDetails(tx: Queryable): Promise<boolean> {
+  const found = await tx.query<{ version: string }>(
+    `SELECT version FROM schema_migrations WHERE version = '012_opening_dues_and_pi_details.sql'`,
+  );
+  return found.rows.length > 0;
+}
+
 export async function readProfile(tx: Queryable, societyId: string): Promise<SocietyProfile> {
+  const bank = await hasBankDetails(tx);
   const result = await tx.query<{
     name: string; mode: string; registration_no: string | null; gstin: string | null;
     state_code: string | null; tan: string | null; address: string | null;
     contact_email: string | null; contact_phone: string | null;
+    pay_bank_name: string | null; pay_branch: string | null; pay_account_no: string | null; pay_ifsc: string | null;
   }>(
-    `SELECT name, mode, registration_no, gstin, state_code, tan, address, contact_email, contact_phone
+    `SELECT name, mode, registration_no, gstin, state_code, tan, address, contact_email, contact_phone,
+            ${bank ? 'pay_bank_name, pay_branch, pay_account_no, pay_ifsc'
+                   : 'NULL AS pay_bank_name, NULL AS pay_branch, NULL AS pay_account_no, NULL AS pay_ifsc'}
        FROM societies WHERE id = $1`,
     [societyId],
   );
@@ -58,6 +81,10 @@ export async function readProfile(tx: Queryable, societyId: string): Promise<Soc
     address: row.address,
     contactEmail: row.contact_email,
     contactPhone: row.contact_phone,
+    payBankName: row.pay_bank_name,
+    payBranch: row.pay_branch,
+    payAccountNo: row.pay_account_no,
+    payIfsc: row.pay_ifsc,
   };
 }
 
@@ -134,6 +161,22 @@ export function validateProfile(p: Omit<SocietyProfile, 'mode'>): Array<{ field:
   if (p.contactPhone !== null && !/^\+?[0-9][0-9\s-]{5,18}$/.test(p.contactPhone)) {
     problems.push({ field: 'contactPhone', message: 'The contact phone should be digits, with an optional + and spaces.' });
   }
+  if (p.payBankName !== null && p.payBankName.length > 100) {
+    problems.push({ field: 'payBankName', message: 'The bank name must be at most 100 characters.' });
+  }
+  if (p.payBranch !== null && p.payBranch.length > 100) {
+    problems.push({ field: 'payBranch', message: 'The branch must be at most 100 characters.' });
+  }
+  if (p.payAccountNo !== null && !/^[0-9]{6,20}$/.test(p.payAccountNo)) {
+    problems.push({ field: 'payAccountNo', message: 'The account number should be 6 to 20 digits, with no spaces.' });
+  }
+  if (p.payIfsc !== null && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(p.payIfsc)) {
+    problems.push({ field: 'payIfsc', message: 'An IFSC is four letters, a zero and six letters or digits, such as ICIC0001064.' });
+  }
+  const bankGiven = [p.payBankName, p.payAccountNo, p.payIfsc].filter(x => x !== null).length;
+  if (bankGiven > 0 && bankGiven < 3) {
+    problems.push({ field: 'payAccountNo', message: 'Give the bank name, account number and IFSC together, or none of them.' });
+  }
   return problems;
 }
 
@@ -144,7 +187,9 @@ export async function writeProfile(
   before: SocietyProfile,
   next: Omit<SocietyProfile, 'mode'>,
 ): Promise<Array<{ field: ProfileField; from: string | null; to: string | null }>> {
+  const bank = await hasBankDetails(tx);
   const changes = (Object.keys(COLUMN) as ProfileField[])
+    .filter(field => bank || !BANK_FIELDS.includes(field))
     .filter(field => before[field] !== next[field])
     .map(field => ({ field, from: before[field], to: next[field] }));
   if (changes.length === 0) return [];

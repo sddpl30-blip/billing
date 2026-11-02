@@ -6,6 +6,7 @@ import { Button, Card, LoadState, inputClass, labelClass, useLoad, useWrite } fr
 const EMPTY: SocietyProfileInput = {
   name: '', registrationNo: null, gstin: null, stateCode: null, tan: null,
   address: null, contactEmail: null, contactPhone: null,
+  payBankName: null, payBranch: null, payAccountNo: null, payIfsc: null,
 };
 
 /**
@@ -27,6 +28,8 @@ export function SocietyProfileSection({ ctx }: { ctx: OfficeContext }) {
     setForm({
       name: p.name, registrationNo: p.registrationNo, gstin: p.gstin, stateCode: p.stateCode, tan: p.tan,
       address: p.address, contactEmail: p.contactEmail, contactPhone: p.contactPhone,
+      payBankName: p.payBankName ?? null, payBranch: p.payBranch ?? null,
+      payAccountNo: p.payAccountNo ?? null, payIfsc: p.payIfsc ?? null,
     });
   }, [profile.data]);
 
@@ -105,6 +108,19 @@ export function SocietyProfileSection({ ctx }: { ctx: OfficeContext }) {
             {field('contactEmail', 'Office email', { type: 'email', inputMode: 'email', maxLength: 320 })}
             {field('contactPhone', 'Office phone', { type: 'tel', inputMode: 'tel', maxLength: 20 })}
           </div>
+          <fieldset className="space-y-2">
+            <legend className={labelClass}>Bank details printed on proforma invoices</legend>
+            <p className="text-[10px] text-[var(--mv-muted)]">
+              The account members pay into, in full, as the bill should show it. Leave all blank and the bill says
+              the details are not yet entered.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {field('payBankName', 'Bank', { maxLength: 100 })}
+              {field('payBranch', 'Branch', { maxLength: 100 })}
+              {field('payAccountNo', 'Account no.', { inputMode: 'numeric', maxLength: 20, hint: 'Digits only.' })}
+              {field('payIfsc', 'IFSC', { upper: true, maxLength: 11, hint: 'Such as ICIC0001064.' })}
+            </div>
+          </fieldset>
           {editable && (
             <div className="flex justify-end">
               <Button tone="primary" type="submit" disabled={busy !== null || form.name.trim() === ''}>

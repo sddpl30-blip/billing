@@ -26,7 +26,7 @@
 -- applied has since changed. This file ends by recording the same rows, so a
 -- database created from it is consistent with the runner too.
 --
--- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql, 010_opening_balances.sql, 011_login_emails.sql
+-- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql, 010_opening_balances.sql, 011_login_emails.sql, 012_opening_dues_and_pi_details.sql
 
 -- ====================================================================
 -- 001_initial.sql
@@ -1843,6 +1843,43 @@ COMMIT;
 
 
 -- ====================================================================
+-- 012_opening_dues_and_pi_details.sql
+-- ====================================================================
+
+-- Migration 012: opening dues stop blocking a month's bill, and the details a
+-- proforma invoice prints.
+--
+-- 1. An opening due brought forward (OB/…) is stored with the period of the
+--    opening date. With a cut-over on 1 Oct 2026 that is "Oct 2026", and the
+--    one-live-document-per-period index then refused October's proforma for
+--    every flat that had arrears: the billing run skipped them as "already
+--    billed for Oct 2026". An opening due is not a month's bill, so the index
+--    now covers bills only.
+--
+-- 2. The bank details printed on a proforma invoice (bank, branch, full
+--    account number, IFSC), kept with the society's profile. A bank account
+--    record holds only the last four digits, which is not enough to pay into.
+
+BEGIN;
+
+DROP INDEX billing_documents_one_live_per_period;
+CREATE UNIQUE INDEX billing_documents_one_live_per_period
+  ON billing_documents (society_id, flat_id, period)
+  WHERE state <> 'cancelled' AND opening_batch_id IS NULL;
+
+ALTER TABLE societies
+  ADD COLUMN pay_bank_name   TEXT,
+  ADD COLUMN pay_branch      TEXT,
+  ADD COLUMN pay_account_no  TEXT CHECK (pay_account_no IS NULL OR pay_account_no ~ '^[0-9]{6,20}$'),
+  ADD COLUMN pay_ifsc        TEXT CHECK (pay_ifsc IS NULL OR pay_ifsc ~ '^[A-Z]{4}0[A-Z0-9]{6}$');
+
+COMMENT ON COLUMN societies.pay_account_no IS
+  'The account members pay into, printed in full on proforma invoices. Entered by the office in the society profile.';
+
+COMMIT;
+
+
+-- ====================================================================
 -- The runner's own record, so both migration tools agree about this database.
 -- ====================================================================
 
@@ -1857,5 +1894,6 @@ INSERT INTO schema_migrations (version, checksum) VALUES
   ('008_security_hardening.sql', '8834e5fcb5e17160'),
   ('009_bank_match_once.sql', '3eacc49926960f12'),
   ('010_opening_balances.sql', '8a7848408bf3bb7c'),
-  ('011_login_emails.sql', '03b8ff5c00ba0fbc')
+  ('011_login_emails.sql', '03b8ff5c00ba0fbc'),
+  ('012_opening_dues_and_pi_details.sql', '1b087ac6a91c060e')
 ON CONFLICT (version) DO NOTHING;

@@ -32,6 +32,7 @@
 
 import type { Queryable } from './pg';
 import { hasPermission, type Principal } from './rbac';
+import { DEFAULT_GST_MEMBER_THRESHOLD_RUPEES } from './settings';
 
 export interface EngineLeg {
   readonly accountCode: string;
@@ -131,6 +132,8 @@ export interface BooksSnapshotView {
       chargeGst: boolean; ratePercent: number; approved: boolean;
       /** The two `gst.treatment` choices, false when absent, for the screens' labels. */
       sinkingFundTaxable: boolean; roundToRupee: boolean;
+      /** The per-member threshold in rupees; the statutory figure when not set. */
+      memberThresholdRupees: number;
     };
     readonly invoicePrefix: string;
     readonly dueDays: number;
@@ -428,6 +431,7 @@ export async function buildSnapshot(
   const gstRow = setting('gst.treatment');
   const gstValue = (gstRow?.value ?? {}) as {
     chargeGst?: unknown; ratePercent?: unknown; sinkingFundTaxable?: unknown; roundToRupee?: unknown;
+    memberThresholdRupees?: unknown;
   };
   const numberSetting = (key: string, fallback: number): number => {
     const value = setting(key)?.value;
@@ -488,6 +492,8 @@ export async function buildSnapshot(
         approved: gstRow?.approved ?? false,
         sinkingFundTaxable: gstValue.sinkingFundTaxable === true,
         roundToRupee: gstValue.roundToRupee === true,
+        memberThresholdRupees: typeof gstValue.memberThresholdRupees === 'number'
+          ? gstValue.memberThresholdRupees : DEFAULT_GST_MEMBER_THRESHOLD_RUPEES,
       },
       invoicePrefix: typeof prefix === 'string' ? prefix : 'INV',
       dueDays: numberSetting('billing.dueDays', 15),

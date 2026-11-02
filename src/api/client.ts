@@ -220,6 +220,8 @@ export interface SnapshotResponse {
       chargeGst: boolean; ratePercent: number; approved: boolean;
       /** Absent from a server older than these settings; treated as false. */
       sinkingFundTaxable?: boolean; roundToRupee?: boolean;
+      /** Absent from older servers. */
+      memberThresholdRupees?: number;
     };
     readonly invoicePrefix: string;
     readonly dueDays: number;

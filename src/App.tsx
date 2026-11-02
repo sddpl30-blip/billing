@@ -72,10 +72,11 @@ import type { TicketResponse } from './api/client';
 import type { OfficeContext } from './components/office/types';
 import { SetupGate } from './components/SetupScreen';
 import { ScheduledRelease } from './components/ScheduledRelease';
+import { CancelUnsentProformas } from './components/CancelUnsentProformas';
 import { BulkPaymentsUpload } from './components/BulkPaymentsUpload';
 import { NoticeBoard } from './components/NoticeBoard';
 import { isoDateInIndia, periodLabel } from './accounting/clock';
-import { billPeriodLabel, billTitle, isOpeningDocument } from './accounting/billLabel';
+import { billPeriodLabel, billTitle, isOpeningDocument, openingLineLabel } from './accounting/billLabel';
 import { LoginScreen } from './components/LoginScreen';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import { downloadInvoice, pdfFilename, saveBlob } from './invoiceExport';
@@ -205,7 +206,10 @@ export default function App() {
 
   // Manager Generate Periodic Invoices Form
   const [showBillingWizard, setShowBillingWizard] = useState(false);
-  const [wizardPeriod, setWizardPeriod] = useState('Jul 2026');
+  // No default month: a default once raised November's bills when October's
+  // were meant. The office types the month, and the dates it covers show
+  // beneath it before anything is raised.
+  const [wizardPeriod, setWizardPeriod] = useState('');
   // A percentage of maintenance — the engine's own unit — not rupees, which is
   // what the old label said while 500 was being read as 500%.
   const [wizardSinking, setWizardSinking] = useState('10');
@@ -728,6 +732,17 @@ export default function App() {
   const mayPayOnline = !onServer || booksSource.can('payment.record');
   // Periods with approved proformas not yet released: what a 6 am release
   // would send.
+  /** Periods with proformas not yet sent, for the treasurer's "cancel a wrong run". */
+  const unsentPeriods = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const d of registerDocuments) {
+      if ((d.state === 'draft' || d.state === 'approved') && !isOpeningDocument(d.proformaNo)) {
+        counts.set(d.period, (counts.get(d.period) ?? 0) + 1);
+      }
+    }
+    return [...counts].map(([period, count]) => ({ period, count }));
+  }, [registerDocuments]);
+
   const approvedPeriods = useMemo(
     () => [...new Set(registerDocuments.filter(d => d.state === 'approved').map(d => d.period))],
     [registerDocuments],
@@ -1606,6 +1621,18 @@ export default function App() {
               placeholder="e.g. Oct 2026"
               className={input}
             />
+            {(() => {
+              const start = periodToIso(wizardPeriod.trim());
+              if (start === null) return null;
+              const [y, m] = start.split('-').map(Number);
+              const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+              const dot = (d: number) => `${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}.${y}`;
+              return (
+                <p className="mt-1 text-[10px] font-bold text-[var(--mv-ink)]">
+                  Bills the service from {dot(1)} to {dot(last)}
+                </p>
+              );
+            })()}
           </div>
           <div>
             <span className={label}>Tax</span>
@@ -2349,6 +2376,16 @@ export default function App() {
                         onConvertDue={handleConvertDue}
                         may={billingMay}
                       />
+                      {onServer && booksSource.client !== null && booksSource.can('billing.cancel') && (
+                        <div className="mt-4">
+                          <CancelUnsentProformas
+                            client={booksSource.client}
+                            unsentPeriods={unsentPeriods}
+                            toast={triggerToast}
+                            reload={() => booksSource.reload()}
+                          />
+                        </div>
+                      )}
                       {onServer && booksSource.client !== null && (booksSource.can('billing.release') || booksSource.can('report.read')) && (
                         <div className="mt-4">
                           <ScheduledRelease
@@ -2461,6 +2498,13 @@ export default function App() {
                             <div className="space-y-2 pt-2 text-xs">
                               <h5 className="font-extrabold text-[9px] uppercase tracking-wider text-[var(--mv-muted)] border-b border-[var(--mv-border)] pb-2">Billing Breakdown particulars</h5>
 
+                              {isOpeningDocument(desktopActiveInvoice.invoiceNo) ? (
+                                <div className="flex justify-between items-center py-1">
+                                  <span className="text-[var(--mv-muted)] font-medium">{openingLineLabel(desktopActiveInvoice.period, desktopActiveInvoice.invoiceNo)}</span>
+                                  <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.total)}</span>
+                                </div>
+                              ) : (
+                                <>
                               <div className="flex justify-between items-center py-1">
                                 <span className="text-[var(--mv-muted)] font-medium">Common Area General Maintenance</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.maintenance)}</span>
@@ -2481,6 +2525,9 @@ export default function App() {
                                 <span className="text-[var(--mv-muted)] font-medium">Non-Occupancy regulatory surcharge</span>
                                 <span className="font-bold font-mono text-[var(--mv-ink)]">{formatRupee(desktopActiveInvoice.nonOccupancyCharges)}</span>
                               </div>
+
+                                </>
+                              )}
 
                               {desktopActiveInvoice.gst > 0 && (
                                 <>
@@ -3354,7 +3401,7 @@ export default function App() {
                       </div>
                       <div className="flex items-center justify-between border-y border-[var(--mv-soft)] py-3">
                         <div className="space-y-1">
-                          <p className="text-xs text-[var(--mv-muted)]">{rohanDueInvoice.period} Maintenance + Sinking</p>
+                          <p className="text-xs text-[var(--mv-muted)]">{isOpeningDocument(rohanDueInvoice.invoiceNo) ? openingLineLabel(rohanDueInvoice.period, rohanDueInvoice.invoiceNo) : `${rohanDueInvoice.period} Maintenance + Sinking`}</p>
                           <p className="text-2xl font-bold text-[var(--mv-ink)] font-mono">{formatRupee(rohanDueInvoice.total)}</p>
                         </div>
                         {mayPayOnline && (
@@ -3701,6 +3748,16 @@ export default function App() {
                     compact
                     may={billingMay}
                   />
+                  {onServer && booksSource.client !== null && booksSource.can('billing.cancel') && (
+                    <div className="mt-4">
+                      <CancelUnsentProformas
+                        client={booksSource.client}
+                        unsentPeriods={unsentPeriods}
+                        toast={triggerToast}
+                        reload={() => booksSource.reload()}
+                      />
+                    </div>
+                  )}
                   {onServer && booksSource.client !== null && (booksSource.can('billing.release') || booksSource.can('report.read')) && (
                     <div className="mt-4">
                       <ScheduledRelease

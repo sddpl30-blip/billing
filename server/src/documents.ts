@@ -14,12 +14,14 @@
  */
 
 import { createHash } from 'node:crypto';
-import { A4, PdfPage, buildPdf, money, textWidth } from './pdf';
+import { A4, PdfPage, buildPdf, money, textWidth, wrapText } from './pdf';
+import { societyLogo } from './societyLogo';
+import { migrationApplied, periodBounds, societyInitials } from './billing';
 import { billPeriodLabel, isOpeningDocument } from '../../src/accounting/billLabel';
 import type { Queryable } from './pg';
 import { badRequest, notFound } from './http';
 import { allocateNumber } from './series';
-import { gstTreatment } from './settings';
+import { dueDays, gstTreatment, rateOnDate } from './settings';
 import { percentOf } from '../../src/accounting/money';
 
 export interface InvoicePayload {
@@ -36,7 +38,7 @@ export interface InvoicePayload {
   readonly period: string;
   /**
    * Set for an opening due brought forward (OB/…): the period as it should
-   * read, e.g. "Opening dues (up to Sep 2026)". Such a document is not a tax
+   * read, e.g. "Arrears upto Sep 2026". Such a document is not a tax
    * invoice, carries no GST and is not in the GST register, and its PDF says
    * so rather than "TAX INVOICE".
    */
@@ -60,6 +62,30 @@ export interface InvoicePayload {
   readonly gross: number;
   readonly outstanding: number;
   readonly state: string;
+  /**
+   * What the association's own proforma format prints beyond the above: its
+   * letterhead, the billing period's dates, the pay-in bank account, the area
+   * and rate behind the maintenance line, and the flat's previous
+   * outstanding. Present on proformas generated since that format; an older
+   * stored copy, without it, keeps rendering in the layout it was issued in.
+   */
+  readonly pi?: ProformaDetails;
+}
+
+export interface ProformaDetails {
+  readonly societyName: string;
+  readonly pan: string | null;
+  readonly tan: string | null;
+  readonly contactEmail: string | null;
+  readonly bank: { name: string; branch: string | null; accountNo: string; ifsc: string } | null;
+  readonly invoiceDate: string;
+  readonly periodFrom: string;
+  readonly periodTo: string;
+  readonly areaSqft: number | null;
+  readonly ratePerSqFt: number | null;
+  /** The flat's dues from earlier bills and arrears, less any advance held. Negative is a credit. */
+  readonly previousOutstanding: number;
+  readonly daysToPay: number;
 }
 
 export interface ReceiptPayload {
@@ -121,6 +147,248 @@ function footer(page: PdfPage, note: string): void {
 }
 
 export function renderInvoice(stored: InvoicePayload): Buffer {
+  if (stored.kind === 'proforma' && stored.pi !== undefined && stored.openingLabel === undefined) {
+    return renderProformaInvoice(stored, stored.pi);
+  }
+  return renderStandardInvoice(stored);
+}
+
+const ONES = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
+  'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+const TENS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+function belowHundred(n: number): string {
+  return n < 20 ? ONES[n] : `${TENS[Math.floor(n / 10)]}${n % 10 === 0 ? '' : ` ${ONES[n % 10]}`}`;
+}
+
+function belowThousand(n: number): string {
+  const hundreds = Math.floor(n / 100);
+  const rest = n % 100;
+  return [hundreds > 0 ? `${ONES[hundreds]} Hundred` : '', rest > 0 ? belowHundred(rest) : '']
+    .filter(p => p !== '').join(' ');
+}
+
+/** Paise in words, Indian style: "Rupees Nine Thousand Two Hundred Ninety Three Only". */
+export function rupeesInWords(paise: number): string {
+  const negative = paise < 0;
+  const absolute = Math.abs(Math.round(paise));
+  let rupees = Math.floor(absolute / 100);
+  const fraction = absolute % 100;
+  if (rupees === 0 && fraction === 0) return 'Rupees Zero Only';
+  const parts: string[] = [];
+  const crore = Math.floor(rupees / 10_000_000); rupees %= 10_000_000;
+  const lakh = Math.floor(rupees / 100_000); rupees %= 100_000;
+  const thousand = Math.floor(rupees / 1000); rupees %= 1000;
+  if (crore > 0) parts.push(`${belowThousand(crore)} Crore`);
+  if (lakh > 0) parts.push(`${belowHundred(lakh)} Lakh`);
+  if (thousand > 0) parts.push(`${belowHundred(thousand)} Thousand`);
+  if (rupees > 0) parts.push(belowThousand(rupees));
+  const words = parts.join(' ');
+  return `${negative ? 'Minus ' : ''}Rupees ${words === '' ? 'Zero' : words}` +
+    `${fraction > 0 ? ` and ${belowHundred(fraction)} Paise` : ''} Only`;
+}
+
+/** 2026-10-01 as 01.10.2026, as the association writes dates. */
+const dotted = (iso: string): string => `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}`;
+
+/** Whole areas with Indian grouping: 1,808. */
+function groupedWhole(n: number): string {
+  const digits = String(Math.round(n));
+  if (digits.length <= 3) return digits;
+  const head = digits.slice(0, -3).replace(/\B(?=(\d\d)+(?!\d))/g, ',');
+  return `${head},${digits.slice(-3)}`;
+}
+
+/**
+ * A proforma in the association's own format, from its Word template: the
+ * letterhead with its PAN, GSTIN, TAN and e-mail; PI number, invoice date and
+ * billing period; bill-to and the bank to pay into; the service lines with
+ * SAC codes; taxable value, CGST, SGST and previous outstanding; the total in
+ * words; payment details and notes.
+ */
+function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Buffer {
+  const page = new PdfPage(A4, 40);
+  const left = page.margin;
+  const right = page.size.widthPt - page.margin;
+  const width = right - left;
+  const logo = societyLogo(pi.societyName);
+
+  page.textRight('PROFORMA INVOICE', left + width / 2 + textWidth('PROFORMA INVOICE', 14, 'bold') / 2, { size: 14, face: 'bold' });
+  page.down(14);
+  if (payload.society.mode === 'demo') {
+    page.textRight('DEMONSTRATION DATA - NOT A VALID DOCUMENT', right, { size: 8, face: 'bold', grey: 0.35 });
+    page.down(10);
+  }
+
+  // Letterhead.
+  const headTop = page.cursor;
+  const headHeight = 92;
+  page.frame(left, headTop - headHeight, width, headHeight);
+  const textX = logo === null ? left + 10 : left + 96;
+  if (logo !== null) page.image('Logo', left + 8, headTop - headHeight + 6, 80, 80);
+  let y = headTop - 18;
+  const heading = pi.societyName.includes('(')
+    ? pi.societyName.toUpperCase()
+    : `${pi.societyName.toUpperCase()} (${societyInitials(pi.societyName)})`;
+  page.text(heading, { x: textX, y, size: 12, face: 'bold' });
+  const idLines = [
+    pi.pan === null ? null : `PAN: ${pi.pan}`,
+    payload.society.gstin === null ? null : `GSTIN: ${payload.society.gstin}`,
+    `TAN: ${pi.tan ?? 'Application in process'}`,
+    pi.contactEmail === null ? null : `Official Email: ${pi.contactEmail}`,
+  ].filter((l): l is string => l !== null);
+  for (const line of idLines) {
+    y -= 14;
+    page.text(line, { x: textX, y, size: 9.5 });
+  }
+  page.cursor = headTop - headHeight - 12;
+
+  // PI number, date and period.
+  const thirds = width / 3;
+  const rowTop = page.cursor;
+  page.frame(left, rowTop - 34, width, 34);
+  page.line(left + thirds, rowTop, left + thirds, rowTop - 34, 0.55, 0.6);
+  page.line(left + 2 * thirds, rowTop, left + 2 * thirds, rowTop - 34, 0.55, 0.6);
+  const cell = (i: number, label: string, value: string): void => {
+    page.text(label, { x: left + i * thirds + 6, y: rowTop - 12, size: 8, grey: 0.4 });
+    page.text(value, { x: left + i * thirds + 6, y: rowTop - 26, size: 9.5, face: 'bold' });
+  };
+  cell(0, 'PI No.', payload.documentNo);
+  cell(1, 'Invoice Date', dotted(pi.invoiceDate));
+  cell(2, 'Billing Period', `${dotted(pi.periodFrom)} to ${dotted(pi.periodTo)}`);
+  page.cursor = rowTop - 34 - 12;
+
+  // Bill to, and where to pay.
+  const half = width / 2;
+  const boxTop = page.cursor;
+  const boxHeight = 74;
+  page.frame(left, boxTop - boxHeight, width, boxHeight);
+  page.line(left + half, boxTop, left + half, boxTop - boxHeight, 0.55, 0.6);
+  page.box(left + 0.5, boxTop - 16, width - 1, 15.5, 0.92);
+  page.text('BILL TO', { x: left + 6, y: boxTop - 12, size: 8.5, face: 'bold' });
+  page.text('ASSOCIATION BANK DETAILS', { x: left + half + 6, y: boxTop - 12, size: 8.5, face: 'bold' });
+  page.text(payload.ownerName ?? 'Owner not on record', { x: left + 6, y: boxTop - 32, size: 10, face: 'bold' });
+  page.text(`Unit No.: ${payload.flatNo}`, { x: left + 6, y: boxTop - 47, size: 9.5 });
+  if (pi.bank === null) {
+    page.text('Not yet entered in the society profile.', { x: left + half + 6, y: boxTop - 32, size: 9, grey: 0.4 });
+  } else {
+    const bankLines = [
+      `Bank: ${pi.bank.name}`,
+      ...(pi.bank.branch === null ? [] : [`Branch: ${pi.bank.branch}`]),
+      `Account No.: ${pi.bank.accountNo}`,
+      `IFSC: ${pi.bank.ifsc}`,
+    ];
+    bankLines.forEach((line, i) => page.text(line, { x: left + half + 6, y: boxTop - 30 - i * 12.5, size: 9 }));
+  }
+  page.cursor = boxTop - boxHeight - 14;
+
+  // The service lines.
+  const cols = { sno: left + 6, desc: left + 40, sac: left + 255, qty: left + 310, rateRight: left + 425, amountRight: right - 6 };
+  const tableTop = page.cursor;
+  page.box(left, tableTop - 20, width, 20, 0.92);
+  page.text('S. No.', { x: cols.sno, y: tableTop - 13, size: 8, face: 'bold' });
+  page.text('Description of Service', { x: cols.desc, y: tableTop - 13, size: 8, face: 'bold' });
+  page.text('SAC', { x: cols.sac, y: tableTop - 13, size: 8, face: 'bold' });
+  page.text('Qty./Area', { x: cols.qty, y: tableTop - 13, size: 8, face: 'bold' });
+  page.textRight('Rate (INR)', cols.rateRight, { y: tableTop - 13, size: 8, face: 'bold' });
+  page.textRight('Amount (INR)', cols.amountRight, { y: tableTop - 13, size: 8, face: 'bold' });
+  let rowY = tableTop - 20;
+  let serial = 0;
+  for (const line of payload.lines) {
+    serial += 1;
+    const isCam = line.head === 'maintenance';
+    const description = isCam ? ['Common Area Maintenance (CAM)', `Charges (Unit No. ${payload.flatNo})`] : [line.label];
+    const height = 8 + description.length * 12;
+    page.text(String(serial), { x: cols.sno, y: rowY - 13, size: 9 });
+    description.forEach((d, i) => page.text(d, { x: cols.desc, y: rowY - 13 - i * 12, size: 9 }));
+    if (isCam) {
+      page.text('998599', { x: cols.sac, y: rowY - 13, size: 9 });
+      if (pi.areaSqft !== null) page.text(`${groupedWhole(pi.areaSqft)} sq. ft.`, { x: cols.qty, y: rowY - 13, size: 9 });
+      if (pi.ratePerSqFt !== null) page.textRight(pi.ratePerSqFt.toFixed(2), cols.rateRight, { y: rowY - 13, size: 9 });
+    }
+    page.textRight(money(line.amount), cols.amountRight, { y: rowY - 13, size: 9, face: 'mono' });
+    rowY -= height;
+    page.line(left, rowY, right, rowY, 0.8);
+  }
+  page.frame(left, rowY, width, tableTop - rowY);
+  page.cursor = rowY - 8;
+
+  // The figures.
+  const labelX = left + width * 0.45;
+  const sumTop = page.cursor;
+  const sums: Array<[string, number, boolean]> = [];
+  const nonTaxable = payload.net - payload.taxableValue;
+  sums.push(['Taxable Value', payload.taxableValue, false]);
+  if (payload.cgst > 0 || payload.sgst > 0) {
+    const half = String(Number((payload.ratePercent / 2).toFixed(2)));
+    sums.push([`Add: CGST @ ${half}%`, payload.cgst, false]);
+    sums.push([`Add: SGST @ ${half}%`, payload.sgst, false]);
+  } else {
+    sums.push(['GST: not applicable on this bill', 0, false]);
+  }
+  if (nonTaxable > 0) sums.push(['Add: Charges not subject to GST', nonTaxable, false]);
+  // This bill on its own, before what was owed already, when the two differ.
+  if (pi.previousOutstanding !== 0) sums.push(['Current Bill Value', payload.gross, false]);
+  sums.push([pi.previousOutstanding < 0 ? 'Less: Advance held' : 'Previous Outstanding', pi.previousOutstanding, false]);
+  const totalValue = payload.gross + pi.previousOutstanding;
+  sums.push(['Total Invoice Value', totalValue, true]);
+  let sy = sumTop;
+  for (const [label, value, bold] of sums) {
+    if (bold) page.box(labelX, sy - 18, right - labelX, 18, 0.92);
+    page.text(label, { x: labelX + 6, y: sy - 13, size: 9.5, face: bold ? 'bold' : 'regular' });
+    page.textRight(money(value), cols.amountRight, { y: sy - 13, size: 9.5, face: bold ? 'bold' : 'mono' });
+    sy -= 18;
+    page.line(labelX, sy, right, sy, 0.8);
+  }
+  page.frame(labelX, sy, right - labelX, sumTop - sy);
+  page.cursor = sy - 18;
+
+  page.text('Total Value (in words):', { size: 9.5, face: 'bold' });
+  const words = wrapText(rupeesInWords(totalValue), width - 120, 9.5);
+  words.forEach((w, i) => page.text(w, { x: left + 118, y: page.cursor - i * 12, size: 9.5 }));
+  page.down(12 * words.length + 12);
+
+  const paragraph = (text: string, size = 9): void => {
+    for (const line of wrapText(text, width, size)) {
+      page.text(line, { size });
+      page.down(size + 3);
+    }
+  };
+  page.text('PAYMENT DETAILS', { size: 9.5, face: 'bold' });
+  page.down(13);
+  paragraph(
+    'Please remit payment to the association bank account mentioned above. Kindly quote the PI number and unit ' +
+    'number in the payment narration and share the transaction reference with the Association' +
+    (pi.contactEmail === null ? '.' : ` at ${pi.contactEmail}.`),
+  );
+  page.down(6);
+  page.text('NOTES', { size: 9.5, face: 'bold' });
+  page.down(13);
+  const notes = [
+    'All figures are in Rupees unless otherwise mentioned/not applicable.',
+    `Kindly settle your outstanding amount payment within ${pi.daysToPay} days (if any) to avoid disruption of services.`,
+    `Kindly pay by Cheque/DD/or Pay Order in favor of ${pi.societyName.toUpperCase()}.`,
+    'Late payments shall attract delay penalty/interest at the rate 18% p.a.',
+    'Cheque bouncing charges of rupees 1000+GST will apply in case of dishonored of cheques.',
+    'This is computer generated statement and does not require signature.',
+  ];
+  for (const note of notes) {
+    const lines = wrapText(note, width - 14, 8.5);
+    lines.forEach((line, i) => {
+      if (i === 0) page.text('\u2022', { size: 8.5 });
+      page.text(line, { x: left + 12, size: 8.5 });
+      page.down(11);
+    });
+  }
+
+  return buildPdf([page], {
+    title: `Proforma invoice ${payload.documentNo}`,
+    author: pi.societyName,
+    subject: `Unit ${payload.flatNo}, ${dotted(pi.periodFrom)} to ${dotted(pi.periodTo)}`,
+  }, logo === null ? {} : { Logo: logo });
+}
+
+function renderStandardInvoice(stored: InvoicePayload): Buffer {
   // A copy printed before opening dues had their own label is re-rendered
   // from its saved payload; its OB/ number is enough to label it correctly.
   const payload: InvoicePayload = stored.openingLabel === undefined && isOpeningDocument(stored.documentNo)
@@ -134,7 +402,7 @@ export function renderInvoice(stored: InvoicePayload): Buffer {
     page,
     payload.society,
     payload.openingLabel !== undefined
-      ? 'STATEMENT OF OPENING DUES'
+      ? 'STATEMENT OF ARREARS'
       : payload.kind === 'tax-invoice' ? 'TAX INVOICE' : 'PROFORMA INVOICE',
   );
 
@@ -258,7 +526,7 @@ export function renderInvoice(stored: InvoicePayload): Buffer {
   );
 
   return buildPdf([page], {
-    title: `${payload.openingLabel !== undefined ? 'Opening dues' : payload.kind === 'tax-invoice' ? 'Tax invoice' : 'Proforma'} ${payload.documentNo}`,
+    title: `${payload.openingLabel !== undefined ? 'Arrears' : payload.kind === 'tax-invoice' ? 'Tax invoice' : 'Proforma'} ${payload.documentNo}`,
     author: payload.society.name,
     subject: `Flat ${payload.flatNo}, ${payload.openingLabel ?? payload.period}`,
   });
@@ -429,9 +697,17 @@ export async function invoicePayload(
     }
   }
 
+  const society = await societyOf(tx, input.societyId);
+  const pi = !isTaxInvoice && row.opening_as_at === null
+    ? await proformaDetails(tx, {
+        societyId: input.societyId, documentId: input.documentId, period: row.period,
+        issuedOn: row.issued_on, asAt: input.asAt, gstin: society.gstin,
+      })
+    : undefined;
+
   return {
     kind: isTaxInvoice ? 'tax-invoice' : 'proforma',
-    society: await societyOf(tx, input.societyId),
+    society,
     documentNo: isTaxInvoice ? (row.tax_invoice_no as string) : row.proforma_no,
     proformaNo: row.proforma_no,
     period: row.period,
@@ -454,6 +730,80 @@ export async function invoicePayload(
     gross: isTaxInvoice ? Number(row.gross) : net + Number(row.estimated_tax),
     outstanding: Number(row.outstanding),
     state: row.state,
+    ...(pi === undefined ? {} : { pi }),
+  };
+}
+
+/** What the association's proforma format prints beyond the bill itself. */
+async function proformaDetails(
+  tx: Queryable,
+  input: { societyId: string; documentId: string; period: string; issuedOn: string; asAt: string; gstin: string | null },
+): Promise<ProformaDetails> {
+  const withBank = await migrationApplied(tx, '012_opening_dues_and_pi_details.sql');
+  const found = await tx.query<{
+    name: string; tan: string | null; contact_email: string | null;
+    pay_bank_name: string | null; pay_branch: string | null; pay_account_no: string | null; pay_ifsc: string | null;
+  }>(
+    `SELECT name, tan, contact_email, ${withBank
+      ? 'pay_bank_name, pay_branch, pay_account_no, pay_ifsc'
+      : 'NULL AS pay_bank_name, NULL AS pay_branch, NULL AS pay_account_no, NULL AS pay_ifsc'}
+       FROM societies WHERE id = $1`,
+    [input.societyId],
+  );
+  const soc = found.rows[0];
+  if (soc === undefined) throw notFound('That society');
+
+  const flat = await tx.query<{ flat_id: string; flat_no: string; area: string | null }>(
+    `SELECT d.flat_id, f.flat_no, f.billing_area_sqft::text AS area
+       FROM billing_documents d JOIN flats f ON f.id = d.flat_id WHERE d.id = $1`,
+    [input.documentId],
+  );
+  const f = flat.rows[0];
+  if (f === undefined) throw notFound('That document');
+
+  // Earlier bills and arrears still owed, less any advance held: what the
+  // member owes besides this bill, as at the day it is printed.
+  const balances = await tx.query<{ owed: string; advance: string }>(
+    `SELECT COALESCE((
+              SELECT SUM(p.debit - p.credit)
+                FROM journal_postings p
+                JOIN journal_entries e ON e.id = p.entry_id
+                JOIN billing_documents d ON d.society_id = p.society_id AND d.tax_invoice_no = p.doc_ref
+               WHERE p.society_id = $1 AND p.account_code = '1100' AND d.flat_id = $2
+                 AND d.id <> $3 AND e.entry_date <= $4::date
+            ), 0)::text AS owed,
+            COALESCE((
+              SELECT SUM(p.credit - p.debit)
+                FROM journal_postings p
+                JOIN journal_entries e ON e.id = p.entry_id
+               WHERE p.society_id = $1 AND p.account_code = '2300' AND p.party = $5
+                 AND e.entry_date <= $4::date
+            ), 0)::text AS advance`,
+    [input.societyId, f.flat_id, input.documentId, input.asAt, f.flat_no],
+  );
+  const owed = Number(balances.rows[0]?.owed ?? '0');
+  const advance = Number(balances.rows[0]?.advance ?? '0');
+
+  const bounds = periodBounds(input.period);
+  const rate = await rateOnDate(tx, { societyId: input.societyId, on: bounds.startsOn });
+  const bank = soc.pay_bank_name !== null && soc.pay_account_no !== null && soc.pay_ifsc !== null
+    ? { name: soc.pay_bank_name, branch: soc.pay_branch, accountNo: soc.pay_account_no, ifsc: soc.pay_ifsc }
+    : null;
+
+  return {
+    societyName: soc.name,
+    // The PAN is characters 3 to 12 of the GSTIN, so it is printed only from one.
+    pan: input.gstin === null ? null : input.gstin.slice(2, 12),
+    tan: soc.tan,
+    contactEmail: soc.contact_email,
+    bank,
+    invoiceDate: input.issuedOn,
+    periodFrom: bounds.startsOn,
+    periodTo: bounds.endsOn,
+    areaSqft: f.area === null ? null : Number(f.area),
+    ratePerSqFt: rate === null ? null : rate.ratePerSqFt,
+    previousOutstanding: owed - advance,
+    daysToPay: await dueDays(tx, input.societyId),
   };
 }
 

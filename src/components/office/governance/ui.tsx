@@ -37,6 +37,9 @@ export interface Loaded<T> {
 }
 
 /** Loads on mount and on `refresh`; a stale response never overwrites a newer one. */
+/** How long a screen waits for its data before offering Retry. */
+const LOAD_TIMEOUT_MS = 30_000;
+
 export function useLoad<T>(load: () => Promise<T>, deps: React.DependencyList): Loaded<T> {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,12 +50,25 @@ export function useLoad<T>(load: () => Promise<T>, deps: React.DependencyList): 
   const refresh = useCallback(async () => {
     const mine = ++seq.current;
     setLoading(true);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const result = await run();
+      // A request that never answers left the screen on "Loading…" for good,
+      // with nothing to press (Periods did this on the live site). After
+      // LOAD_TIMEOUT_MS it says so and offers Retry instead.
+      const result = await Promise.race([
+        run(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('The server did not answer in time. Press Retry; if it happens again, reload the page.')),
+            LOAD_TIMEOUT_MS,
+          );
+        }),
+      ]);
       if (mine === seq.current) { setData(result); setError(null); }
     } catch (err) {
       if (mine === seq.current) setError(refusalOf(err));
     } finally {
+      clearTimeout(timer);
       if (mine === seq.current) setLoading(false);
     }
   }, [run]);
