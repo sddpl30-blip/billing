@@ -148,6 +148,8 @@ export interface BooksSnapshotView {
    * from next month made this month read as having "no rate", which sent
    * people looking for a rate that was there all along.
    */
+  /** Opening dues brought forward (OB/…), by number, with their opening date. */
+  readonly openingAsAt: Readonly<Record<string, string>>;
   readonly upcomingRate: {
     readonly ratePerSqFt: number;
     readonly basis: string;
@@ -445,6 +447,14 @@ export async function buildSnapshot(
     [societyId, input.today],
   );
   const rate = rateRow.rows[0];
+  const openingRows = await tx.query<{ no: string; as_at: string }>(
+    `SELECT d.proforma_no AS no, b.as_at::text AS as_at
+       FROM billing_documents d JOIN opening_balance_batches b ON b.id = d.opening_batch_id
+      WHERE d.society_id = $1`,
+    [societyId],
+  );
+  const openingAsAt: Record<string, string> = {};
+  for (const r of openingRows.rows) openingAsAt[r.no] = r.as_at;
   const upcomingRow = await tx.query<{
     rate_paise_per_sqft: string; area_basis: string; effective_from: string; approved_by: string | null;
   }>(
@@ -492,6 +502,7 @@ export async function buildSnapshot(
           authority: rate.authority,
           approved: rate.approved_by !== null,
         },
+    openingAsAt,
     upcomingRate: upcoming === undefined
       ? null
       : {

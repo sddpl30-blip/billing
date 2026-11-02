@@ -15,6 +15,7 @@
 
 import { createHash } from 'node:crypto';
 import { A4, PdfPage, buildPdf, money, textWidth } from './pdf';
+import { billPeriodLabel, isOpeningDocument } from '../../src/accounting/billLabel';
 import type { Queryable } from './pg';
 import { badRequest, notFound } from './http';
 import { allocateNumber } from './series';
@@ -33,6 +34,13 @@ export interface InvoicePayload {
   readonly documentNo: string;
   readonly proformaNo: string;
   readonly period: string;
+  /**
+   * Set for an opening due brought forward (OB/…): the period as it should
+   * read, e.g. "Opening dues (up to Sep 2026)". Such a document is not a tax
+   * invoice, carries no GST and is not in the GST register, and its PDF says
+   * so rather than "TAX INVOICE".
+   */
+  readonly openingLabel?: string;
   readonly issuedOn: string;
   readonly dueOn: string;
   readonly flatNo: string;
@@ -112,7 +120,12 @@ function footer(page: PdfPage, note: string): void {
   page.textRight('Computer generated', right, { size: 7.5, grey: 0.5 });
 }
 
-export function renderInvoice(payload: InvoicePayload): Buffer {
+export function renderInvoice(stored: InvoicePayload): Buffer {
+  // A copy printed before opening dues had their own label is re-rendered
+  // from its saved payload; its OB/ number is enough to label it correctly.
+  const payload: InvoicePayload = stored.openingLabel === undefined && isOpeningDocument(stored.documentNo)
+    ? { ...stored, openingLabel: billPeriodLabel(stored.period, stored.documentNo) }
+    : stored;
   const page = new PdfPage(A4);
   const left = page.margin;
   const right = page.size.widthPt - page.margin;
@@ -120,7 +133,9 @@ export function renderInvoice(payload: InvoicePayload): Buffer {
   header(
     page,
     payload.society,
-    payload.kind === 'tax-invoice' ? 'TAX INVOICE' : 'PROFORMA INVOICE',
+    payload.openingLabel !== undefined
+      ? 'STATEMENT OF OPENING DUES'
+      : payload.kind === 'tax-invoice' ? 'TAX INVOICE' : 'PROFORMA INVOICE',
   );
 
   // Two columns: who it is for, and what it is.
@@ -141,9 +156,14 @@ export function renderInvoice(payload: InvoicePayload): Buffer {
     page.textRight(value, valueX, { y: detailY, size: 9.5, face: 'bold' });
     detailY -= 14;
   };
-  detail(payload.kind === 'tax-invoice' ? 'Invoice no.' : 'Proforma no.', payload.documentNo);
-  if (payload.kind === 'tax-invoice') detail('Raised from', payload.proformaNo);
-  detail('Period', payload.period);
+  if (payload.openingLabel !== undefined) {
+    detail('Reference', payload.documentNo);
+    detail('For', payload.openingLabel);
+  } else {
+    detail(payload.kind === 'tax-invoice' ? 'Invoice no.' : 'Proforma no.', payload.documentNo);
+    if (payload.kind === 'tax-invoice') detail('Raised from', payload.proformaNo);
+    detail('Period', payload.period);
+  }
   detail('Issued', payload.issuedOn);
   detail('Due', payload.dueOn);
 
@@ -199,7 +219,21 @@ export function renderInvoice(payload: InvoicePayload): Buffer {
   page.line(taxableX - 92, page.cursor + 10, amountRight - 6, page.cursor + 10, 0.6);
   total('Total payable', payload.gross, true);
 
-  if (payload.kind === 'tax-invoice') {
+  if (payload.openingLabel !== undefined) {
+    page.down(8);
+    page.text(
+      payload.outstanding <= 0
+        ? 'Settled in full. Nothing outstanding.'
+        : `Outstanding: INR ${money(payload.outstanding)}`,
+      { size: 9.5, face: payload.outstanding > 0 ? 'bold' : 'regular' },
+    );
+    page.down(14);
+    page.text(
+      'What this flat owed when the association\u2019s accounts moved to this portal. It is not a ' +
+      'tax invoice and carries no GST; any tax was accounted for when the original bills were raised.',
+      { size: 9, grey: 0.3 },
+    );
+  } else if (payload.kind === 'tax-invoice') {
     page.down(8);
     page.text(
       payload.outstanding <= 0
@@ -224,9 +258,9 @@ export function renderInvoice(payload: InvoicePayload): Buffer {
   );
 
   return buildPdf([page], {
-    title: `${payload.kind === 'tax-invoice' ? 'Tax invoice' : 'Proforma'} ${payload.documentNo}`,
+    title: `${payload.openingLabel !== undefined ? 'Opening dues' : payload.kind === 'tax-invoice' ? 'Tax invoice' : 'Proforma'} ${payload.documentNo}`,
     author: payload.society.name,
-    subject: `Flat ${payload.flatNo}, ${payload.period}`,
+    subject: `Flat ${payload.flatNo}, ${payload.openingLabel ?? payload.period}`,
   });
 }
 
@@ -324,6 +358,7 @@ export async function invoicePayload(
     issued_on: string; due_on: string; gross: string; estimated_tax: string;
     flat_no: string; owner: string | null; outstanding: string;
     cgst: string; sgst: string; rate_bps: string | null; taxable_value: string | null;
+    opening_as_at: string | null;
   }>(
     `SELECT d.proforma_no, d.tax_invoice_no, d.period, d.state, d.issued_on::text,
             d.due_on::text, d.gross::text, d.estimated_tax::text, f.flat_no,
@@ -341,7 +376,8 @@ export async function invoicePayload(
             COALESCE(g.cgst, 0)::text AS cgst,
             COALESCE(g.sgst, 0)::text AS sgst,
             g.rate_bps::text AS rate_bps,
-            g.taxable_value::text AS taxable_value
+            g.taxable_value::text AS taxable_value,
+            (SELECT b.as_at::text FROM opening_balance_batches b WHERE b.id = d.opening_batch_id) AS opening_as_at
        FROM billing_documents d
        JOIN flats f ON f.id = d.flat_id
        LEFT JOIN gst_register g ON g.document_id = d.id
@@ -399,6 +435,9 @@ export async function invoicePayload(
     documentNo: isTaxInvoice ? (row.tax_invoice_no as string) : row.proforma_no,
     proformaNo: row.proforma_no,
     period: row.period,
+    ...(row.opening_as_at === null
+      ? {}
+      : { openingLabel: billPeriodLabel(row.period, row.proforma_no, row.opening_as_at) }),
     issuedOn: row.issued_on,
     dueOn: row.due_on,
     flatNo: row.flat_no,

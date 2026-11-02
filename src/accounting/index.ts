@@ -90,3 +90,5 @@ export {
   SNAPSHOT_VERSION, SnapshotError, migrate, parseSnapshot, restoreSnapshot,
   validateSnapshot, writeSnapshot,
 } from './snapshot';
+
+export { billPeriodLabel, billTitle, isOpeningDocument } from './billLabel';
