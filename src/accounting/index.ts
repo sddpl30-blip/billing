@@ -91,4 +91,4 @@ export {
   validateSnapshot, writeSnapshot,
 } from './snapshot';
 
-export { billPeriodLabel, billTitle, isOpeningDocument } from './billLabel';
+export { billPeriodLabel, billTitle, isOpeningDocument, openingLineLabel } from './billLabel';

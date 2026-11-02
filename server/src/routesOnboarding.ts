@@ -21,7 +21,7 @@ import {
   type FlatLineInput, type OpeningProblem,
 } from './openingBalances';
 import { applyAdvance, flatsWithAdvances } from './advances';
-import { readProfile, validateProfile, writeProfile } from './societyProfile';
+import { hasBankDetails, readProfile, validateProfile, writeProfile } from './societyProfile';
 import { isoDateInIndia } from '../../src/accounting/clock';
 
 export interface OnboardingRouteDependencies {
@@ -295,6 +295,10 @@ export function createOnboardingRoutes(deps: OnboardingRouteDependencies): Route
       address: v.string({ max: 500 }).optional(),
       contactEmail: v.string({ max: 320 }).optional(),
       contactPhone: v.string({ max: 20 }).optional(),
+      payBankName: v.string({ max: 100 }).optional(),
+      payBranch: v.string({ max: 100 }).optional(),
+      payAccountNo: v.string({ max: 30 }).optional(),
+      payIfsc: v.string({ max: 20 }).optional(),
     }));
     const upper = (s: string | undefined): string | null => blankToNull(s)?.toUpperCase().replace(/\s+/g, '') ?? null;
     const next = {
@@ -306,10 +310,22 @@ export function createOnboardingRoutes(deps: OnboardingRouteDependencies): Route
       address: blankToNull(input.address),
       contactEmail: blankToNull(input.contactEmail)?.toLowerCase() ?? null,
       contactPhone: blankToNull(input.contactPhone),
+      payBankName: blankToNull(input.payBankName),
+      payBranch: blankToNull(input.payBranch),
+      payAccountNo: blankToNull(input.payAccountNo)?.replace(/\s+/g, '') ?? null,
+      payIfsc: upper(input.payIfsc),
     };
     const problems = validateProfile(next);
     if (problems.length > 0) {
       throw new HttpError(400, problems.map(p => p.message).join(' '), problems);
+    }
+
+    if ([next.payBankName, next.payAccountNo, next.payIfsc, next.payBranch].some(x => x !== null)
+        && !(await hasBankDetails(pool))) {
+      throw badRequest(
+        'Bank details for invoices need database migration 012. Run docs/neon/012-apply.sql in Neon ' +
+        '(societybooks database) once, then save again.',
+      );
     }
 
     const result = await pool.transaction(async (tx) => {

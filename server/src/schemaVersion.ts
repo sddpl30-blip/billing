@@ -13,7 +13,7 @@
  */
 
 /** The newest migration: with it applied, every feature of this build works. */
-export const EXPECTED_SCHEMA_VERSION = '011_login_emails.sql';
+export const EXPECTED_SCHEMA_VERSION = '012_opening_dues_and_pi_details.sql';
 
 /**
  * The oldest schema the books can be opened on. Below it, health is degraded

@@ -19,7 +19,7 @@ import type { PgPool, Queryable } from './pg';
 import type { Logger } from './logger';
 import type { EmailProvider } from './providers/email';
 import { convertToTaxInvoice } from './posting';
-import { runBilling } from './billing';
+import { alignDueDatesOnRelease, runBilling } from './billing';
 import { generateDocument } from './documents';
 import { gstTreatment, invoicePrefix } from './settings';
 import { audit } from './audit';
@@ -343,6 +343,7 @@ const scheduledRelease: Handler = async (job, ctx) => {
     const withoutAnAddress: string[] = [];
     for (const document of documents.rows) {
       await tx.query(`UPDATE billing_documents SET state = 'released' WHERE id = $1`, [document.id]);
+      await alignDueDatesOnRelease(tx, { societyId, documentId: document.id, releasedOn: ctx.now() });
       if (document.owner_email === null) {
         withoutAnAddress.push(document.flat_no);
         await tx.query(

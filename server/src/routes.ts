@@ -38,10 +38,10 @@ import {
   payVendor, recordReceipt, remitTds, reverseEntry, tdsQuarter,
 } from './posting';
 import { formatRupees, percentOf } from '../../src/accounting/money';
-import { listDocuments, runBilling } from './billing';
-import { cancellationCreditNote } from './documents';
+import { alignDueDatesOnRelease, listDocuments, runBilling } from './billing';
+import { cancellationCreditNote, generateDocument } from './documents';
 import { allocateNumber, lockFlatBalance } from './series';
-import { isoDateInIndia } from '../../src/accounting/clock';
+import { canonicalPeriod, isoDateInIndia } from '../../src/accounting/clock';
 import {
   ageing, balanceSheet, collectionSummary, gstSummary, incomeAndExpenditure, memberStatement,
   tdsSummary, trialBalance,
@@ -817,9 +817,9 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     const result = await pool.transaction(async (tx) => {
       const found = await tx.query<{
         proforma_no: string; state: string; period: string; gross: string;
-        flat_no: string; owner_email: string | null;
+        flat_no: string; owner_email: string | null; due_on: string;
       }>(
-        `SELECT d.proforma_no, d.state, d.period, d.gross::text, f.flat_no,
+        `SELECT d.proforma_no, d.state, d.period, d.gross::text, f.flat_no, d.due_on::text,
                 (SELECT o.email FROM flat_ownership fo
                    JOIN owners o ON o.id = fo.owner_id
                   WHERE fo.flat_id = d.flat_id AND fo.role = 'owner' AND fo.held_until IS NULL
@@ -832,6 +832,16 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
       if (doc === undefined) throw notFound('That document');
       if (doc.state === 'draft') throw conflict('That document has not been approved yet.');
       if (doc.state === 'cancelled') throw conflict('That document was cancelled.');
+
+      // Released first, so the flat's unpaid arrears fall due ten days (the
+      // society's days to pay) from today before the member is told.
+      let aligned: { dueOn: string; openingMoved: number } | null = null;
+      if (doc.state === 'approved') {
+        await tx.query(`UPDATE billing_documents SET state = 'released' WHERE id = $1`, [ctx.params.id]);
+        aligned = await alignDueDatesOnRelease(tx, {
+          societyId: principal.societyId, documentId: ctx.params.id, releasedOn: isoDateInIndia(),
+        });
+      }
 
       let delivered = false;
       let channel = input.channel;
@@ -851,18 +861,34 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
           failure = 'provider-not-configured';
         } else {
           try {
+            // The proforma itself, as the member will keep it.
+            const generated = await generateDocument(tx, {
+              societyId: principal.societyId, kind: 'proforma', documentId: ctx.params.id,
+              // A fresh copy on first release, so it carries the due date
+              // just set; a resend serves the copy already on file.
+              asAt: isoDateInIndia(), reprint: aligned === null,
+            });
+            const dueText = doc.due_on;
             const sent = await deps.email.send({
               to: doc.owner_email,
-              subject: `Maintenance bill ${doc.proforma_no} — flat ${doc.flat_no}, ${doc.period}`,
+              subject: `Proforma invoice ${doc.proforma_no} — unit ${doc.flat_no}, ${doc.period}`,
               text:
-                `Proforma ${doc.proforma_no} for flat ${doc.flat_no}, ${doc.period}.\n` +
-                `Amount: ${(Number(doc.gross) / 100).toFixed(2)} INR.\n` +
-                `This is a proforma invoice. A tax invoice is issued on payment or on the due date.`,
+                `Dear member,\n\nPlease find attached proforma invoice ${doc.proforma_no} for unit ` +
+                `${doc.flat_no}, maintenance for ${doc.period}.\n` +
+                `Amount: INR ${(Number(doc.gross) / 100).toFixed(2)} (plus any previous outstanding shown on the invoice).\n` +
+                (dueText === null ? '' : `Please pay by ${dueText}.\n`) +
+                'Kindly quote the PI number and unit number in the payment narration.\n\n' +
+                'This is a proforma invoice. A tax invoice is issued on payment or on the due date.',
+              attachments: [{
+                filename: `${doc.proforma_no.replace(/[^A-Za-z0-9.-]/g, '-')}.pdf`,
+                contentType: 'application/pdf',
+                body: generated.pdf,
+              }],
             });
             // Only now, and only because a provider said so.
             delivered = true;
             providerId = sent.providerMessageId;
-            note = `Emailed via ${sent.provider}.`;
+            note = `Emailed via ${sent.provider}, with the proforma attached.`;
           } catch (err) {
             failure = err instanceof Error ? err.message : 'send failed';
             note = `The provider refused the message: ${failure}`;
@@ -878,9 +904,6 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
          VALUES ($1,$2,$3,$4,$5,$6,$7)`,
         [ctx.params.id, principal.userId, channel, delivered, providerId, failure, note],
       );
-      if (doc.state === 'approved') {
-        await tx.query(`UPDATE billing_documents SET state = 'released' WHERE id = $1`, [ctx.params.id]);
-      }
       await audit(tx, {
         societyId: principal.societyId,
         actorUser: principal.userId,
@@ -888,11 +911,14 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
         action: 'billing.release',
         subjectTable: 'billing_documents',
         subjectId: ctx.params.id,
-        detail: { channel, delivered, failure },
+        detail: { channel, delivered, failure, ...(aligned === null ? {} : { dueOn: aligned.dueOn, openingDueMoved: aligned.openingMoved }) },
         requestId: ctx.requestId,
       });
 
-      return { delivered, channel, note };
+      return {
+        delivered, channel, note,
+        ...(aligned === null ? {} : { arrearsDueOn: aligned.dueOn, arrearsMoved: aligned.openingMoved }),
+      };
     });
 
     return ok({ id: ctx.params.id, state: 'released', ...result });
@@ -1045,6 +1071,53 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     });
 
     return ok({ id: ctx.params.id, state: 'cancelled', ...result });
+  });
+
+  /**
+   * Cancels every proforma of one period that has not gone out: drafts and
+   * approved-but-unreleased proformas, which have posted nothing and reached
+   * nobody. For a run made for the wrong month, so the office does not cancel
+   * 179 documents one at a time. Released, converted and opening documents are
+   * left alone; each of those has its own route.
+   */
+  const cancelUnsentPeriod = route('POST', '/api/billing/periods/:period/cancel-unsent', async (ctx) => {
+    const principal = need(ctx, 'billing.cancel');
+    const input = ctx.body(v.object({ reason: v.text({ max: 500 }) }));
+    if (input.reason.trim() === '') throw badRequest('A cancellation needs a reason.');
+    const period = canonicalPeriod(ctx.params.period);
+    if (period === null) throw badRequest(`"${ctx.params.period}" is not a period such as "Oct 2026".`);
+
+    const cancelled = await pool.transaction(async (tx) => {
+      const rows = await tx.query<{ id: string; proforma_no: string }>(
+        `UPDATE billing_documents
+            SET state = 'cancelled', cancelled_by = $1, cancelled_reason = $2
+          WHERE society_id = $3 AND period = $4
+            AND state IN ('draft', 'approved')
+            AND posted_entry_id IS NULL AND opening_batch_id IS NULL
+          RETURNING id, proforma_no`,
+        [principal.userId, input.reason.trim(), principal.societyId, period],
+      );
+      await audit(tx, {
+        societyId: principal.societyId,
+        actorUser: principal.userId,
+        actorLabel: principal.email,
+        action: 'billing.cancel-unsent',
+        subjectTable: 'billing_documents',
+        subjectId: period,
+        detail: { reason: input.reason.trim(), cancelled: rows.rows.length },
+        requestId: ctx.requestId,
+      });
+      return rows.rows.length;
+    });
+
+    return ok({
+      period,
+      cancelled,
+      note: cancelled === 0
+        ? `No unsent proforma for ${period} was found, so nothing was cancelled.`
+        : `${cancelled} unsent proforma${cancelled === 1 ? '' : 's'} for ${period} cancelled. ` +
+          'Nothing had been posted or sent, so nothing else changes.',
+    });
   });
 
   // --- money in ------------------------------------------------------------
@@ -2631,7 +2704,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     getSettings, putSetting, approveSetting,
     listRates, addRate, approveRate,
     billingRun, listBillingDocuments, approveDocument, releaseDocument, convertDocument,
-    cancelDocument,
+    cancelDocument, cancelUnsentPeriod,
     recordPayment, importPayments, listPayments, reversePayment,
     listVendors, addVendor, addVendorBill, listVendorBills, approveVendorBill,
     bookVendorBillRoute, payVendorBill, remitTdsRoute,

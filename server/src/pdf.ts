@@ -74,6 +74,7 @@ function literal(text: string): string {
     else if (character === '“' || character === '”') out += '"';
     else if (character === '—' || character === '–') out += '-';
     else if (character === '·') out += '-';
+    else if (character === '•') out += '\x95';
     else if (character === '₹') out += 'INR ';
     else out += '?';
   }
@@ -156,9 +157,52 @@ export class PdfPage {
     return this;
   }
 
+  /**
+   * Draws an image registered with `buildPdf` under `name` (a JPEG), with
+   * its bottom-left corner at (x, y).
+   */
+  image(name: string, x: number, y: number, width: number, height: number): this {
+    this.parts.push(
+      `q ${width.toFixed(2)} 0 0 ${height.toFixed(2)} ${x.toFixed(2)} ${y.toFixed(2)} cm /${name} Do Q`,
+    );
+    return this;
+  }
+
+  /** A stroked rectangle, for the boxes a form-like document is drawn in. */
+  frame(x: number, y: number, width: number, height: number, grey = 0.55, lineWidth = 0.6): this {
+    this.parts.push(
+      `${grey} G ${lineWidth} w ${x.toFixed(2)} ${y.toFixed(2)} ${width.toFixed(2)} ${height.toFixed(2)} re S`,
+    );
+    return this;
+  }
+
   content(): string {
     return this.parts.join('\n');
   }
+}
+
+/** A JPEG to place on pages: its bytes and its size in pixels. */
+export interface PdfImage {
+  readonly jpeg: Buffer;
+  readonly widthPx: number;
+  readonly heightPx: number;
+}
+
+/** Splits text into lines no wider than `width` at `size`. */
+export function wrapText(text: string, width: number, size: number, face: Face = 'regular'): string[] {
+  const lines: string[] = [];
+  let current = '';
+  for (const word of text.split(/\s+/).filter(w => w !== '')) {
+    const next = current === '' ? word : `${current} ${word}`;
+    if (current !== '' && textWidth(next, size, face) > width) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  if (current !== '') lines.push(current);
+  return lines;
 }
 
 /**
@@ -170,6 +214,7 @@ export class PdfPage {
 export function buildPdf(
   pages: readonly PdfPage[],
   meta: { title: string; author: string; subject?: string },
+  images: Readonly<Record<string, PdfImage>> = {},
 ): Buffer {
   if (pages.length === 0) throw new Error('a PDF needs at least one page');
 
@@ -187,10 +232,23 @@ export function buildPdf(
     mono: add(`<< /Type /Font /Subtype /Type1 /BaseFont /${FONTS.mono.base} /Encoding /WinAnsiEncoding >>`),
   };
 
+  // Images as XObjects, their bytes carried as latin1 so each byte survives
+  // the string assembly below unchanged.
+  const imageRefs = Object.entries(images).map(([name, image]) => {
+    const number = add(
+      `<< /Type /XObject /Subtype /Image /Width ${image.widthPx} /Height ${image.heightPx} ` +
+      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.jpeg.length} >>\n` +
+      `stream\n${image.jpeg.toString('latin1')}\nendstream`,
+    );
+    return `/${name} ${number} 0 R`;
+  });
+
   const resources =
     `<< /Font << /${FONTS.regular.key} ${fontNumbers.regular} 0 R ` +
     `/${FONTS.bold.key} ${fontNumbers.bold} 0 R ` +
-    `/${FONTS.mono.key} ${fontNumbers.mono} 0 R >> >>`;
+    `/${FONTS.mono.key} ${fontNumbers.mono} 0 R >>` +
+    (imageRefs.length === 0 ? '' : ` /XObject << ${imageRefs.join(' ')} >>`) +
+    ' >>';
 
   const pageNumbers: number[] = [];
   for (const page of pages) {

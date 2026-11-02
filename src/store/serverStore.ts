@@ -78,6 +78,43 @@ export interface ServerBooksStore extends BooksReader {
   receiptPdf(receiptNo: string): Promise<Blob>;
 }
 
+/**
+ * The configuration the screens describe, as the server holds it. The engine
+ * keeps DEMO_CONFIG to rebuild its ledger from postings the server already
+ * decided; but the Books screen lists the tax settings under "Not yet
+ * confirmed by a CA", and on the server those are the society's own figures
+ * from Settings & GST, approved or not — never the demo's "DEMO VALUE" notes.
+ */
+function configAsOnServer(view: SnapshotResponse): AccountingConfig {
+  const gst = view.settings.gst;
+  const approval = gst.approved
+    ? 'Set in Office → Approvals & admin → Settings & GST, and approved by the treasurer.'
+    : 'Set in Office → Approvals & admin → Settings & GST; waiting for the treasurer\'s approval.';
+  const tdsBasis = 'Entered on each vendor bill (Office → Vendors & notes) at the rate your CA confirms for that payee.';
+  return {
+    ...DEMO_CONFIG,
+    gstOnMaintenance: gst.chargeGst,
+    gst: { rate: gst.ratePercent, effectiveFrom: DEMO_CONFIG.gst.effectiveFrom, basis: approval },
+    gstMemberThresholdRupees: gst.memberThresholdRupees ?? DEMO_CONFIG.gstMemberThresholdRupees,
+    gstSinkingFundTaxable: gst.sinkingFundTaxable === true,
+    gstRoundToRupee: gst.roundToRupee === true,
+    tds: {
+      contractor194C: { ...DEMO_CONFIG.tds.contractor194C, basis: tdsBasis },
+      professional194J: { ...DEMO_CONFIG.tds.professional194J, basis: tdsBasis },
+      rent194I: { ...DEMO_CONFIG.tds.rent194I, basis: tdsBasis },
+    },
+    billing: { ...DEMO_CONFIG.billing, dueAfterDays: view.settings.dueDays },
+    ...(view.rate === null ? {} : {
+      maintenance: {
+        ...DEMO_CONFIG.maintenance,
+        ratePerSqFt: view.rate.ratePerSqFt,
+        areaBasis: view.rate.basis as AccountingConfig['maintenance']['areaBasis'],
+        basis: `${view.rate.authority}${view.rate.approved ? ' (approved)' : ' (awaiting approval)'}`,
+      },
+    }),
+  };
+}
+
 export function createServerStore(options: ServerStoreOptions): ServerBooksStore {
   // The same configuration object the local store uses. It carries tax rates
   // and the sinking-fund treatment; the server is the authority on both and
@@ -119,7 +156,7 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
     register,
     vendorBills,
     today: options.clock.today(),
-    config,
+    config: view === null ? config : configAsOnServer(view),
     problems,
     ready,
     storageNote: context === null

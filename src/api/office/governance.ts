@@ -451,6 +451,11 @@ export interface SocietyProfile {
   readonly address: string | null;
   readonly contactEmail: string | null;
   readonly contactPhone: string | null;
+  /** The account members pay into, printed on proforma invoices. Absent from older servers. */
+  readonly payBankName?: string | null;
+  readonly payBranch?: string | null;
+  readonly payAccountNo?: string | null;
+  readonly payIfsc?: string | null;
   readonly canEdit: boolean;
 }
 
