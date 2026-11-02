@@ -4,6 +4,7 @@ import { Invoice } from '../types';
 import { formatRupee } from '../utils';
 import { Dialog } from './Dialog';
 import { downloadInvoice } from '../invoiceExport';
+import { billPeriodLabel } from '../accounting/billLabel';
 
 interface InvoiceDetailModalProps {
   invoice: Invoice | null;
@@ -119,7 +120,7 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
             </div>
             <div>
               <p className="text-[10px] font-semibold text-[var(--mv-muted)] uppercase tracking-tight">Billing Cycle</p>
-              <p className="font-bold text-[var(--mv-ink)] mt-0.5">{invoice.period}</p>
+              <p className="font-bold text-[var(--mv-ink)] mt-0.5">{billPeriodLabel(invoice.period, invoice.invoiceNo)}</p>
             </div>
             <div>
               <p className="text-[10px] font-semibold text-[var(--mv-muted)] uppercase tracking-tight">Flat Number</p>

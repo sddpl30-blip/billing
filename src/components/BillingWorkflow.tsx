@@ -1,6 +1,6 @@
 import React from 'react';
 import { Check, Clock, FileText, Send, AlertCircle, CheckCircle } from 'lucide-react';
-import { formatRupees, type RegisterView } from '../accounting';
+import { billPeriodLabel, formatRupees, type RegisterView } from '../accounting';
 
 /**
  * The billing document workflow: draft, approved, released, tax invoice.
@@ -164,7 +164,7 @@ export const BillingWorkflow: React.FC<Props> = ({
                 </div>
                 <div className="flex justify-between items-center gap-2">
                   <span className="text-[9px] text-[var(--mv-muted)] font-medium truncate">
-                    {doc.flatNo} · {doc.period} · due {doc.dueOn}
+                    {doc.flatNo} · {billPeriodLabel(doc.period, doc.taxInvoiceNo ?? doc.proformaNo)} · due {doc.dueOn}
                   </span>
                   <span
                     className={`text-[8px] font-bold uppercase px-1.5 py-0.5 rounded border shrink-0 ${STATE_STYLE[doc.state]}`}

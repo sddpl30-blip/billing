@@ -25,6 +25,7 @@ const { seed } = await import(`${build}/seed.js`);
 const { PgPool, connectionFromEnv } = await import(`${build}/pg.js`);
 const { runDueJobs, backoffMinutes, sendQueuedEmails } = await import(`${build}/jobs.js`);
 const { brevoProvider } = await import(`${build}/providers/brevo.js`);
+const { billPeriodLabel, billTitle } = await import(`${build}/../../src/accounting/billLabel.js`);
 const { createLogger } = await import(`${build}/logger.js`);
 const { createProductionSociety, AlreadyBootstrappedError } = await import(`${build}/bootstrap.js`);
 const { resolveEmailProvider } = await import(`${build}/providers/email.js`);
@@ -4451,6 +4452,40 @@ await check('an opening due is not cancelled on its own, and carries no GST row 
   );
   truthy(!db.ok, 'the register refused it');
   matches(db.out, /not a supply/, 'the reason');
+});
+
+await check('an opening due reads as "Opening dues (up to …)", on screen and on its PDF, not as a tax invoice', async () => {
+  equal(billPeriodLabel('Oct 2026', 'OB/1/00142'), 'Opening dues (up to Sep 2026)', 'cut-over on the 1st');
+  equal(billPeriodLabel('Sep 2026', 'OB/1/00001', '2026-09-30'), 'Opening dues (up to 30 Sep 2026)', 'cut-over at a month end');
+  equal(billPeriodLabel('Oct 2026', 'PI/2026-10/0001'), 'Oct 2026', 'an ordinary bill is unchanged');
+  equal(billTitle('Oct 2026', 'MV/2026/00012'), 'Oct 2026 Maintenance', 'an ordinary title');
+
+  const docs = await oManager.get(`/api/flats/${oFlat('A-101').id}/dues?asAt=2026-10-01`);
+  const due = docs.body.invoices[0];
+  const snapshot = await oManager.get('/api/books/snapshot');
+  equal(snapshot.body.openingAsAt[due.taxInvoiceNo], OPENING_AS_AT, 'the screens are told the opening date');
+
+  const response = await fetch(`${base}/api/billing/documents/${due.documentId}/pdf`, {
+    headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') },
+  });
+  equal(response.status, 200, 'status');
+  const text = Buffer.from(await response.arrayBuffer()).toString('latin1');
+  matches(text, /STATEMENT OF OPENING DUES/, 'its own heading');
+  // PDF strings escape brackets as \( and \).
+  matches(text, /Opening dues \\?\(up to 30 Sep 2026\\?\)/, 'what it is for');
+  matches(text, /not a\s/, 'says it is not a tax invoice');
+  truthy(!/TAX INVOICE/.test(text), 'never headed TAX INVOICE');
+
+  // A copy saved before this label existed is re-rendered from its stored
+  // payload, which has no label: the OB/ number alone must still relabel it.
+  psql(`UPDATE generated_documents SET render_payload = render_payload - 'openingLabel'
+         WHERE document_id = '${due.documentId}';`);
+  const reprint = await fetch(`${base}/api/billing/documents/${due.documentId}/pdf`, {
+    headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') },
+  });
+  const old = Buffer.from(await reprint.arrayBuffer()).toString('latin1');
+  matches(old, /STATEMENT OF OPENING DUES/, 'an older saved copy is relabelled too');
+  truthy(!/TAX INVOICE/.test(old), 'and is not headed TAX INVOICE');
 });
 
 await check('a correction is a reversal and a fresh batch, both audited', async () => {

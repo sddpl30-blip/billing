@@ -8,6 +8,7 @@
  */
 
 import type { Invoice } from './types';
+import { billPeriodLabel } from './accounting/billLabel';
 
 export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -35,7 +36,7 @@ export function invoiceSummaryText(invoice: Invoice): string {
        No GSTIN, because this is not a real document.
 ============================================================
 INVOICE NO: ${invoice.invoiceNo}
-BILLING CYCLE: ${invoice.period}
+BILLING CYCLE: ${billPeriodLabel(invoice.period, invoice.invoiceNo)}
 FLAT: ${invoice.flatNo} | OWNER: ${invoice.name}
 DUE DATE: ${invoice.dueDate}
 ============================================================

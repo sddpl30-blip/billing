@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
-import { formatRupees } from '../../../accounting';
+import { billPeriodLabel, formatRupees } from '../../../accounting';
 import { money, type InvoiceNote, type TaxInvoice } from '../../../api/office/money';
 import { problemOf, type OfficeContext } from '../types';
 import {
@@ -123,7 +123,7 @@ function IssueNoteDialog({ ctx, onClose, onDone }: {
               <select id="note-invoice" data-autofocus className={inputClass} value={documentId} onChange={e => setDocumentId(e.target.value)}>
                 {invoices.map(i => (
                   <option key={i.id} value={i.id}>
-                    {i.taxInvoiceNo} · flat {i.flatNo} · {i.period} · {formatRupees(i.gross)}
+                    {i.taxInvoiceNo} · flat {i.flatNo} · {billPeriodLabel(i.period, i.taxInvoiceNo)} · {formatRupees(i.gross)}
                   </option>
                 ))}
               </select>

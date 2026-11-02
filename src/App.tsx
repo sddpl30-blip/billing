@@ -75,6 +75,7 @@ import { ScheduledRelease } from './components/ScheduledRelease';
 import { BulkPaymentsUpload } from './components/BulkPaymentsUpload';
 import { NoticeBoard } from './components/NoticeBoard';
 import { isoDateInIndia, periodLabel } from './accounting/clock';
+import { billPeriodLabel, billTitle, isOpeningDocument } from './accounting/billLabel';
 import { LoginScreen } from './components/LoginScreen';
 import { ThemeSwitcher } from './components/ThemeSwitcher';
 import { downloadInvoice, pdfFilename, saveBlob } from './invoiceExport';
@@ -720,7 +721,7 @@ export default function App() {
     registerDocuments
       .filter(d => d.flatNo === flatNo && d.state === 'tax-invoice' && d.outstanding > 0)
       .sort((a, b) => a.dueOn.localeCompare(b.dueOn))
-      .map(d => ({ proformaNo: d.proformaNo, label: `${d.taxInvoiceNo ?? d.proformaNo} (${d.period})`, outstanding: d.outstanding }));
+      .map(d => ({ proformaNo: d.proformaNo, label: `${d.taxInvoiceNo ?? d.proformaNo} (${billPeriodLabel(d.period, d.taxInvoiceNo ?? d.proformaNo)})`, outstanding: d.outstanding }));
 
   /** Whether this account may record a receipt. In demo every view may. */
   const mayRecordReceipts = !onServer || booksSource.can('payment.record');
@@ -2158,7 +2159,7 @@ export default function App() {
                                 className="flex items-center justify-between p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] hover:bg-[var(--mv-soft)] transition-all cursor-pointer text-xs"
                               >
                                 <div className="min-w-0 flex-1 pr-2">
-                                  <p className="font-bold text-[var(--mv-ink)] truncate">{inv.period} Maintenance</p>
+                                  <p className="font-bold text-[var(--mv-ink)] truncate">{billTitle(inv.period, inv.invoiceNo)}</p>
                                   <p className="text-[9px] text-[var(--mv-muted)] uppercase mt-0.5 leading-none font-medium">{inv.paidDate || inv.dueDate || ''}</p>
                                 </div>
                                 <div className="text-right shrink-0">
@@ -2396,7 +2397,7 @@ export default function App() {
                               <div className="min-w-0 flex-1 pr-2">
                                 <span className="font-mono text-[9px] text-[var(--mv-muted)] font-bold tracking-tight block uppercase leading-none">Invoice No: {inv.invoiceNo}</span>
                                 <h4 className="font-extrabold text-[var(--mv-ink)] mt-1.5 text-xs truncate">
-                                  {inv.period} Maintenance {currentRole !== 'Resident' ? `(Flat ${inv.flatNo})` : ''}
+                                  {billTitle(inv.period, inv.invoiceNo)} {currentRole !== 'Resident' ? `(Flat ${inv.flatNo})` : ''}
                                 </h4>
                                 <p className="text-[9px] text-[var(--mv-muted)] font-bold mt-1 uppercase">Owner: {inv.name}</p>
                               </div>
@@ -2645,7 +2646,7 @@ export default function App() {
                                   .map(inv => (
                                     <div key={inv.id} className="py-3 flex justify-between items-center text-xs font-medium">
                                       <div>
-                                        <p className="font-extrabold text-[var(--mv-ink)]">{inv.period} Maintenance invoice assessment</p>
+                                        <p className="font-extrabold text-[var(--mv-ink)]">{billTitle(inv.period, inv.invoiceNo)}{isOpeningDocument(inv.invoiceNo) ? '' : ' invoice assessment'}</p>
                                         <p className="text-[9px] text-[var(--mv-muted)] font-bold uppercase mt-1">Invoice ID: {inv.invoiceNo}</p>
                                       </div>
                                       <div className="text-right flex items-center gap-3">
@@ -2726,7 +2727,7 @@ export default function App() {
                                       <span className="font-extrabold text-[var(--mv-ink)] text-sm">{inv.flatNo}</span>
                                       <span className="text-[10px] font-bold text-[var(--mv-accent)] bg-[var(--mv-accent-soft)] px-2 py-0.5 rounded-md truncate">{inv.name}</span>
                                     </div>
-                                    <span className="text-[10px] text-[var(--mv-muted)] block mt-1">Period Cycle: {inv.period} · Standard 30 days grace elapsed</span>
+                                    <span className="text-[10px] text-[var(--mv-muted)] block mt-1">Period Cycle: {billPeriodLabel(inv.period, inv.invoiceNo)} · Standard 30 days grace elapsed</span>
                                   </div>
                                   <div className="text-right flex items-center gap-3 shrink-0">
                                     <span className="font-bold font-mono text-red-700 text-xs">{formatRupee(inv.total)}</span>
@@ -3407,7 +3408,7 @@ export default function App() {
                           <div className="flex items-center gap-3">
                             <div className="w-10 h-10 bg-[var(--mv-surface)] rounded-lg flex items-center justify-center border border-[var(--mv-border)] font-bold text-[var(--mv-accent)]">₹</div>
                             <div className="text-left">
-                              <p className="text-sm font-bold text-[var(--mv-ink)]">{inv.period} Maintenance</p>
+                              <p className="text-sm font-bold text-[var(--mv-ink)]">{billTitle(inv.period, inv.invoiceNo)}</p>
                               <p className="text-[10px] text-[var(--mv-muted)] uppercase">{inv.paidDate || inv.dueDate || ''}</p>
                             </div>
                           </div>
@@ -3754,7 +3755,7 @@ export default function App() {
                           </div>
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-bold text-[var(--mv-ink)] truncate">
-                              {inv.period} Maintenance {currentRole !== 'Resident' ? `(${inv.flatNo})` : ''}
+                              {billTitle(inv.period, inv.invoiceNo)} {currentRole !== 'Resident' ? `(${inv.flatNo})` : ''}
                             </p>
                             <p className="text-[10px] text-[var(--mv-accent)] font-bold uppercase truncate">
                               Owner: <span className="text-[var(--mv-muted)] font-semibold">{inv.name}</span>
@@ -3892,14 +3893,14 @@ export default function App() {
                               <div key={inv.id} className="p-3 bg-[var(--mv-page)] rounded-xl border border-[var(--mv-border)] flex justify-between items-center text-xs">
                                 <div>
                                   <span className="font-mono text-[9px] font-bold text-[var(--mv-muted)]">{inv.invoiceNo}</span>
-                                  <h5 className="font-bold text-[var(--mv-ink)] mt-0.5">{inv.period} Maintenance Bill</h5>
+                                  <h5 className="font-bold text-[var(--mv-ink)] mt-0.5">{billTitle(inv.period, inv.invoiceNo)}{isOpeningDocument(inv.invoiceNo) ? '' : ' Bill'}</h5>
                                 </div>
                                 <div className="text-right flex items-center gap-2">
                                   <span className="font-mono font-bold text-[var(--mv-ink)]">{formatRupee(inv.total)}</span>
                                   {mayPayOnline && (
                                     <button
                                       onClick={() => handlePayClick(inv)}
-                                      aria-label={`Pay ${inv.period} bill`}
+                                      aria-label={`Pay ${billPeriodLabel(inv.period, inv.invoiceNo)} bill`}
                                       className="py-1 px-3 bg-[var(--mv-accent)] text-white font-bold rounded-lg text-[10px] shadow active:scale-95 cursor-pointer"
                                     >
                                       Pay
@@ -3990,7 +3991,7 @@ export default function App() {
                                     {inv.name}
                                   </span>
                                 </div>
-                                <span className="text-[9px] text-[var(--mv-muted)] block mt-1 font-medium">Period: {inv.period} • Grace period expired</span>
+                                <span className="text-[9px] text-[var(--mv-muted)] block mt-1 font-medium">Period: {billPeriodLabel(inv.period, inv.invoiceNo)} • Grace period expired</span>
                               </div>
                               <div className="text-right flex items-center gap-2 font-mono text-xs">
                                 <span className="font-extrabold text-[var(--mv-ink)]">{formatRupee(inv.total)}</span>
