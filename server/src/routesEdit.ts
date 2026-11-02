@@ -21,6 +21,10 @@ import { requirePermission, type Principal } from './rbac';
 import { audit } from './audit';
 import { recalculateProforma } from './billing';
 import { canonicalPeriod } from '../../src/accounting/clock';
+import { A, accountBalance, postEntry, type Leg } from './posting';
+import { lockFlatBalance } from './series';
+import { randomUUID } from 'node:crypto';
+import { formatRupees } from '../../src/accounting/money';
 
 export interface EditDependencies { readonly pool: PgPool }
 
@@ -311,5 +315,76 @@ export function createEditRoutes(deps: EditDependencies): RouteDefinition[] {
     return ok({ ...result, note: 'The rate is corrected and still waits for the treasurer\'s approval.' });
   });
 
-  return [editDocument, changeMonth, editFlat, correctOwner, correctFlatOwner, editRate];
+  /**
+   * Corrects one flat's opening due without reversing the whole batch: a
+   * dated adjustment entry between the flat's receivable and the same
+   * balancing (reserve) account the opening entry used, with the document's
+   * amount brought into line. The batch's own lines stay as posted (the database
+   * locks them); the audit trail and the adjustment entry carry the change. The due cannot go below what the flat has
+   * already paid against it. Every adjustment is audited.
+   */
+  const amendOpening = route('POST', '/api/billing/documents/:id/amend-opening', async (ctx) => {
+    const principal = who(ctx);
+    requirePermission(principal, 'billing.cancel');
+    const input = ctx.body(v.object({ newDuePaise: v.paise({ min: 1 }), on: v.isoDate(), reason: v.text({ max: 500 }) }));
+    if (input.reason.trim() === '') throw badRequest('Say why the opening due is being corrected.');
+    const result = await pool.transaction(async (tx) => {
+      const found = await tx.query<{
+        flat_id: string; flat_no: string; tax_invoice_no: string | null; gross: string; batch: string | null; as_at: string | null;
+      }>(
+        `SELECT d.flat_id, f.flat_no, d.tax_invoice_no, d.gross::text, d.opening_batch_id AS batch, b.as_at::text
+           FROM billing_documents d JOIN flats f ON f.id = d.flat_id
+           LEFT JOIN opening_balance_batches b ON b.id = d.opening_batch_id
+          WHERE d.id = $1 AND d.society_id = $2 FOR UPDATE OF d`,
+        [ctx.params.id, principal.societyId],
+      );
+      const d = found.rows[0];
+      if (d === undefined) throw notFound('That document');
+      if (d.batch === null || d.tax_invoice_no === null) throw conflict('This is not an opening due. Correct an issued invoice with a credit or debit note.');
+      if (d.as_at !== null && input.on < d.as_at) throw badRequest(`The correction cannot be dated before the opening date ${d.as_at}.`);
+      await lockFlatBalance(tx, { societyId: principal.societyId, flatId: d.flat_id });
+
+      const oldDue = Number(d.gross);
+      const outstanding = await accountBalance(tx, { societyId: principal.societyId, code: A.MAINTENANCE_RECEIVABLE, docRef: d.tax_invoice_no });
+      const paid = oldDue - outstanding;
+      if (input.newDuePaise < paid) {
+        throw badRequest(`${d.flat_no} has already paid ${formatRupees(paid)} against this due, so it cannot be corrected below that.`);
+      }
+      const diff = input.newDuePaise - oldDue;
+      if (diff === 0) throw badRequest('That is the same amount as now.');
+
+      const reserve = await tx.query<{ account_code: string }>(
+        `SELECT account_code FROM opening_balance_account_lines WHERE batch_id = $1 AND is_balancing LIMIT 1`, [d.batch],
+      );
+      const balancing = reserve.rows[0]?.account_code ?? A.GENERAL_RESERVE;
+      const up = diff > 0;
+      const amount = Math.abs(diff);
+      const legs: Leg[] = [
+        { accountCode: A.MAINTENANCE_RECEIVABLE, debit: up ? amount : 0, credit: up ? 0 : amount, party: d.flat_no, docRef: d.tax_invoice_no, memo: `Opening due corrected: ${input.reason.slice(0, 80)}` },
+        { accountCode: balancing, debit: up ? 0 : amount, credit: up ? amount : 0, docRef: d.tax_invoice_no, memo: 'Opening due correction' },
+      ];
+      const entryId = await postEntry(tx, {
+        societyId: principal.societyId, entryDate: input.on,
+        narration: `Opening due ${d.tax_invoice_no} (flat ${d.flat_no}) corrected from ${formatRupees(oldDue)} to ${formatRupees(input.newDuePaise)}: ${input.reason}`,
+        sourceKind: 'opening-balance', sourceRef: `${d.tax_invoice_no}/adj-${randomUUID().slice(0, 8)}`,
+        idempotencyKey: `opening-correction:${randomUUID()}`,
+        postedBy: principal.userId, postedByLabel: principal.email, legs,
+      });
+      await tx.query('UPDATE billing_documents SET gross = $2 WHERE id = $1', [ctx.params.id, input.newDuePaise]);
+      await tx.query('UPDATE billing_document_lines SET amount = $2 WHERE document_id = $1', [ctx.params.id, input.newDuePaise]);
+      await audit(tx, {
+        societyId: principal.societyId, actorUser: principal.userId, actorLabel: principal.email,
+        action: 'opening.amend', subjectTable: 'billing_documents', subjectId: ctx.params.id,
+        detail: { flat: d.flat_no, from: oldDue, to: input.newDuePaise, entryId, reason: input.reason.trim() },
+        requestId: ctx.requestId,
+      });
+      return { flat: d.flat_no, from: oldDue, to: input.newDuePaise };
+    });
+    return ok({
+      ...result,
+      note: `Opening due for flat ${result.flat} corrected from ${formatRupees(result.from)} to ${formatRupees(result.to)}. The books and the bill both show the new figure, and the change is on the audit trail.`,
+    });
+  });
+
+  return [editDocument, changeMonth, editFlat, correctOwner, correctFlatOwner, editRate, amendOpening];
 }

@@ -1,9 +1,12 @@
 import { useMemo, useState } from 'react';
 import { listFlats, listRates, type AreaBasis } from '../../../api/office/governance';
 import type { OfficeContext } from '../types';
-import { Button, Card, LoadState, inputClass, labelClass, useLoad, useWrite } from './ui';
+import { Button, Card, LoadState, inputClass, labelClass, todayInIndia, useLoad, useWrite } from './ui';
 
-interface BillRow { id: string; proformaNo: string; flatNo: string; period: string; dueOn: string; state: string; gross: number }
+interface BillRow {
+  id: string; proformaNo: string; taxInvoiceNo: string | null; flatNo: string; period: string; dueOn: string;
+  state: string; gross: number; outstanding: number; lines: ReadonlyArray<{ head: string; amount: number }>;
+}
 
 /**
  * Corrections in place. Every record has an edit path that keeps the audit
@@ -14,12 +17,13 @@ interface BillRow { id: string; proformaNo: string; flatNo: string; period: stri
 export function CorrectionsSection({ ctx }: { ctx: OfficeContext }) {
   const flats = useLoad(() => listFlats(ctx.client), [ctx]);
   const rates = useLoad(() => listRates(ctx.client), [ctx]);
-  const bills = useLoad(
-    async () => (await ctx.client.get<{ documents: BillRow[] }>('/api/billing/documents')).documents
-      .filter(d => d.state === 'draft' || d.state === 'approved'),
+  const allDocs = useLoad(
+    async () => (await ctx.client.get<{ documents: BillRow[] }>('/api/billing/documents')).documents,
     [ctx],
   );
-  const { busy, run } = useWrite(ctx, async () => { await Promise.all([flats.refresh(), rates.refresh(), bills.refresh()]); });
+  const bills = { ...allDocs, data: allDocs.data === null ? null : allDocs.data.filter(d => d.state === 'draft' || d.state === 'approved') };
+  const issued = (allDocs.data ?? []).filter(d => d.state === 'tax-invoice' && d.taxInvoiceNo !== null);
+  const { busy, run } = useWrite(ctx, async () => { await Promise.all([flats.refresh(), rates.refresh(), allDocs.refresh()]); });
 
   const mayBills = ctx.can('billing.run');
   const mayFlats = ctx.can('member.manage');
@@ -34,6 +38,12 @@ export function CorrectionsSection({ ctx }: { ctx: OfficeContext }) {
   const [fromMonth, setFromMonth] = useState(''); const [toMonth, setToMonth] = useState(''); const [monthWhy, setMonthWhy] = useState('');
   const [billId, setBillId] = useState(''); const [billDue, setBillDue] = useState(''); const [billWhy, setBillWhy] = useState('');
   const [billRecalc, setBillRecalc] = useState(true);
+  // --- issued invoices and opening dues
+  const [issuedId, setIssuedId] = useState(''); const [newAmount, setNewAmount] = useState(''); const [issuedWhy, setIssuedWhy] = useState('');
+  const picked = issued.find(d => d.id === issuedId);
+  const isOpening = picked?.taxInvoiceNo?.startsWith('OB/') === true;
+  const pickedMaint = picked === undefined ? 0 : picked.lines.filter(l => l.head === 'maintenance').reduce((a, l) => a + l.amount, 0);
+  const pickedTax = picked === undefined ? 0 : picked.gross - picked.lines.reduce((a, l) => a + l.amount, 0);
   // --- flats
   const [flatId, setFlatId] = useState(''); const [area, setArea] = useState(''); const [basis, setBasis] = useState<AreaBasis | ''>('');
   const [flatWhy, setFlatWhy] = useState('');
@@ -108,6 +118,49 @@ export function CorrectionsSection({ ctx }: { ctx: OfficeContext }) {
             </div>
             <Button tone="primary" type="submit" disabled={busy !== null || billId === '' || billWhy.trim() === ''}>{busy === 'bill' ? 'Saving…' : 'Save correction'}</Button>
           </form>
+        </Card>
+      )}
+
+      {mayBills && (
+        <Card title="Correct an issued invoice or an opening due">
+          <form className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end" onSubmit={e => {
+            e.preventDefault();
+            if (picked === undefined) return;
+            const rupees = Math.round(Number(newAmount) * 100);
+            const on = todayInIndia();
+            if (isOpening) {
+              void run('issued', post(`/api/billing/documents/${picked.id}/amend-opening`, { newDuePaise: rupees, on, reason: issuedWhy }), noteOf);
+            } else {
+              const diff = rupees - pickedMaint;
+              if (diff === 0) { ctx.toast('That is the same amount as now.', 'error'); return; }
+              void run('issued', post(`/api/billing/documents/${picked.id}/notes`, {
+                kind: diff < 0 ? 'credit' : 'debit', amountPaise: Math.abs(diff), reason: issuedWhy, on, withTax: pickedTax > 0,
+              }), r => `${(r as { noteNo: string }).noteNo} issued against ${picked.taxInvoiceNo}; the books and GST register follow it.`);
+            }
+          }}>
+            <div>
+              <label htmlFor="cx-issued" className={labelClass}>Invoice or opening due</label>
+              <select id="cx-issued" className={inputClass} value={issuedId} onChange={e => {
+                setIssuedId(e.target.value);
+                const d = issued.find(x => x.id === e.target.value);
+                const base = d === undefined ? 0 : d.taxInvoiceNo?.startsWith('OB/') ? d.gross : d.lines.filter(l => l.head === 'maintenance').reduce((a, l) => a + l.amount, 0);
+                setNewAmount(d === undefined ? '' : String(base / 100));
+              }}>
+                <option value="">Choose…</option>
+                {issued.map(d => <option key={d.id} value={d.id}>{d.flatNo} · {d.taxInvoiceNo}</option>)}
+              </select>
+            </div>
+            {field('cx-new-amount', isOpening ? 'Correct opening due (₹)' : 'Correct maintenance, before GST (₹)', newAmount, setNewAmount, { type: 'number' })}
+            {field('cx-issued-why', 'Reason', issuedWhy, setIssuedWhy)}
+            <Button tone="primary" type="submit" disabled={busy !== null || picked === undefined || newAmount === '' || issuedWhy.trim() === ''}>
+              {busy === 'issued' ? 'Saving…' : isOpening ? 'Correct opening due' : 'Issue the note'}
+            </Button>
+          </form>
+          <p className="text-[10px] text-[var(--mv-muted)] mt-2">
+            An issued tax invoice is not edited: GST law corrects it with a credit or debit note, so the correction is issued for the
+            difference (with GST where the invoice had it) and both stay on record. An opening due is corrected by a dated entry against the
+            reserve, and cannot go below what the flat has already paid.
+          </p>
         </Card>
       )}
 
