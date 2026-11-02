@@ -24,6 +24,7 @@ import {
 } from './transactions';
 import { DerivedStatus, deriveStatus } from './allocation';
 import { A } from './accounts';
+import { isOpeningDocument } from './billLabel';
 
 export class DocumentError extends Error {}
 
@@ -576,6 +577,14 @@ export class BillingRegister {
     for (const doc of documents) {
       if (this.docs.has(doc.proformaNo)) {
         throw new DocumentError(`Snapshot has two documents numbered ${doc.proformaNo}.`);
+      }
+      // An opening due brought forward (OB/…) is not a month's bill, so it
+      // takes no flat-and-period slot: the month it is filed under is billed
+      // as usual. The database's one-live-document index excludes it the same
+      // way (migration 012).
+      if (isOpeningDocument(doc.proformaNo)) {
+        this.docs.set(doc.proformaNo, { ...doc, lines: doc.lines.map(l => ({ ...l })) });
+        continue;
       }
       // Keyed canonically, so a snapshot written before periods were
       // canonicalised cannot restore two live documents for one month under

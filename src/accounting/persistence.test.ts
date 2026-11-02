@@ -369,6 +369,24 @@ check('two live documents for one flat and period are refused', () => {
   void run;
 });
 
+check('an opening due (OB/…) does not count as the month\'s bill for its flat', () => {
+  const store = storeOn(memoryRepository());
+  buildActivity(store);
+  const written = writeSnapshot({
+    ledger: store.snapshot().ledger, register: store.snapshot().register,
+    mode: 'demo', savedAt: 'x', migrationsApplied: [],
+  });
+  const withArrears: BooksSnapshotData = {
+    ...written,
+    documents: [
+      { ...written.documents[0], proformaNo: 'OB/1/00001', taxInvoiceNo: 'OB/1/00001', state: 'tax-invoice' },
+      ...written.documents,
+    ],
+  };
+  const restored = restoreSnapshot(withArrears, APPROVED, CLOCK);
+  eq(restored.register.all().length, written.documents.length + 1, 'every document restored, the arrears included');
+});
+
 // --- migration ------------------------------------------------------------
 
 suite('Older snapshots migrate forward');
