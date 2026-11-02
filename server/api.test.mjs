@@ -261,6 +261,43 @@ await check('names the schema version it is running against', async () => {
   equal(r.body.schemaVersion, files[files.length - 1], 'the latest migration applied');
 });
 
+await check('a database one additive migration behind still opens; below the minimum it does not', async () => {
+  // The live site locked itself when 011 (an extra table only alias sign-in
+  // reads, behind a check for the table) was not yet applied. Simulated here
+  // by hiding the newest migrations' records, and put back whatever happens.
+  const { readdirSync } = await import('node:fs');
+  const files = readdirSync(new URL('./migrations', import.meta.url))
+    .filter(name => name.endsWith('.sql')).sort();
+  const newest = files[files.length - 1];
+  const minimum = '010_opening_balances.sql';
+  const hidden = files.filter(f => f > minimum);
+  truthy(hidden.length > 0, 'there is a migration above the minimum to hide');
+  const list = hidden.map(f => `'${f}'`).join(',');
+  const saved = psql(`SELECT version || '|' || checksum || '|' || applied_at::text FROM schema_migrations WHERE version IN (${list}, '${minimum}')`);
+  truthy(saved.ok && saved.out !== '', `read the records to restore: ${saved.out}`);
+  try {
+    truthy(psql(`DELETE FROM schema_migrations WHERE version IN (${list})`).ok, 'hid the newest records');
+    const pending = await anonymous.get('/api/health');
+    equal(pending.status, 200, 'still 200 one additive migration behind');
+    equal(pending.body.status, 'ok', 'still ok');
+    equal(pending.body.schemaVersion, minimum, 'reports the version it found');
+    equal(pending.body.schemaPending, true, 'says a migration is pending');
+    matches(pending.body.message, new RegExp(newest.replace('.', '\\.')), 'names the newest migration');
+
+    truthy(psql(`DELETE FROM schema_migrations WHERE version = '${minimum}'`).ok, 'hid the minimum too');
+    const behind = await anonymous.get('/api/health');
+    equal(behind.status, 503, 'below the minimum is 503');
+    equal(behind.body.status, 'degraded', 'below the minimum is degraded');
+  } finally {
+    const rows = [...saved.out.split('\n'), ''].filter(l => l.trim() !== '').map(l => l.split('|'));
+    psql(`INSERT INTO schema_migrations (version, checksum, applied_at) VALUES ${
+      rows.map(([v, c, a]) => `('${v}', '${c}', '${a}')`).join(', ')} ON CONFLICT (version) DO NOTHING`);
+  }
+  const back = await anonymous.get('/api/health');
+  equal(back.body.schemaVersion, newest, 'records restored');
+  equal(back.body.schemaPending, undefined, 'nothing pending once restored');
+});
+
 await check('does not claim a provider it has not got', async () => {
   const r = await anonymous.get('/api/health');
   equal(r.body.providers.emailDelivers, false, 'emailDelivers with EMAIL_PROVIDER=none');

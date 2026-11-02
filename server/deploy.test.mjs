@@ -133,6 +133,11 @@ check('the schema version the server expects is the newest migration', () => {
   const files = readdirSync(join(root, 'server', 'migrations')).filter(f => f.endsWith('.sql')).sort();
   const constant = /EXPECTED_SCHEMA_VERSION = '([^']+)'/.exec(read('server/src/schemaVersion.ts'))?.[1];
   equal(constant, files[files.length - 1], 'EXPECTED_SCHEMA_VERSION');
+  // The minimum is a real migration, not ahead of the newest; below it the
+  // books will not open, so a typo here would lock every deployment out.
+  const minimum = /MINIMUM_SCHEMA_VERSION = '([^']+)'/.exec(read('server/src/schemaVersion.ts'))?.[1];
+  truthy(files.includes(minimum), `MINIMUM_SCHEMA_VERSION ${minimum} is a migration file`);
+  truthy(minimum <= constant, 'MINIMUM_SCHEMA_VERSION is not ahead of EXPECTED_SCHEMA_VERSION');
 });
 
 // --- routing ---------------------------------------------------------------

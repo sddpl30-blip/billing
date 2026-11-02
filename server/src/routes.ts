@@ -22,7 +22,7 @@ import type { AuthService } from './auth';
 import type { EmailProvider } from './providers/email';
 import type { BankApiProvider } from './providers/bank';
 import { StatementFormatError, parseStatement } from './providers/bank';
-import { EXPECTED_SCHEMA_VERSION } from './schemaVersion';
+import { EXPECTED_SCHEMA_VERSION, MINIMUM_SCHEMA_VERSION } from './schemaVersion';
 import { badRequest, conflict, notFound, route, type RequestContext, type Reply, type RouteDefinition } from './http';
 import { v } from './validate';
 import {
@@ -236,9 +236,13 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     // not name the database server.
     const security = pool.connectionSecurity;
 
-    // A database behind the code is degraded, and the body names the
-    // migration to apply; versions sort by their numeric prefix.
-    const schemaBehind = database.reachable && (migrations === null || migrations < EXPECTED_SCHEMA_VERSION);
+    // A database below the minimum is degraded: the books cannot be opened
+    // on it. One between the minimum and the newest is ok, with the pending
+    // migration named: only the features that need it are off, and each says
+    // so. Versions sort by their numeric prefix.
+    const schemaBehind = database.reachable && (migrations === null || migrations < MINIMUM_SCHEMA_VERSION);
+    const schemaPending = database.reachable && !schemaBehind && migrations !== null
+      && migrations < EXPECTED_SCHEMA_VERSION;
     const healthy = database.reachable && !schemaBehind;
 
     return {
@@ -259,7 +263,15 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
                 `needs ${EXPECTED_SCHEMA_VERSION}. Apply the missing migrations ` +
                 '(npm run db:migrate:node, or docs/neon/ for the SQL Editor) and reload.',
             }
-          : {}),
+          : schemaPending
+            ? {
+                schemaPending: true,
+                message:
+                  `The database schema is at ${migrations} and the newest is ${EXPECTED_SCHEMA_VERSION}. ` +
+                  'The books open normally; only the features that need the newer migrations are off ' +
+                  'until they are applied (npm run db:migrate:node, or docs/neon/ for the SQL Editor).',
+              }
+            : {}),
         // Named for what they do, so nothing reads as connected when it is not.
         providers: {
           otp: config.otpProvider,
