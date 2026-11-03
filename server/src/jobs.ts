@@ -344,6 +344,11 @@ const scheduledRelease: Handler = async (job, ctx) => {
     for (const document of documents.rows) {
       await tx.query(`UPDATE billing_documents SET state = 'released' WHERE id = $1`, [document.id]);
       await alignDueDatesOnRelease(tx, { societyId, documentId: document.id, releasedOn: ctx.now() });
+      // The copy that goes out, drawn now from the books and the profile as
+      // they stand, and kept as the issued copy for any reprint.
+      await generateDocument(tx, {
+        societyId, kind: 'proforma', documentId: document.id, asAt: ctx.now(), reprint: false,
+      });
       if (document.owner_email === null) {
         withoutAnAddress.push(document.flat_no);
         await tx.query(
