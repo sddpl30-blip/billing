@@ -295,7 +295,7 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
     const side = 85;                                  // 3 cm
     const qrX = right - 6 - side;
     const qrTop = boxTop - 20;
-    page.text('SCAN AND PAY', { x: right - 6 - textWidth('SCAN AND PAY', 8.5, 'bold'), y: boxTop - 12, size: 8.5, face: 'bold' });
+    page.text('Scan to pay (UPI)', { x: right - 6 - textWidth('Scan to pay (UPI)', 8.5, 'bold'), y: boxTop - 12, size: 8.5, face: 'bold' });
     page.image('Qr', qrX, qrTop - side, side, side);
     // The UPI ID under it, broken wherever it has to be to stay inside the box.
     const idWidth = right - 6 - (rightX + 120);
@@ -304,8 +304,10 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
     // What this QR is, to the left of it, under the bank lines.
     const note = 'Static QR: it carries no amount, so enter the amount shown on this bill. ' +
       'Please quote the PI number and unit number in the payment remarks.';
+    const payee = wrapText(`Payee: ${pi.societyName}`, qrX - rightX - 10, 8);
+    payee.forEach((line, i) => page.text(line, { x: rightX, y: bankEnd - 20 - i * 10, size: 8, face: 'bold' }));
     wrapText(note, qrX - rightX - 10, 7.5).forEach((line, i) =>
-      page.text(line, { x: rightX, y: bankEnd - 22 - i * 9, size: 7.5, grey: 0.25 }));
+      page.text(line, { x: rightX, y: bankEnd - 20 - payee.length * 10 - 4 - i * 9, size: 7.5, grey: 0.25 }));
   } else if (pi.upiId !== null && pi.upiId !== undefined) {
     page.text(`UPI ID: ${pi.upiId}`, { x: rightX, y: bankEnd - 12.5, size: 9 });
   }
@@ -391,7 +393,8 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
       : 'Please remit payment to the association bank account mentioned above, or scan the QR code with any UPI app. ') +
     'Kindly quote the PI number and unit ' +
     'number in the payment narration and share the transaction reference with the Association' +
-    (pi.contactEmail === null ? '.' : ` at ${pi.contactEmail}.`),
+    (pi.contactEmail === null ? '.' : ` at ${pi.contactEmail}.`) +
+    (qr === null ? '' : ' Or pay by UPI to the ID shown beside the QR.'),
   );
   page.down(6);
   page.text('NOTES', { size: 9.5, face: 'bold' });
