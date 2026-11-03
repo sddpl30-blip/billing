@@ -879,6 +879,26 @@ export async function generateDocument(
   const subjectId = input.kind === 'receipt' ? input.paymentId : input.documentId;
   if (subjectId === undefined) throw badRequest('Nothing was named to generate.');
 
+  // A proforma still waiting to be sent (draft or approved) is a working
+  // figure, not an issued document: it is drawn fresh from the books and the
+  // society's profile every time, and not stored. A stored copy kept the bank
+  // details, e-mail and amounts as they were the first time anyone looked, so
+  // a profile filled in afterwards, or a bill corrected afterwards, still
+  // printed the old figures. It is stored once, when it is released.
+  if (input.kind === 'proforma') {
+    const state = await tx.query<{ state: string }>(
+      'SELECT state FROM billing_documents WHERE id = $1 AND society_id = $2',
+      [subjectId, input.societyId],
+    );
+    const current = state.rows[0]?.state;
+    if (current === 'draft' || current === 'approved') {
+      const payload = await invoicePayload(tx, {
+        societyId: input.societyId, documentId: subjectId, asAt: input.asAt,
+      });
+      return { pdf: renderInvoice(payload), payload, generatedId: '', reprinted: false };
+    }
+  }
+
   if (input.reprint !== false) {
     const existing = await tx.query<{ id: string; render_payload: string }>(
       `SELECT id, render_payload::text FROM generated_documents

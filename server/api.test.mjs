@@ -4646,6 +4646,41 @@ await check('opening dues do not block that month\'s bill; the PI prints in the 
   psql(`UPDATE billing_documents SET state = 'cancelled', cancelled_reason = 'test cleanup' WHERE id = '${a101.documentId}';`);
 });
 
+await check('an unsent proforma\'s PDF follows the profile and the books, and is kept once it is released', async () => {
+  const flat = oFlat('B-101');
+  const run = await oManager.post('/api/billing/run', { period: 'Aug 2026', issuedOn: '2026-10-05', flatIds: [flat.id] });
+  equal(run.status, 201, `run ${JSON.stringify(run.body).slice(0, 200)}`);
+  const doc = run.body.issued[0];
+  equal((await oTreasurer.post(`/api/billing/documents/${doc.documentId}/approve`, { on: '2026-10-05' })).status, 200, 'approved');
+  const cookie = () => [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+  const pdf = async () => Buffer.from(await (await fetch(`${base}/api/billing/documents/${doc.documentId}/pdf`, { headers: { Cookie: cookie() } })).arrayBuffer()).toString('latin1');
+
+  matches(await pdf(), /Not yet entered in the society profile/, 'first printed before any bank details exist');
+  // The profile is filled in afterwards, and the e-mail changed: no regenerate asked for.
+  truthy(psql(`UPDATE societies SET pay_bank_name = 'Later Bank', pay_branch = 'Main', pay_account_no = '555500006666',
+    pay_ifsc = 'TEST0001234', contact_email = 'office.later@example.invalid' WHERE id = '${oFixture.societyId}';`).ok, 'profile updated');
+  const after = await pdf();
+  matches(after, /555500006666/, 'the new account number is printed');
+  matches(after, /office\.later@example\.invalid/, 'and the new e-mail');
+  truthy(!/Not yet entered/.test(after), 'not the old words');
+  equal(oCount(`SELECT count(*) FROM generated_documents WHERE document_id = '${doc.documentId}';`), 0, 'nothing was stored while it was unsent');
+
+  // Released: kept as the issued copy, then it does not move with the profile.
+  const release = await oTreasurer.post(`/api/billing/documents/${doc.documentId}/release`, { channel: 'in-app' });
+  equal(release.status, 200, 'released');
+  const issued = await pdf();
+  matches(issued, /555500006666/, 'the first print after release is the issued copy, with the details of the day');
+  psql(`UPDATE societies SET pay_account_no = '777700008888' WHERE id = '${oFixture.societyId}';`);
+  const reprint = await pdf();
+  matches(reprint, /555500006666/, 'a later print is that same copy');
+  truthy(!/777700008888/.test(reprint), 'and does not move with the profile');
+
+  // Put things back for the tests that follow.
+  psql(`UPDATE billing_documents SET state = 'cancelled', cancelled_reason = 'test cleanup' WHERE id = '${doc.documentId}';`);
+  psql(`UPDATE societies SET pay_bank_name = NULL, pay_branch = NULL, pay_account_no = NULL, pay_ifsc = NULL, contact_email = 'office@manivista.invalid'
+         WHERE id = '${oFixture.societyId}';`);
+});
+
 await check('unsent bills, flats, owners and pending rates can be corrected in place, with the audit trail', async () => {
   const flatA = oFlat('A-101'), flatB = oFlat('A-102');
   const run = await oManager.post('/api/billing/run', { period: 'Sep 2026', issuedOn: '2026-10-05', flatIds: [flatA.id, flatB.id] });
