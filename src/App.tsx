@@ -207,6 +207,8 @@ export default function App() {
   // were meant. The office types the month, and the dates it covers show
   // beneath it before anything is raised.
   const [wizardPeriod, setWizardPeriod] = useState('');
+  // Whether the server can e-mail, from its health check, for the release card.
+  const [emailDelivers, setEmailDelivers] = useState<boolean | undefined>(undefined);
   // A percentage of maintenance — the engine's own unit — not rupees, which is
   // what the old label said while 500 was being read as 500%.
   const [wizardSinking, setWizardSinking] = useState('10');
@@ -579,6 +581,16 @@ export default function App() {
    * below its first use, which threw as soon as there were invoices to filter.
    */
   const residentFlatNo = booksSource.session?.primaryFlatNo ?? '';
+
+  useEffect(() => {
+    const client = booksSource.client;
+    if (!onServer || client === null) return;
+    let live = true;
+    client.get<{ providers?: { emailDelivers?: unknown } }>('/api/health')
+      .then(h => { if (live) setEmailDelivers(typeof h.providers?.emailDelivers === 'boolean' ? h.providers.emailDelivers : undefined); })
+      .catch(() => { if (live) setEmailDelivers(undefined); });
+    return () => { live = false; };
+  }, [onServer, booksSource.client]);
 
   // --- DYNAMIC QUANTITATIVE MATHEMATICS ---
   // 1. Resident
@@ -1483,7 +1495,7 @@ export default function App() {
   /** Says how a batch went, from the books' own answer. */
   const reportBatch = (verb: string, outcome: { done: number; refused: number; notes: readonly string[] }) => {
     const head = `${outcome.done} ${verb}` + (outcome.refused > 0 ? `; ${outcome.refused} refused` : '') + '.';
-    const detail = outcome.notes.length === 0 ? '' : ` ${outcome.notes.slice(0, 2).join(' ')}`;
+    const detail = outcome.notes.length === 0 ? '' : ` ${outcome.notes.slice(0, 3).join(' ')}`;
     triggerToast(`${head}${detail}`, outcome.done === 0 && outcome.refused > 0 ? 'error' : 'info');
   };
 
@@ -1514,21 +1526,14 @@ export default function App() {
     }
     void runWrite(async () => {
       const result = await mustActions().releaseDocuments(approved, `Treasurer (${currentRole})`);
+      // What the server said, bill by bill: how many were e-mailed and why
+      // the others were not. Not a fixed sentence, which was right only while
+      // no e-mail service was set up.
       logLocally(
         `Treasurer (${currentRole})`,
-        `Released ${result.done} proforma invoices for dispatch. No email or messaging ` +
-        `provider is configured, so nothing was sent to any member.`,
+        `Released ${result.done} proforma invoices. ${result.notes.slice(0, 3).join(' ')}`,
       );
       reportBatch('proformas released', result);
-      if (result.done > 0) {
-        // Said separately and plainly: "released" reads as "sent", and with no
-        // e-mail provider set up nothing reached any owner.
-        triggerToast(
-          `${result.done} bill${result.done === 1 ? '' : 's'} marked as released. E-mail is not set up yet, ` +
-          'so no owner has been sent anything. Download the PDFs from the bill list to share them.',
-          'error',
-        );
-      }
     }, 'The release did not go through.');
   };
 
@@ -2372,6 +2377,7 @@ export default function App() {
                         onReleaseApproved={handleReleaseApproved}
                         onConvertDue={handleConvertDue}
                         may={billingMay}
+                        emailDelivers={emailDelivers}
                       />
                       {onServer && booksSource.client !== null && booksSource.can('billing.cancel') && (
                         <div className="mt-4">
@@ -3744,6 +3750,7 @@ export default function App() {
                     onConvertDue={handleConvertDue}
                     compact
                     may={billingMay}
+                    emailDelivers={emailDelivers}
                   />
                   {onServer && booksSource.client !== null && booksSource.can('billing.cancel') && (
                     <div className="mt-4">
