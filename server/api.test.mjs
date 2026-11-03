@@ -5044,6 +5044,8 @@ await check('details saved on the Society profile screen reach an unsent proform
   matches(withQr, /909090909090/, 'bank details still there');
   matches(withQr, /Payee: Mani Vista RWA/, 'the payee name');
   matches(withQr, /Or pay by UPI to the ID shown beside the QR/, 'the closing line');
+  matches(withQr, /log in to your dashboard and check that all the details are matching/, 'temporary note 1');
+  matches(withQr, /share the payment screenshot once done, through the same email/, 'temporary note 2');
   equal((withQr.match(/\/Type \/Page\b/g) ?? []).length, 1, 'still one page');
   equal((await oSecretary.put('/api/society/payment-qr', { remove: true })).status, 200, 'QR removed');
   truthy(!/Scan to pay .{1,2}UPI/.test(await pdf()), 'removed: nothing printed');
