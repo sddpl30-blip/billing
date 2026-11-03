@@ -2596,6 +2596,22 @@ await check('adding an e-mail that already has an active account says so, and wh
   truthy(!/rule the books rely on/.test(again.body.message), 'not the database\'s generic words');
 });
 
+await check('the e-mail log shows the exact error of a failed message, to the office only', async () => {
+  const addr = `log.${stamp}@${domain}`;
+  truthy(psql(`INSERT INTO notifications (society_id, channel, template, to_address, subject, payload, state, attempts, last_error)
+    VALUES ('${fixture.societyId}', 'email', 'welcome', '${addr}', 'Welcome', '{"text":"secret body"}'::jsonb, 'failed', 1, 'Brevo 400: sender is not valid')`).ok, 'a failed message');
+  const r = await secretary.get('/api/notifications/log');
+  equal(r.status, 200, 'the secretary reads it');
+  const row = r.body.messages.find(m => m.to === addr);
+  truthy(row, 'the message is listed');
+  equal(row.state, 'failed', 'its state');
+  equal(row.error, 'Brevo 400: sender is not valid', 'the exact error');
+  truthy(!JSON.stringify(r.body).includes('secret body'), 'no message text leaves the server');
+  equal((await manager.get('/api/notifications/log')).status, 403, 'the manager may not');
+  equal((await resident.get('/api/notifications/log')).status, 403, 'nor a resident');
+  psql(`DELETE FROM notifications WHERE to_address = '${addr}'`);
+});
+
 await check('an account cannot be both maker and checker', async () => {
   const r = await secretary.post('/api/users', {
     email: `both.${stamp}@${domain}`,

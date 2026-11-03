@@ -13,6 +13,7 @@ import { RatesSection } from './governance/RatesSection';
 import { SettingsSection } from './governance/SettingsSection';
 import { PeriodsSection } from './governance/PeriodsSection';
 import { CorrectionsSection } from './governance/CorrectionsSection';
+import { MailLogSection } from './governance/MailLogSection';
 import { UsersSection } from './governance/UsersSection';
 import { FlatsSection } from './governance/FlatsSection';
 import { HelpdeskSection } from './governance/HelpdeskSection';
@@ -22,7 +23,7 @@ import { MyPasswordSection } from './governance/MyPasswordSection';
 import { NoticesSection } from './governance/NoticesSection';
 import { BulkEmailSection } from './governance/BulkEmailSection';
 
-type TabKey = 'rates' | 'settings' | 'periods' | 'corrections' | 'users' | 'flats' | 'opening' | 'profile' | 'helpdesk' | 'notices' | 'email' | 'password';
+type TabKey = 'rates' | 'settings' | 'periods' | 'corrections' | 'maillog' | 'users' | 'flats' | 'opening' | 'profile' | 'helpdesk' | 'notices' | 'email' | 'password';
 
 interface Tab {
   readonly key: TabKey;
@@ -37,6 +38,7 @@ const TABS: readonly Tab[] = [
   { key: 'periods', label: 'Periods', anyOf: ['period.close', 'period.reopen'] },
   { key: 'corrections', label: 'Corrections', anyOf: ['billing.run', 'member.manage', 'settings.manage'] },
   { key: 'users', label: 'Users & roles', anyOf: ['user.manage'] },
+  { key: 'maillog', label: 'E-mail log', anyOf: ['notice.send'] },
   { key: 'flats', label: 'Flats & owners', anyOf: ['member.manage'] },
   { key: 'opening', label: 'Opening balances', anyOf: ['settings.manage', 'period.close'] },
   { key: 'profile', label: 'Society profile', anyOf: ['settings.manage', 'report.read'] },
@@ -81,6 +83,7 @@ export default function GovernancePanel({ ctx }: { ctx: OfficeContext }) {
         {current.key === 'settings' && <SettingsSection ctx={ctx} />}
         {current.key === 'periods' && <PeriodsSection ctx={ctx} />}
         {current.key === 'corrections' && <CorrectionsSection ctx={ctx} />}
+        {current.key === 'maillog' && <MailLogSection ctx={ctx} />}
         {current.key === 'users' && <UsersSection ctx={ctx} />}
         {current.key === 'flats' && <FlatsSection ctx={ctx} />}
         {current.key === 'opening' && <OpeningBalancesSection ctx={ctx} />}

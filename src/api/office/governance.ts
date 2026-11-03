@@ -472,3 +472,22 @@ export function saveSociety(
   const body = Object.fromEntries(Object.entries(profile).map(([k, v]) => [k, v ?? '']));
   return client.put('/api/society', body);
 }
+
+// --- the e-mail log ----------------------------------------------------------
+
+export interface MailLogRow {
+  readonly id: string;
+  readonly template: string;
+  readonly to: string;
+  readonly subject: string | null;
+  readonly state: string;
+  readonly attempts: number;
+  readonly provider: string | null;
+  readonly error: string | null;
+  readonly queuedAt: string;
+  readonly sentAt: string | null;
+}
+
+export function listMailLog(client: ApiClient): Promise<{ emailDelivers: boolean; provider: string; messages: MailLogRow[] }> {
+  return client.get('/api/notifications/log');
+}
