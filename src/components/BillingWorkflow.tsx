@@ -25,6 +25,11 @@ interface Props {
    * Absent (the demonstration) means all of them.
    */
   may?: { approve: boolean; release: boolean; convert: boolean };
+  /**
+   * Whether the server can actually e-mail (from its health check). Absent
+   * means not known, and the card then makes no claim that anything is sent.
+   */
+  emailDelivers?: boolean;
 }
 
 const STATE_LABEL: Record<RegisterView['state'], string> = {
@@ -44,7 +49,7 @@ const STATE_STYLE: Record<RegisterView['state'], string> = {
 };
 
 export const BillingWorkflow: React.FC<Props> = ({
-  documents, problems, today, onApproveAll, onReleaseApproved, onConvertDue, compact, may,
+  documents, problems, today, onApproveAll, onReleaseApproved, onConvertDue, compact, may, emailDelivers,
 }) => {
   const count = (state: RegisterView['state']) => documents.filter(d => d.state === state).length;
   const dueForConversion = documents.filter(
@@ -112,7 +117,11 @@ export const BillingWorkflow: React.FC<Props> = ({
         <Stage
           icon={<Send className="w-4 h-4" />}
           title="Approved, not released"
-          detail="Releasing marks them dispatched. No email or messaging provider is configured, so nothing is actually sent."
+          detail={emailDelivers === true
+            ? 'Releasing e-mails each bill, with its PDF, to the owner\'s address on record. A flat with no address is released in the app only, and the result says how many were e-mailed and why the rest were not.'
+            : emailDelivers === false
+              ? 'Releasing marks them dispatched. No email service is set up, so nothing is actually sent.'
+              : 'Releasing marks them dispatched and e-mails each owner where the server can; the result says how many were e-mailed.'}
           n={count('approved')}
           action={{
             label: 'Release for dispatch',

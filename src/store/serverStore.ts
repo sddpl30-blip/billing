@@ -405,16 +405,31 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
         });
       })),
 
-    releaseDocuments: proformaNos => write('Release', () =>
-      eachDocument(proformaNos, async id => {
+    releaseDocuments: proformaNos => write('Release', async () => {
+      // "Released" and "e-mailed" are different claims, and the server says
+      // which, bill by bill. Counted here so the screen can say how many
+      // actually went out and why the rest did not, rather than reporting
+      // every bill the server accepted as sent.
+      let emailed = 0;
+      const reasons = new Map<string, number>();
+      const outcome = await eachDocument(proformaNos, async id => {
         const result = await options.client.post<{ delivered: boolean; note: string }>(
           `/api/billing/documents/${id}/release`,
           { channel: 'email' },
         );
-        // The server says whether anything was actually sent. Passed on either
-        // way, because "released" and "delivered" are different claims.
-        return result.note;
-      })),
+        if (result.delivered) emailed++;
+        else reasons.set(result.note, (reasons.get(result.note) ?? 0) + 1);
+      });
+      const notEmailed = outcome.done - emailed;
+      return {
+        ...outcome,
+        notes: [
+          `${emailed} e-mailed` + (notEmailed > 0 ? `, ${notEmailed} not e-mailed` : '') + '.',
+          ...[...reasons].map(([note, count]) => `${count} × ${note}`),
+          ...outcome.notes,
+        ],
+      };
+    }),
 
     convertDueDocuments: () => write('Conversion', () => {
       const today = options.clock.today();

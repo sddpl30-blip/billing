@@ -392,6 +392,16 @@ window.__READY__ = (async () => {
       'keys the demo store would have written');
   });
 
+  await record('a release reports how many were e-mailed, not just how many the server accepted', async () => {
+    const none = await store.actions.releaseDocuments([], 'test');
+    equal(none.done, 0, 'nothing released');
+    equal(none.notes[0], '0 e-mailed.', 'says so in numbers');
+    const missing = await store.actions.releaseDocuments(['NO-SUCH-BILL'], 'test');
+    equal(missing.refused, 1, 'a bill the server does not have is refused');
+    equal(missing.notes[0], '0 e-mailed.', 'the summary comes first');
+    truthy(missing.notes.some(n => n.includes('NO-SUCH-BILL')), 'and the refusal is named');
+  });
+
   await record('a cancelled bill is not an invoice on any screen', async () => {
     const documents = store.allDocuments();
     truthy(documents.length > 0, 'there are documents');
