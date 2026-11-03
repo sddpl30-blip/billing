@@ -5010,6 +5010,13 @@ await check('details saved on the Society profile screen reach an unsent proform
 
   // The payment QR: no QR prints nothing; a bad image is refused; a good one prints, and is read at draw time.
   truthy(!/Scan to pay .{1,2}UPI/.test(after), 'no QR uploaded: no QR block');
+  // The association's own QR is built in as a fallback for a production society named Mani Vista only.
+  psql(`UPDATE societies SET mode = 'production' WHERE id = '${oFixture.societyId}';`);
+  const builtin = await pdf();
+  matches(builtin, /Scan to pay .{1,2}UPI/, 'production Mani Vista society: built-in QR printed with no upload');
+  matches(builtin, /eazypay@icici/, 'and the association UPI ID (wrapped under the QR)');
+  psql(`UPDATE societies SET mode = 'demo' WHERE id = '${oFixture.societyId}';`);
+  truthy(!/Scan to pay .{1,2}UPI/.test(await pdf()), 'a demo society never gets it');
   const { readFileSync } = await import('node:fs');
   const img = (f) => readFileSync(new URL(`./${f}`, import.meta.url)).toString('base64');
   equal((await oSecretary.put('/api/society/payment-qr', { imageBase64: img('test-qr-small.jpg') })).status, 400, 'under 300 px refused');

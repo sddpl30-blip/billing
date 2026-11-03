@@ -17,7 +17,8 @@ import { createHash } from 'node:crypto';
 import { A4, PdfPage, buildPdf, money, textWidth, wrapText } from './pdf';
 import { societyLogo } from './societyLogo';
 import { migrationApplied, periodBounds, societyInitials } from './billing';
-import { hasPaymentQr, readQr } from './paymentQr';
+import { hasPaymentQr, readQr, readJpeg } from './paymentQr';
+import { BUILTIN_QR_JPEG_BASE64, BUILTIN_UPI_ID, builtinQrApplies } from './builtinQr';
 import { billPeriodLabel, isOpeningDocument } from '../../src/accounting/billLabel';
 import type { Queryable } from './pg';
 import { badRequest, notFound } from './http';
@@ -269,7 +270,7 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
   const qr = pi.qr ?? null;
   const split = qr === null ? width / 2 : width * 0.40;
   const boxTop = page.cursor;
-  const boxHeight = qr === null ? 74 : 130;
+  const boxHeight = qr === null ? 74 : 142;
   const rightX = left + split + 6;
   page.frame(left, boxTop - boxHeight, width, boxHeight);
   page.line(left + split, boxTop, left + split, boxTop - boxHeight, 0.55, 0.6);
@@ -298,8 +299,8 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
     page.text('Scan to pay (UPI)', { x: right - 6 - textWidth('Scan to pay (UPI)', 8.5, 'bold'), y: boxTop - 12, size: 8.5, face: 'bold' });
     page.image('Qr', qrX, qrTop - side, side, side);
     // The UPI ID under it, broken wherever it has to be to stay inside the box.
-    const idWidth = right - 6 - (rightX + 120);
-    const idLines = pi.upiId === null || pi.upiId === undefined ? [] : wrapAnywhere(`UPI ID: ${pi.upiId}`, idWidth + side - 6, 6.5);
+    // Never wider than the QR, so it cannot run under the note on its left.
+    const idLines = pi.upiId === null || pi.upiId === undefined ? [] : ['UPI ID:', ...wrapAnywhere(pi.upiId, side + 4, 6.5)];
     idLines.forEach((line, i) => page.text(line, { x: right - 6 - Math.max(side, ...idLines.map(l => textWidth(l, 6.5))), y: qrTop - side - 8 - i * 7.5, size: 6.5 }));
     // What this QR is, to the left of it, under the bank lines.
     const note = 'Static QR: it carries no amount, so enter the amount shown on this bill. ' +
@@ -797,11 +798,11 @@ async function proformaDetails(
 ): Promise<ProformaDetails> {
   const withBank = await migrationApplied(tx, '012_opening_dues_and_pi_details.sql');
   const found = await tx.query<{
-    name: string; tan: string | null; contact_email: string | null;
+    name: string; mode: string; tan: string | null; contact_email: string | null;
     pay_bank_name: string | null; pay_branch: string | null; pay_account_no: string | null; pay_ifsc: string | null;
     pay_upi_id: string | null;
   }>(
-    `SELECT name, tan, contact_email, ${withBank
+    `SELECT name, mode, tan, contact_email, ${withBank
       ? 'pay_bank_name, pay_branch, pay_account_no, pay_ifsc'
       : 'NULL AS pay_bank_name, NULL AS pay_branch, NULL AS pay_account_no, NULL AS pay_ifsc'},
             ${(await hasPaymentQr(tx)) ? 'pay_upi_id' : 'NULL AS pay_upi_id'}
@@ -862,12 +863,15 @@ async function proformaDetails(
     ratePerSqFt: rate === null ? null : rate.ratePerSqFt,
     previousOutstanding: owed - advance,
     daysToPay: await dueDays(tx, input.societyId),
-    upiId: soc.pay_upi_id,
+    upiId: soc.pay_upi_id ?? (builtinQrApplies(soc.mode, soc.name) ? BUILTIN_UPI_ID : null),
     qr: await (async () => {
       const stored = await readQr(tx, input.societyId);
-      return stored === null
-        ? null
-        : { jpegBase64: stored.jpegBase64, widthPx: stored.widthPx, heightPx: stored.heightPx, gray: stored.components === 1 };
+      if (stored !== null) {
+        return { jpegBase64: stored.jpegBase64, widthPx: stored.widthPx, heightPx: stored.heightPx, gray: stored.components === 1 };
+      }
+      if (!builtinQrApplies(soc.mode, soc.name)) return null;
+      const info = readJpeg(Buffer.from(BUILTIN_QR_JPEG_BASE64, 'base64'));
+      return { jpegBase64: BUILTIN_QR_JPEG_BASE64, widthPx: info.widthPx, heightPx: info.heightPx, gray: info.components === 1 };
     })(),
   };
 }
