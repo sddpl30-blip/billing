@@ -52,7 +52,10 @@ export function invoicesFrom(
   documents: readonly RegisterView[],
   flatNames: ReadonlyMap<string, string>,
 ): Invoice[] {
-  return documents.map(document => {
+  // A cancelled bill is not a bill: it must not show as "Pending" on a
+  // resident's home screen or in anyone's invoice list. The office still sees
+  // it in the Bills Ledger, which reads the register, with who cancelled it.
+  return documents.filter(document => document.state !== 'cancelled').map(document => {
     const amountFor = (head: string): number =>
       toRupees(document.lines
         .filter(line => line.head === head)

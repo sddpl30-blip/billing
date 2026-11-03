@@ -300,7 +300,10 @@ export async function buildSnapshot(
         documentParams.push(id);
         return `$${documentParams.length}`;
       }).join(',');
-      documentFilter = ` AND d.flat_id IN (${placeholders})`;
+      // A resident is shown their own bills, and a cancelled one no longer
+      // exists from where they stand: it is not sent to their browser at all.
+      // The office keeps seeing it, with who cancelled it and why.
+      documentFilter = ` AND d.flat_id IN (${placeholders}) AND d.state <> 'cancelled'`;
     }
   }
 
