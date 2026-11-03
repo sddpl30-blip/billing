@@ -7,13 +7,14 @@
  * calls anyway, and offering a screen that can only fail is worse than not.
  */
 
-import { Suspense, lazy, useState } from 'react';
+import { Suspense, useState } from 'react';
+import { lazyWithRetry, SlowLoading } from '../../lazyWithRetry';
 import type { OfficeContext } from './types';
 
-const MoneyOutPanel = lazy(() => import('./MoneyOutPanel'));
-const BankingPanel = lazy(() => import('./BankingPanel'));
-const GovernancePanel = lazy(() => import('./GovernancePanel'));
-const ReportsPanel = lazy(() => import('./ReportsPanel'));
+const MoneyOutPanel = lazyWithRetry(() => import('./MoneyOutPanel'));
+const BankingPanel = lazyWithRetry(() => import('./BankingPanel'));
+const GovernancePanel = lazyWithRetry(() => import('./GovernancePanel'));
+const ReportsPanel = lazyWithRetry(() => import('./ReportsPanel'));
 
 type SectionKey = 'money' | 'bank' | 'governance' | 'reports';
 
@@ -82,7 +83,7 @@ export function OfficeHub({ ctx }: { ctx: OfficeContext }) {
       {open !== null && (
         <section role="tabpanel" aria-label={SECTIONS.find(s => s.key === open)?.label}>
           <p className="text-xs text-[var(--mv-muted)] mb-4">{SECTIONS.find(s => s.key === open)?.blurb}</p>
-          <Suspense fallback={<p className="text-sm text-[var(--mv-muted)]">Loading…</p>}>
+          <Suspense fallback={<SlowLoading />}>
             {open === 'money' && <MoneyOutPanel ctx={ctx} />}
             {open === 'bank' && <BankingPanel ctx={ctx} />}
             {open === 'governance' && <GovernancePanel ctx={ctx} />}
