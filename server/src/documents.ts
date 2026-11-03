@@ -195,6 +195,16 @@ export function rupeesInWords(paise: number): string {
 }
 
 /** 2026-10-01 as 01.10.2026, as the association writes dates. */
+/**
+ * Two temporary lines at the foot of the proforma's NOTES, for the first
+ * billing cycle. Set this to false to remove both; nothing else changes.
+ */
+export const SHOW_TEMP_NOTES = true;
+const TEMP_NOTES = [
+  'Please log in to your dashboard and check that all the details are matching as per your invoice or not.',
+  'For a similar payment experience, please do share the payment screenshot once done, through the same email.',
+];
+
 const dotted = (iso: string): string => `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}`;
 
 /** Whole areas with Indian grouping: 1,808. */
@@ -407,6 +417,7 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
     'Late payments shall attract delay penalty/interest at the rate 18% p.a.',
     'Cheque bouncing charges of rupees 1000+GST will apply in case of dishonored of cheques.',
     'This is computer generated statement and does not require signature.',
+    ...(SHOW_TEMP_NOTES ? TEMP_NOTES : []),
   ];
   for (const note of notes) {
     const lines = wrapText(note, width - 14, 8.5);
