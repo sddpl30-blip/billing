@@ -392,6 +392,16 @@ window.__READY__ = (async () => {
       'keys the demo store would have written');
   });
 
+  await record('a cancelled bill is not an invoice on any screen', async () => {
+    const documents = store.allDocuments();
+    truthy(documents.length > 0, 'there are documents');
+    const one = documents[0];
+    const cancelled = { ...documents[0], state: 'cancelled', status: 'Pending' };
+    const mapped = invoicesFrom([cancelled, ...documents.slice(1)], new Map());
+    truthy(!mapped.some(i => i.id === one.proformaNo), 'the cancelled bill is not listed');
+    equal(mapped.length, documents.length - 1, 'every other bill still is');
+  });
+
   await record('the legacy mapping produces the shapes the screens take', async () => {
     const snapshot = await client.get('/api/books/snapshot');
     const residents = residentsFrom(snapshot);

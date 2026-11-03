@@ -2195,6 +2195,24 @@ await check('a resident gets only their own flat, documents and entries', async 
   equal(r.body.vendorBills.length, 0, 'vendor bills a resident may see');
 });
 
+await check('a cancelled bill is not sent to the resident, and the office still sees it', async () => {
+  const flat = flatOf('B-204');
+  const own = await resident.get('/api/books/snapshot');
+  const live = own.body.documents.find(d => d.flatNo === 'B-204' && d.state !== 'cancelled' && d.postedEntryId === undefined);
+  truthy(live, 'the resident has an unposted bill of their own to cancel');
+  const before = psql(`SELECT state FROM billing_documents WHERE id = '${live.id}';`).out;
+  truthy(psql(`UPDATE billing_documents SET state = 'cancelled', cancelled_reason = 'test' WHERE id = '${live.id}';`).ok, 'cancelled');
+  try {
+    const mine = await resident.get('/api/books/snapshot');
+    truthy(!mine.body.documents.some(d => d.id === live.id), 'the resident no longer sees it');
+    const office = await treasurer.get('/api/books/snapshot');
+    truthy(office.body.documents.some(d => d.id === live.id && d.state === 'cancelled'), 'the treasurer still sees it, cancelled');
+  } finally {
+    psql(`UPDATE billing_documents SET state = '${before}', cancelled_reason = NULL WHERE id = '${live.id}';`);
+  }
+  void flat;
+});
+
 await check('a resident sees fewer entries than the treasurer', async () => {
   const mine = await resident.get('/api/books/snapshot');
   const all = await treasurer.get('/api/books/snapshot');
