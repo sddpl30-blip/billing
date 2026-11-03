@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Home,
   Receipt,
@@ -45,15 +45,15 @@ import { Resident, Invoice, ComplaintTicket, Vendor, VendorInvoice, JournalEntry
 // The modals, the books screens and the charts are loaded when first shown.
 // recharts alone is most of the bundle, and a resident on a phone needs none
 // of them to see what they owe.
-const AdminPinModal = lazy(() => import('./components/AdminPinModal').then(m => ({ default: m.AdminPinModal })));
-const InvoiceDetailModal = lazy(() => import('./components/InvoiceDetailModal').then(m => ({ default: m.InvoiceDetailModal })));
-const ReceiptModal = lazy(() => import('./components/ReceiptModal').then(m => ({ default: m.ReceiptModal })));
-const BackupHub = lazy(() => import('./components/BackupHub').then(m => ({ default: m.BackupHub })));
-const FinancialStatements = lazy(() => import('./components/FinancialStatements').then(m => ({ default: m.FinancialStatements })));
-const JournalLedger = lazy(() => import('./components/JournalLedger').then(m => ({ default: m.JournalLedger })));
-const CollectionChart = lazy(() => import('./components/Charts').then(m => ({ default: m.CollectionChart })));
-const OfficeHub = lazy(() => import('./components/office/OfficeHub').then(m => ({ default: m.OfficeHub })));
-const BudgetChart = lazy(() => import('./components/Charts').then(m => ({ default: m.BudgetChart })));
+const AdminPinModal = lazyWithRetry(() => import('./components/AdminPinModal').then(m => ({ default: m.AdminPinModal })));
+const InvoiceDetailModal = lazyWithRetry(() => import('./components/InvoiceDetailModal').then(m => ({ default: m.InvoiceDetailModal })));
+const ReceiptModal = lazyWithRetry(() => import('./components/ReceiptModal').then(m => ({ default: m.ReceiptModal })));
+const BackupHub = lazyWithRetry(() => import('./components/BackupHub').then(m => ({ default: m.BackupHub })));
+const FinancialStatements = lazyWithRetry(() => import('./components/FinancialStatements').then(m => ({ default: m.FinancialStatements })));
+const JournalLedger = lazyWithRetry(() => import('./components/JournalLedger').then(m => ({ default: m.JournalLedger })));
+const CollectionChart = lazyWithRetry(() => import('./components/Charts').then(m => ({ default: m.CollectionChart })));
+const OfficeHub = lazyWithRetry(() => import('./components/office/OfficeHub').then(m => ({ default: m.OfficeHub })));
+const BudgetChart = lazyWithRetry(() => import('./components/Charts').then(m => ({ default: m.BudgetChart })));
 import { BillingWorkflow } from './components/BillingWorkflow';
 import { Dialog } from './components/Dialog';
 import { ReceiptEntryForm, type OpenDocument } from './components/ReceiptEntryForm';
@@ -73,6 +73,7 @@ import type { OfficeContext } from './components/office/types';
 import { SetupGate } from './components/SetupScreen';
 import { ScheduledRelease } from './components/ScheduledRelease';
 import { CancelUnsentProformas } from './components/CancelUnsentProformas';
+import { lazyWithRetry, SlowLoading } from './lazyWithRetry';
 import { BulkPaymentsUpload } from './components/BulkPaymentsUpload';
 import { NoticeBoard } from './components/NoticeBoard';
 import { isoDateInIndia, periodLabel } from './accounting/clock';
@@ -95,11 +96,7 @@ const SESSION_EMAIL_KEY = 'gm_rwa_session_email';
 const DEMO_RESIDENT_FLAT = 'B-204';
 
 /** What a lazily loaded panel shows for the moment it takes to arrive. */
-const PanelLoading: React.FC = () => (
-  <div className="py-10 text-center text-[10px] font-bold uppercase tracking-wider text-[var(--mv-muted)]" role="status">
-    Loading…
-  </div>
-);
+const PanelLoading: React.FC = () => <SlowLoading className="py-10 text-center" />;
 
 /**
  * An invoice's due date as ISO. The server's are ISO already; the demo's
@@ -2997,7 +2994,7 @@ export default function App() {
                     <h2 className="text-2xl font-bold text-[var(--mv-ink)]">Office</h2>
                     <p className="text-xs text-[var(--mv-muted)]">Vendors, banking, approvals, periods, users and the statutory reports</p>
                   </div>
-                  <Suspense fallback={<p className="text-sm text-[var(--mv-muted)]">Loading…</p>}>
+                  <Suspense fallback={<SlowLoading />}>
                     <OfficeHub ctx={officeContext} />
                   </Suspense>
                 </div>
@@ -4282,7 +4279,7 @@ export default function App() {
                 <h2 className="text-xl font-bold text-[var(--mv-ink)]">Office</h2>
                 <p className="text-xs text-[var(--mv-muted)]">Vendors, banking, approvals and reports</p>
               </div>
-              <Suspense fallback={<p className="text-sm text-[var(--mv-muted)]">Loading…</p>}>
+              <Suspense fallback={<SlowLoading />}>
                 <OfficeHub ctx={officeContext} />
               </Suspense>
             </div>
