@@ -5009,7 +5009,7 @@ await check('details saved on the Society profile screen reach an unsent proform
   truthy(!/Not yet entered/.test(after), 'not the old words');
 
   // The payment QR: no QR prints nothing; a bad image is refused; a good one prints, and is read at draw time.
-  truthy(!/SCAN AND PAY/.test(after), 'no QR uploaded: no QR block');
+  truthy(!/Scan to pay .{1,2}UPI/.test(after), 'no QR uploaded: no QR block');
   const { readFileSync } = await import('node:fs');
   const img = (f) => readFileSync(new URL(`./${f}`, import.meta.url)).toString('base64');
   equal((await oSecretary.put('/api/society/payment-qr', { imageBase64: img('test-qr-small.jpg') })).status, 400, 'under 300 px refused');
@@ -5026,18 +5026,20 @@ await check('details saved on the Society profile screen reach an unsent proform
   equal(upi.status, 200, `UPI saved ${JSON.stringify(upi.body).slice(0, 200)}`);
   const upiOnly = await pdf();
   matches(upiOnly, /screen\.assoc@icici/, 'UPI ID alone prints as a line');
-  truthy(!/SCAN AND PAY/.test(upiOnly), 'but no QR block');
+  truthy(!/Scan to pay .{1,2}UPI/.test(upiOnly), 'but no QR block');
   equal((await oSecretary.put('/api/society', { name: profile.body.name, payUpiId: 'bad upi' })).status, 400, 'a malformed UPI ID is refused');
   const up = await oSecretary.put('/api/society/payment-qr', { imageBase64: img('test-qr.jpg') });
   equal(up.status, 200, `QR saved ${JSON.stringify(up.body).slice(0, 200)}`);
   equal((await oSecretary.get('/api/society/payment-qr')).body.present, true, 'QR read back');
   const withQr = await pdf();
-  matches(withQr, /SCAN AND PAY/, 'QR block on the bill');
+  matches(withQr, /Scan to pay .{1,2}UPI/, 'QR block on the bill');
   matches(withQr, /screen\.assoc@icici/, 'with the UPI ID under it');
   matches(withQr, /909090909090/, 'bank details still there');
+  matches(withQr, /Payee: Mani Vista RWA/, 'the payee name');
+  matches(withQr, /Or pay by UPI to the ID shown beside the QR/, 'the closing line');
   equal((withQr.match(/\/Type \/Page\b/g) ?? []).length, 1, 'still one page');
   equal((await oSecretary.put('/api/society/payment-qr', { remove: true })).status, 200, 'QR removed');
-  truthy(!/SCAN AND PAY/.test(await pdf()), 'removed: nothing printed');
+  truthy(!/Scan to pay .{1,2}UPI/.test(await pdf()), 'removed: nothing printed');
 
   psql(`UPDATE societies SET pay_upi_id = NULL, pay_qr_jpeg = NULL WHERE id = '${oFixture.societyId}';`);
   psql(`UPDATE billing_documents SET state = 'cancelled', cancelled_reason = 'test cleanup' WHERE id = '${doc.documentId}';`);
