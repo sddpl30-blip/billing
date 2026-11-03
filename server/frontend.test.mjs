@@ -262,6 +262,7 @@ import { ApiClient, ApiError, readCookie } from '/build/api/client.js';
 import { createServerStore } from '/build/store/serverStore.js';
 import { resolveDataSource } from '/build/store/dataSource.js';
 import { residentsFrom, invoicesFrom, ticketsFrom } from '/build/api/legacy.js';
+import { arrearsOutstanding } from '/build/store/invoiceView.js';
 import { systemClock } from '/build/accounting/index.js';
 
 const results = [];
@@ -400,6 +401,18 @@ window.__READY__ = (async () => {
     equal(missing.refused, 1, 'a bill the server does not have is refused');
     equal(missing.notes[0], '0 e-mailed.', 'the summary comes first');
     truthy(missing.notes.some(n => n.includes('NO-SUCH-BILL')), 'and the refusal is named');
+  });
+
+  await record('arrears count posted invoices only, never proformas waiting to be sent', async () => {
+    const documents = store.allDocuments();
+    const posted = documents.filter(d => d.state === 'tax-invoice');
+    const unposted = documents.filter(d => d.state === 'draft' || d.state === 'approved' || d.state === 'released');
+    const expected = posted.reduce((sum, d) => sum + d.outstanding, 0);
+    equal(arrearsOutstanding(documents), expected, 'the outstanding on tax invoices');
+    // The same books with one more proforma waiting: arrears must not move.
+    const extra = { ...(unposted[0] ?? documents[0]), state: 'approved', outstanding: 999_999_00, gross: 999_999_00 };
+    equal(arrearsOutstanding([...documents, extra]), expected, 'an approved proforma adds nothing');
+    equal(arrearsOutstanding([{ ...extra, state: 'cancelled' }]), 0, 'a cancelled document adds nothing');
   });
 
   await record('a cancelled bill is not an invoice on any screen', async () => {

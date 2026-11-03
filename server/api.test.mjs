@@ -4979,6 +4979,40 @@ const releasePeriod = 'Feb 2027';
 let scheduledReleaseId = null;
 const indiaToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
 
+await check('details saved on the Society profile screen reach an unsent proforma\'s PDF', async () => {
+  // Through the screen's own route, not the database: this is what the office does.
+  const flat = oFlat('B-101');
+  const run = await oManager.post('/api/billing/run', { period: 'Jul 2026', issuedOn: '2026-10-05', flatIds: [flat.id] });
+  equal(run.status, 201, `run ${JSON.stringify(run.body).slice(0, 200)}`);
+  const doc = run.body.issued[0];
+  equal((await oTreasurer.post(`/api/billing/documents/${doc.documentId}/approve`, { on: '2026-10-05' })).status, 200, 'approved');
+  const cookie = () => [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+  const pdf = async () => Buffer.from(await (await fetch(`${base}/api/billing/documents/${doc.documentId}/pdf`, { headers: { Cookie: cookie() } })).arrayBuffer()).toString('latin1');
+  matches(await pdf(), /Not yet entered/, 'before: no bank details');
+
+  const profile = await oSecretary.get('/api/society');
+  const saved = await oSecretary.put('/api/society', {
+    name: profile.body.name, registrationNo: profile.body.registrationNo ?? '', gstin: profile.body.gstin ?? '',
+    stateCode: profile.body.stateCode ?? '', tan: profile.body.tan ?? '', address: profile.body.address ?? '',
+    contactEmail: 'mvra.screen@example.invalid', contactPhone: profile.body.contactPhone ?? '',
+    payBankName: 'Screen Bank', payBranch: 'Screen Branch', payAccountNo: '909090909090', payIfsc: 'SCRN0000123',
+  });
+  equal(saved.status, 200, `the screen's save ${JSON.stringify(saved.body).slice(0, 300)}`);
+  const back = await oSecretary.get('/api/society');
+  equal(back.body.payAccountNo, '909090909090', 'read back');
+  equal(back.body.contactEmail, 'mvra.screen@example.invalid', 'e-mail read back');
+
+  const after = await pdf();
+  matches(after, /909090909090/, 'the saved account number is on the PDF');
+  matches(after, /SCRN0000123/, 'and the IFSC');
+  matches(after, /mvra\.screen@example\.invalid/, 'and the e-mail');
+  truthy(!/Not yet entered/.test(after), 'not the old words');
+
+  psql(`UPDATE billing_documents SET state = 'cancelled', cancelled_reason = 'test cleanup' WHERE id = '${doc.documentId}';`);
+  psql(`UPDATE societies SET pay_bank_name = NULL, pay_branch = NULL, pay_account_no = NULL, pay_ifsc = NULL, contact_email = 'office@manivista.invalid'
+         WHERE id = '${oFixture.societyId}';`);
+});
+
 await check('a batch is raised and approved for the period', async () => {
   const run = await manager.post('/api/billing/run', { period: releasePeriod, issuedOn: '2027-02-01' });
   equal(run.status, 201, 'billing run');

@@ -264,6 +264,9 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
         },
         schemaVersion: migrations,
         expectedSchemaVersion: EXPECTED_SCHEMA_VERSION,
+        // Which build is answering, so "is it deployed?" has an answer: the
+        // short commit Vercel built from (absent off Vercel).
+        build: { commit: (process.env.VERCEL_GIT_COMMIT_SHA ?? '').slice(0, 7) || null },
         ...(schemaBehind
           ? {
               message:

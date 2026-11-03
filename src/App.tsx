@@ -64,6 +64,7 @@ import {
 } from './accounting';
 import { EXPENSE_ACCOUNTS } from './store/booksStore';
 import { useBooks } from './store/useBooks';
+import { arrearsOutstanding } from './store/invoiceView';
 import type { ReceiptOutcome } from './store/actions';
 import {
   apiCategoryFor, invoicesFrom, residentsFrom, ticketsFrom, vendorInvoicesFrom, vendorsFrom,
@@ -602,8 +603,17 @@ export default function App() {
     .sort((a, b) => dueIso(a).localeCompare(dueIso(b)))[0];
   // What the flat owes per the ledger — so a part payment shows as part paid —
   // falling back to the unpaid invoices' totals before the books are open.
-  const rohanTotalDueNum = books !== null && residentFlatNo !== ''
+  const rohanAdvanceNum = books !== null && residentFlatNo !== ''
+    ? toRupees(books.positionOf(residentFlatNo).advance)
+    : 0;
+  const rohanGrossDueNum = books !== null && residentFlatNo !== ''
     ? toRupees(books.positionOf(residentFlatNo).totalDues)
+    : 0;
+  // What the member has to pay: dues less any advance held, as on the bill's PDF
+  // ("Previous Outstanding"), rather than the dues and the advance as two
+  // figures that have to be subtracted in the head.
+  const rohanTotalDueNum = books !== null && residentFlatNo !== ''
+    ? Math.max(0, rohanGrossDueNum - rohanAdvanceNum)
     : rohanInvoices.filter(inv => inv.status !== 'Paid').reduce((acc, current) => acc + current.total, 0);
   const rohanTotalPaidNum = rohanInvoices.filter(inv => inv.status === 'Paid').reduce((acc, current) => acc + current.total, 0);
   const rohanOpenTicketsNum = tickets.filter(t => t.flatNo === residentFlatNo && t.status === 'Open').length;
@@ -706,7 +716,13 @@ export default function App() {
   );
 
   const mtdCollectedTotal = invoices.filter(inv => inv.status === 'Paid' && inv.period.includes('2026')).reduce((sum, inv) => sum + inv.total, 0);
-  const mtdOutstandingTotal = invoices.filter(inv => inv.status !== 'Paid').reduce((sum, inv) => sum + inv.total, 0);
+  // Arrears are what is owed on invoices that have been posted: tax invoices,
+  // including opening dues brought forward. A proforma posts nothing and is not
+  // owed yet, so it is not arrears however many are waiting to be sent; and a
+  // part-paid invoice counts for what is still outstanding, not its gross.
+  const mtdOutstandingTotal = registerDocuments.length > 0
+    ? toRupees(arrearsOutstanding(registerDocuments) as Paise)
+    : invoices.filter(inv => inv.status !== 'Paid').reduce((sum, inv) => sum + inv.total, 0);
   // Defaulters count: unique flatNo with Overdue invoices
   const uniqueDefaultersCount = Array.from(new Set(invoices.filter(inv => inv.status === 'Overdue').map(inv => inv.flatNo))).length;
   // Expenses sum
@@ -1989,6 +2005,9 @@ export default function App() {
                           <span className={`inline-block mt-2 px-1.5 py-0.5 text-[9px] font-bold rounded uppercase ${rohanTotalDueNum > 0 ? 'bg-red-700 text-white' : 'bg-[var(--mv-accent)] text-white'}`}>
                             {rohanTotalDueNum > 0 ? 'ARREARS DUE' : 'ALL CLEAR'}
                           </span>
+                          {rohanAdvanceNum > 0 && (
+                            <p className="mt-1 text-[10px] text-white/70">{formatRupee(rohanGrossDueNum)} dues, less {formatRupee(rohanAdvanceNum)} advance</p>
+                          )}
                         </div>
                       </div>
 
@@ -3358,6 +3377,9 @@ export default function App() {
                           <div className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-white/10 text-[9px] font-bold text-white">OVERDUE</div>
                         ) : (
                           <div className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-[var(--mv-accent)] text-[9px] font-bold text-white">PAID</div>
+                        )}
+                        {rohanAdvanceNum > 0 && (
+                          <p className="text-[9px] text-white/70 leading-tight">{formatRupee(rohanGrossDueNum)} dues, less {formatRupee(rohanAdvanceNum)} advance</p>
                         )}
                       </div>
                     </div>
