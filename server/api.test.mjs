@@ -5008,6 +5008,38 @@ await check('details saved on the Society profile screen reach an unsent proform
   matches(after, /mvra\.screen@example\.invalid/, 'and the e-mail');
   truthy(!/Not yet entered/.test(after), 'not the old words');
 
+  // The payment QR: no QR prints nothing; a bad image is refused; a good one prints, and is read at draw time.
+  truthy(!/SCAN AND PAY/.test(after), 'no QR uploaded: no QR block');
+  const { readFileSync } = await import('node:fs');
+  const img = (f) => readFileSync(new URL(`./${f}`, import.meta.url)).toString('base64');
+  equal((await oSecretary.put('/api/society/payment-qr', { imageBase64: img('test-qr-small.jpg') })).status, 400, 'under 300 px refused');
+  equal((await oSecretary.put('/api/society/payment-qr', { imageBase64: img('test-qr-wide.jpg') })).status, 400, 'not square refused');
+  equal((await oSecretary.put('/api/society/payment-qr', { imageBase64: Buffer.from('not an image').toString('base64') })).status, 400, 'not a JPEG refused');
+  equal((await oTreasurer.put('/api/society/payment-qr', { imageBase64: img('test-qr.jpg') })).status, 403, 'only settings.manage may upload');
+  const upi = await oSecretary.put('/api/society', {
+    name: profile.body.name, registrationNo: profile.body.registrationNo ?? '', gstin: profile.body.gstin ?? '',
+    stateCode: profile.body.stateCode ?? '', tan: profile.body.tan ?? '', address: profile.body.address ?? '',
+    contactEmail: 'mvra.screen@example.invalid', contactPhone: profile.body.contactPhone ?? '',
+    payBankName: 'Screen Bank', payBranch: 'Screen Branch', payAccountNo: '909090909090', payIfsc: 'SCRN0000123',
+    payUpiId: 'screen.assoc@icici',
+  });
+  equal(upi.status, 200, `UPI saved ${JSON.stringify(upi.body).slice(0, 200)}`);
+  const upiOnly = await pdf();
+  matches(upiOnly, /screen\.assoc@icici/, 'UPI ID alone prints as a line');
+  truthy(!/SCAN AND PAY/.test(upiOnly), 'but no QR block');
+  equal((await oSecretary.put('/api/society', { name: profile.body.name, payUpiId: 'bad upi' })).status, 400, 'a malformed UPI ID is refused');
+  const up = await oSecretary.put('/api/society/payment-qr', { imageBase64: img('test-qr.jpg') });
+  equal(up.status, 200, `QR saved ${JSON.stringify(up.body).slice(0, 200)}`);
+  equal((await oSecretary.get('/api/society/payment-qr')).body.present, true, 'QR read back');
+  const withQr = await pdf();
+  matches(withQr, /SCAN AND PAY/, 'QR block on the bill');
+  matches(withQr, /screen\.assoc@icici/, 'with the UPI ID under it');
+  matches(withQr, /909090909090/, 'bank details still there');
+  equal((withQr.match(/\/Type \/Page\b/g) ?? []).length, 1, 'still one page');
+  equal((await oSecretary.put('/api/society/payment-qr', { remove: true })).status, 200, 'QR removed');
+  truthy(!/SCAN AND PAY/.test(await pdf()), 'removed: nothing printed');
+
+  psql(`UPDATE societies SET pay_upi_id = NULL, pay_qr_jpeg = NULL WHERE id = '${oFixture.societyId}';`);
   psql(`UPDATE billing_documents SET state = 'cancelled', cancelled_reason = 'test cleanup' WHERE id = '${doc.documentId}';`);
   psql(`UPDATE societies SET pay_bank_name = NULL, pay_branch = NULL, pay_account_no = NULL, pay_ifsc = NULL, contact_email = 'office@manivista.invalid'
          WHERE id = '${oFixture.societyId}';`);

@@ -456,6 +456,7 @@ export interface SocietyProfile {
   readonly payBranch?: string | null;
   readonly payAccountNo?: string | null;
   readonly payIfsc?: string | null;
+  readonly payUpiId?: string | null;
   readonly canEdit: boolean;
 }
 
@@ -471,6 +472,23 @@ export function saveSociety(
   // Null is "not recorded"; the server reads an empty string the same way.
   const body = Object.fromEntries(Object.entries(profile).map(([k, v]) => [k, v ?? '']));
   return client.put('/api/society', body);
+}
+
+export interface PaymentQrState {
+  readonly present: boolean;
+  readonly available: boolean;
+  readonly imageBase64?: string;
+  readonly widthPx?: number;
+  readonly heightPx?: number;
+}
+
+export function readPaymentQr(client: ApiClient): Promise<PaymentQrState> {
+  return client.get('/api/society/payment-qr');
+}
+
+/** Saves a JPEG (base64) as the payment QR, or removes it when `imageBase64` is null. */
+export function savePaymentQr(client: ApiClient, imageBase64: string | null): Promise<{ present: boolean; note: string }> {
+  return client.put('/api/society/payment-qr', imageBase64 === null ? { remove: true } : { imageBase64 });
 }
 
 // --- the e-mail log ----------------------------------------------------------

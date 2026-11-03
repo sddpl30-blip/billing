@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { readSociety, saveSociety, type SocietyProfileInput } from '../../../api/office/governance';
+import { readPaymentQr, readSociety, savePaymentQr, saveSociety, type SocietyProfileInput } from '../../../api/office/governance';
 import type { OfficeContext } from '../types';
 import { Button, Card, LoadState, inputClass, labelClass, useLoad, useWrite } from './ui';
 
 const EMPTY: SocietyProfileInput = {
   name: '', registrationNo: null, gstin: null, stateCode: null, tan: null,
   address: null, contactEmail: null, contactPhone: null,
-  payBankName: null, payBranch: null, payAccountNo: null, payIfsc: null,
+  payBankName: null, payBranch: null, payAccountNo: null, payIfsc: null, payUpiId: null,
 };
 
 /**
@@ -20,6 +20,9 @@ export function SocietyProfileSection({ ctx }: { ctx: OfficeContext }) {
   const profile = useLoad(() => readSociety(ctx.client), [ctx]);
   const { busy, run } = useWrite(ctx, profile.refresh);
   const [form, setForm] = useState<SocietyProfileInput>(EMPTY);
+  const qr = useLoad(() => readPaymentQr(ctx.client), [ctx]);
+  const qrWrite = useWrite(ctx, qr.refresh);
+  const [qrError, setQrError] = useState<string | null>(null);
   const editable = profile.data?.canEdit === true;
 
   useEffect(() => {
@@ -29,7 +32,7 @@ export function SocietyProfileSection({ ctx }: { ctx: OfficeContext }) {
       name: p.name, registrationNo: p.registrationNo, gstin: p.gstin, stateCode: p.stateCode, tan: p.tan,
       address: p.address, contactEmail: p.contactEmail, contactPhone: p.contactPhone,
       payBankName: p.payBankName ?? null, payBranch: p.payBranch ?? null,
-      payAccountNo: p.payAccountNo ?? null, payIfsc: p.payIfsc ?? null,
+      payAccountNo: p.payAccountNo ?? null, payIfsc: p.payIfsc ?? null, payUpiId: p.payUpiId ?? null,
     });
   }, [profile.data]);
 
@@ -59,6 +62,34 @@ export function SocietyProfileSection({ ctx }: { ctx: OfficeContext }) {
       )}
     </div>
   );
+
+  const chooseQr = async (file: File | undefined): Promise<void> => {
+    setQrError(null);
+    if (file === undefined) return;
+    if (file.type === 'application/pdf') {
+      setQrError('A PDF cannot be used directly. Open it, take a screenshot or export the QR as an image (JPG or PNG), and upload that.');
+      return;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      const side = Math.min(bitmap.width, bitmap.height);
+      if (side < 300) { setQrError(`The image is ${bitmap.width} × ${bitmap.height}; it must be at least 300 × 300 so the QR scans cleanly.`); return; }
+      if (Math.abs(bitmap.width - bitmap.height) > side * 0.1) {
+        setQrError('Crop the image to just the QR square (width and height nearly equal) and upload again.'); return;
+      }
+      const out = Math.min(side, 1000);
+      const canvas = document.createElement('canvas');
+      canvas.width = out; canvas.height = out;
+      const g = canvas.getContext('2d');
+      if (g === null) { setQrError('This browser cannot prepare the image.'); return; }
+      g.fillStyle = '#fff'; g.fillRect(0, 0, out, out);
+      g.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height, 0, 0, out, out);
+      const data = canvas.toDataURL('image/jpeg', 0.92).split(',')[1] ?? '';
+      void qrWrite.run('qr', () => savePaymentQr(ctx.client, data), r => (r as { note: string }).note);
+    } catch {
+      setQrError('That file could not be read as an image. Use a JPG or PNG.');
+    }
+  };
 
   const gstinState = form.gstin !== null && /^[0-9]{2}/.test(form.gstin) ? form.gstin.slice(0, 2) : null;
   const mismatch = gstinState !== null && form.stateCode !== null && gstinState !== form.stateCode;
@@ -120,6 +151,42 @@ export function SocietyProfileSection({ ctx }: { ctx: OfficeContext }) {
               {field('payAccountNo', 'Account no.', { inputMode: 'numeric', maxLength: 20, hint: 'Digits only.' })}
               {field('payIfsc', 'IFSC', { upper: true, maxLength: 11, hint: 'Such as ICIC0001064.' })}
             </div>
+          </fieldset>
+          <fieldset className="space-y-2">
+            <legend className={labelClass}>Payment QR code (UPI)</legend>
+            {field('payUpiId', 'UPI ID', { maxLength: 120, hint: 'Printed under the QR. With no QR uploaded, only this line is printed.' })}
+            {qr.data !== null && !qr.data.available && (
+              <p role="alert" className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-xl p-2">
+                The QR needs database migration 013 (docs/neon/013-apply.sql) before it can be saved.
+              </p>
+            )}
+            {qr.data?.present === true && qr.data.imageBase64 !== undefined && (
+              <img
+                alt="Current payment QR code" width={120} height={120}
+                className="border border-[var(--mv-border)] rounded-lg"
+                src={`data:image/jpeg;base64,${qr.data.imageBase64}`}
+              />
+            )}
+            {editable && (
+              <div className="flex flex-wrap items-center gap-3">
+                <input
+                  type="file" accept="image/jpeg,image/png" aria-label="Upload payment QR image"
+                  disabled={qrWrite.busy !== null || qr.data?.available === false}
+                  onChange={e => { void chooseQr(e.target.files?.[0]); e.target.value = ''; }}
+                  className="text-xs"
+                />
+                {qr.data?.present === true && (
+                  <Button tone="secondary" type="button" disabled={qrWrite.busy !== null}
+                    onClick={() => void qrWrite.run('qr', () => savePaymentQr(ctx.client, null), r => (r as { note: string }).note)}>
+                    Remove QR
+                  </Button>
+                )}
+              </div>
+            )}
+            {qrError !== null && <p role="alert" className="text-xs text-red-700">{qrError}</p>}
+            <p className="text-[10px] text-[var(--mv-muted)]">
+              Upload the QR as a square image (JPG or PNG, at least 300 × 300 px). Bills read it from here each time they are drawn.
+            </p>
           </fieldset>
           {editable && (
             <div className="flex justify-end">
