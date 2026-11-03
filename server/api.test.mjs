@@ -4537,7 +4537,7 @@ await check('an opening due is not cancelled on its own, and carries no GST row 
 });
 
 await check('an opening due reads as "Arrears upto …", on screen and on its PDF, not as a tax invoice', async () => {
-  equal(billPeriodLabel('Oct 2026', 'OB/1/00142'), 'Arrears upto Sep 2026', 'cut-over on the 1st');
+  equal(billPeriodLabel('Oct 2026', 'OB/1/00142'), 'Arrears upto 30 Sep 2026', 'the default label date');
   equal(billPeriodLabel('Sep 2026', 'OB/1/00001', '2026-09-30'), 'Arrears upto 30 Sep 2026', 'cut-over at a month end');
   equal(billPeriodLabel('Oct 2026', 'PI/2026-10/0001'), 'Oct 2026', 'an ordinary bill is unchanged');
   equal(billTitle('Oct 2026', 'MV/2026/00012'), 'Oct 2026 Maintenance', 'an ordinary title');
@@ -4568,6 +4568,22 @@ await check('an opening due reads as "Arrears upto …", on screen and on its PD
   const old = Buffer.from(await reprint.arrayBuffer()).toString('latin1');
   matches(old, /STATEMENT OF ARREARS/, 'an older saved copy is relabelled too');
   truthy(!/TAX INVOICE/.test(old), 'and is not headed TAX INVOICE');
+
+  // The label date is a setting: changing it moves every label, not a posting.
+  const before = (await oManager.get(`/api/flats/${oFlat('A-101').id}/dues?asAt=2026-10-01`)).body.invoices[0];
+  const saved = await oSecretary.put('/api/settings/billing.arrearsLabelDate', { value: '2026-09-15' });
+  equal(saved.status, 200, 'the label date is saved');
+  const snap2 = await oManager.get('/api/books/snapshot');
+  equal(snap2.body.arrearsLabelDate, '2026-09-15', 'the screens are told the new label date');
+  equal(snap2.body.openingAsAt[due.taxInvoiceNo], OPENING_AS_AT, 'the opening date itself is unchanged');
+  const after = (await oManager.get(`/api/flats/${oFlat('A-101').id}/dues?asAt=2026-10-01`)).body.invoices[0];
+  equal(after.outstanding, before.outstanding, 'no amount moved');
+  equal(after.dueOn, before.dueOn, 'no due date moved');
+  const fresh = await fetch(`${base}/api/billing/documents/${due.documentId}/pdf?regenerate=true`, {
+    headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') },
+  });
+  matches(Buffer.from(await fresh.arrayBuffer()).toString('latin1'), /Arrears upto 15 Sep 2026/, 'a new PDF reads the setting');
+  psql(`DELETE FROM society_settings WHERE society_id = '${oFixture.societyId}' AND key = 'billing.arrearsLabelDate';`);
 });
 
 await check('opening dues do not block that month\'s bill; the PI prints in the association\'s format; release moves due dates', async () => {
@@ -5116,6 +5132,50 @@ await check('at the time, the approved proformas are released and their emails q
   const done = list.body.releases.find(x => x.id === scheduledReleaseId);
   equal(done.state, 'succeeded', 'the release is recorded as done');
   truthy(done.result.released > 0, 'with how many went out');
+});
+
+suite('receipts and advances: prepared by one, decided by another');
+
+await check('a receipt is added and then reversed, each needing a different person, a reason, and leaving the history', async () => {
+  const flat = oFlat('A-102');
+  const add = { kind: 'add', flatId: flat.id, amountPaise: 50_000, receivedOn: '2026-10-29', method: 'neft', instrumentRef: 'REQ-TEST-1', reason: 'Advance received by NEFT' };
+  equal((await oManager.post('/api/receipt-requests', { ...add, reason: '' })).status, 400, 'a reason is mandatory');
+  equal((await oSecretary.post('/api/receipt-requests', { ...add, kind: 'reverse' })).status, 400, 'a reversal must name a receipt');
+  const made = await oManager.post('/api/receipt-requests', add);
+  equal(made.status, 201, `prepared ${JSON.stringify(made.body).slice(0, 200)}`);
+  const before = oCount(`SELECT count(*) FROM payments WHERE society_id = '${oFixture.societyId}' AND flat_id = '${flat.id}';`);
+  equal(before, 0, 'nothing is posted by preparing it');
+  equal((await oManager.post(`/api/receipt-requests/${made.body.id}/decide`, { decision: 'approved' })).status, 403, 'the preparer cannot decide');
+  const own = await oTreasurer.post('/api/receipt-requests', { ...add, instrumentRef: 'REQ-TEST-OWN' });
+  equal(own.status, 201, 'the treasurer may prepare too');
+  equal((await oTreasurer.post(`/api/receipt-requests/${own.body.id}/decide`, { decision: 'approved' })).status, 403, 'but not approve their own');
+  equal((await oTreasurer.post(`/api/receipt-requests/${own.body.id}/decide`, { decision: 'rejected' })).status, 400, 'a rejection needs a reason');
+  equal((await oSecretary.post(`/api/receipt-requests/${own.body.id}/decide`, { decision: 'rejected', note: 'x' })).status, 403, 'the secretary cannot decide');
+  equal((await oTreasurer.post(`/api/receipt-requests/${own.body.id}/decide`, { decision: 'rejected', note: 'duplicate' })).status, 403, 'still not their own');
+  const ok1 = await oTreasurer.post(`/api/receipt-requests/${made.body.id}/decide`, { decision: 'approved' });
+  equal(ok1.status, 200, `approved ${JSON.stringify(ok1.body).slice(0, 200)}`);
+  matches(ok1.body.note, /recorded as RC\//, 'recorded as a receipt');
+  equal((await oTreasurer.post(`/api/receipt-requests/${made.body.id}/decide`, { decision: 'approved' })).status, 409, 'decided once');
+  const pay = (await oTreasurer.get('/api/payments')).body.payments.find(p => p.instrumentRef === 'REQ-TEST-1');
+  truthy(pay !== undefined, 'the receipt exists');
+  equal(pay.amountPaise, 50_000, 'for the amount asked');
+
+  // Reverse it.
+  const rev = { kind: 'reverse', paymentId: pay.id, effectiveOn: '2026-10-30', reason: 'Entered against the wrong flat' };
+  equal((await oSecretary.post('/api/receipt-requests', { ...rev, reason: ' ' })).status, 400, 'a reversal needs a reason too');
+  const asked = await oSecretary.post('/api/receipt-requests', rev);
+  equal(asked.status, 201, 'reversal prepared');
+  equal((await oSecretary.post('/api/receipt-requests', rev)).status, 409, 'not twice');
+  equal((await oSecretary.post(`/api/receipt-requests/${asked.body.id}/decide`, { decision: 'approved' })).status, 403, 'the secretary cannot approve it');
+  const done = await oTreasurer.post(`/api/receipt-requests/${asked.body.id}/decide`, { decision: 'approved' });
+  equal(done.status, 200, `reversed ${JSON.stringify(done.body).slice(0, 200)}`);
+  const list = (await oTreasurer.get('/api/receipt-requests')).body;
+  truthy(list.requests.some(r => r.kind === 'reverse' && r.decision === 'approved' && r.reason === rev.reason), 'the history is kept');
+  equal(oCount(`SELECT count(*) FROM payments WHERE flat_id = '${flat.id}' AND receipt_no = '${pay.receiptNo}';`), 1, 'the receipt row is not deleted');
+  equal(oCount(`SELECT count(*) FROM receipt_requests WHERE society_id = '${oFixture.societyId}' AND decision = 'approved';`), 2, 'both decisions are on record');
+  const rejected = await oSecretary.post('/api/receipt-requests', { ...add, instrumentRef: 'REQ-TEST-2' });
+  equal((await oTreasurer.post(`/api/receipt-requests/${rejected.body.id}/decide`, { decision: 'rejected', note: 'Not received' })).status, 200, 'a rejection with a reason');
+  equal((await oTreasurer.get('/api/payments')).body.payments.filter(p => p.instrumentRef === 'REQ-TEST-2').length, 0, 'and posts nothing');
 });
 
 suite('consistency');

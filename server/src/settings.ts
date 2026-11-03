@@ -15,6 +15,7 @@
 import type { Queryable } from './pg';
 import { badRequest, conflict } from './http';
 import type { GstTreatment } from './posting';
+import { ARREARS_LABEL_DEFAULT } from '../../src/accounting/billLabel';
 import type { AreaBasis, MaintenanceRate } from '../../src/accounting/rates';
 
 export interface SettingRow {
@@ -102,6 +103,7 @@ export const SETTING_KEYS = {
   SINKING_PERCENT: 'billing.sinkingFundPercent',
   BILLING_DAY: 'billing.dayOfMonth',
   FUNDS_THROUGH_INCOME: 'accounting.sinkingFundThroughIncome',
+  ARREARS_LABEL_DATE: 'billing.arrearsLabelDate',
 } as const;
 
 /**
@@ -211,6 +213,18 @@ export async function invoicePrefix(tx: Queryable, societyId: string): Promise<s
   // invoice, and guessing an abbreviation of the association's name would put
   // an invented identifier on a legal document.
   return 'INV';
+}
+
+/**
+ * The date an opening due reads "Arrears upto <date>" from. A label only, so
+ * it takes effect when saved, with no sign-off; nothing posted or due reads it.
+ */
+export async function arrearsLabelDate(tx: Queryable, societyId: string): Promise<string> {
+  const row = await readOne(tx, societyId, SETTING_KEYS.ARREARS_LABEL_DATE);
+  const value = row?.value;
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value))
+    ? value
+    : ARREARS_LABEL_DEFAULT;
 }
 
 export async function dueDays(tx: Queryable, societyId: string): Promise<number> {

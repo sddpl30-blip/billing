@@ -28,7 +28,7 @@ import { DEMO_CONFIG } from '../accounting/config';
 import type { BooksReader, BooksSnapshot, VendorBillState } from './booksStore';
 import type { BankAccountOption, BatchOutcome, BooksActions, ReceiptOutcome } from './actions';
 import type { ApiClient, SnapshotResponse } from '../api/client';
-import { registerOpeningDates } from '../accounting/billLabel';
+import { registerArrearsLabelDate } from '../accounting/billLabel';
 
 export interface ServerStoreOptions {
   readonly client: ApiClient;
@@ -237,7 +237,7 @@ export function createServerStore(options: ServerStoreOptions): ServerBooksStore
         rate: next.rate,
         upcomingRate: next.upcomingRate ?? null,
       };
-      registerOpeningDates(next.openingAsAt ?? {});
+      registerArrearsLabelDate(next.arrearsLabelDate);
 
       flatIds.clear();
       for (const flat of next.flats) flatIds.set(flat.flatNo, flat.id);

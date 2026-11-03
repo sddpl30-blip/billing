@@ -29,7 +29,7 @@ import {
   clearCookie, csrfCookie, sessionCookie, sha256, SESSION_COOKIE,
 } from './security';
 import {
-  permissionsOf, readableFlats, requireFlatAccess, requirePermission,
+  ForbiddenError, hasPermission, permissionsOf, readableFlats, requireFlatAccess, requirePermission,
   type Permission, type Principal,
 } from './rbac';
 import { audit, readAudit } from './audit';
@@ -38,7 +38,7 @@ import {
   payVendor, recordReceipt, remitTds, reverseEntry, tdsQuarter,
 } from './posting';
 import { formatRupees, percentOf } from '../../src/accounting/money';
-import { alignDueDatesOnRelease, listDocuments, runBilling } from './billing';
+import { alignDueDatesOnRelease, listDocuments, migrationApplied, runBilling } from './billing';
 import { cancellationCreditNote, generateDocument } from './documents';
 import { allocateNumber, lockFlatBalance } from './series';
 import { settleAdvanceFor } from './advances';
@@ -1288,47 +1288,226 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     });
   });
 
+  /**
+   * Reverses a posted receipt by a mirror entry. The payment row and its
+   * allocations stay; what changes is the ledger, which is why a bounced
+   * cheque or a wrong receipt leaves a visible history rather than a gap.
+   */
+  const reverseReceipt = async (
+    tx: Queryable, principal: Principal,
+    input: { paymentId: string; on: string; reason: string; requestId: string },
+  ): Promise<{ receiptNo: string; reversalEntryId: string }> => {
+    const found = await tx.query<{ receipt_no: string; posted_entry_id: string | null }>(
+      'SELECT receipt_no, posted_entry_id FROM payments WHERE id = $1 AND society_id = $2',
+      [input.paymentId, principal.societyId],
+    );
+    const payment = found.rows[0];
+    if (payment === undefined) throw notFound('That payment');
+    if (payment.posted_entry_id === null) throw conflict('That payment was never posted.');
+    const reversalId = await reverseEntry(tx, {
+      societyId: principal.societyId,
+      entryId: payment.posted_entry_id,
+      date: input.on,
+      reason: `Reversal of receipt ${payment.receipt_no}: ${input.reason}`,
+      postedBy: principal.userId,
+      postedByLabel: principal.email,
+    });
+    await audit(tx, {
+      societyId: principal.societyId,
+      actorUser: principal.userId,
+      actorLabel: principal.email,
+      action: 'payment.reverse',
+      subjectTable: 'payments',
+      subjectId: input.paymentId,
+      detail: { receiptNo: payment.receipt_no, reason: input.reason, reversalEntryId: reversalId },
+      requestId: input.requestId,
+    });
+    return { receiptNo: payment.receipt_no, reversalEntryId: reversalId };
+  };
+
   const reversePayment = route('POST', '/api/payments/:id/reverse', async (ctx) => {
     const principal = need(ctx, 'payment.reverse');
     const input = ctx.body(v.object({
       on: v.isoDate(),
       reason: v.text({ max: 500 }),
     }));
+    const result = await pool.transaction(tx => reverseReceipt(tx, principal, {
+      paymentId: ctx.params.id, on: input.on, reason: input.reason, requestId: ctx.requestId,
+    }));
+    return ok(result);
+  });
 
+  // --- receipts and advances, prepared by one person and decided by another ---
+
+  const requestsReady = async (): Promise<void> => {
+    if (!(await migrationApplied(pool, '014_receipt_requests.sql'))) {
+      throw badRequest(
+        'Adding and reversing receipts needs database migration 014. Run docs/neon/014-apply.sql ' +
+        'in Neon (societybooks database) once.',
+      );
+    }
+  };
+
+  const listReceiptRequests = route('GET', '/api/receipt-requests', async (ctx) => {
+    const principal = who(ctx);
+    if (!hasPermission(principal, 'payment.request') && !hasPermission(principal, 'payment.reverse')) {
+      requirePermission(principal, 'payment.request');
+    }
+    if (!(await migrationApplied(pool, '014_receipt_requests.sql'))) return ok({ available: false, requests: [] });
+    const rows = await pool.query<{
+      id: string; kind: string; flat_no: string | null; receipt_no: string | null; amount_paise: string | null;
+      received_on: string | null; effective_on: string | null; method: string | null; instrument_ref: string | null;
+      reason: string; requested_by: string; requested_at: string; decided_by: string | null; decided_at: string | null;
+      decision: string | null; decision_note: string | null; result_receipt_no: string | null;
+    }>(
+      `SELECT r.id, r.kind,
+              COALESCE(f.flat_no, pf.flat_no) AS flat_no,
+              p.receipt_no, COALESCE(r.amount_paise, p.amount)::text AS amount_paise,
+              r.received_on::text, r.effective_on::text, r.method, r.instrument_ref, r.reason,
+              ru.email AS requested_by, r.requested_at::text,
+              du.email AS decided_by, r.decided_at::text, r.decision, r.decision_note,
+              rp.receipt_no AS result_receipt_no
+         FROM receipt_requests r
+         LEFT JOIN flats f ON f.id = r.flat_id
+         LEFT JOIN payments p ON p.id = r.payment_id
+         LEFT JOIN flats pf ON pf.id = p.flat_id
+         LEFT JOIN payments rp ON rp.id = r.result_payment_id
+         JOIN users ru ON ru.id = r.requested_by
+         LEFT JOIN users du ON du.id = r.decided_by
+        WHERE r.society_id = $1
+        ORDER BY (r.decision IS NULL) DESC, r.requested_at DESC
+        LIMIT 100`,
+      [principal.societyId],
+    );
+    return ok({
+      available: true,
+      requests: rows.rows.map(r => ({
+        id: r.id, kind: r.kind, flatNo: r.flat_no, receiptNo: r.receipt_no,
+        amountPaise: r.amount_paise === null ? null : Number(r.amount_paise),
+        receivedOn: r.received_on, effectiveOn: r.effective_on, method: r.method, instrumentRef: r.instrument_ref,
+        reason: r.reason, requestedBy: r.requested_by, requestedAt: r.requested_at,
+        decidedBy: r.decided_by, decidedAt: r.decided_at, decision: r.decision, decisionNote: r.decision_note,
+        resultReceiptNo: r.result_receipt_no,
+      })),
+    });
+  });
+
+  const requestReceipt = route('POST', '/api/receipt-requests', async (ctx) => {
+    const principal = need(ctx, 'payment.request');
+    await requestsReady();
+    const input = ctx.body(v.object({
+      kind: v.enumOf(['add', 'reverse'] as const),
+      reason: v.text({ max: 500 }),
+      flatId: v.uuid().optional(),
+      amountPaise: v.paise({ min: 1 }).optional(),
+      receivedOn: v.isoDate().optional(),
+      method: v.enumOf(['upi', 'neft', 'imps', 'cheque', 'cash', 'nach', 'card'] as const).optional(),
+      instrumentRef: v.text({ max: 100 }).optional(),
+      bankAccountId: v.uuid().optional(),
+      paymentId: v.uuid().optional(),
+      effectiveOn: v.isoDate().optional(),
+    }));
+    if (input.reason.trim().length < 3) throw badRequest('Give the reason, in a few words.');
+    if (input.kind === 'add') {
+      if (input.flatId === undefined || input.amountPaise === undefined || input.receivedOn === undefined || input.method === undefined) {
+        throw badRequest('To add a receipt or advance, give the flat, amount, date received and method.');
+      }
+    } else if (input.paymentId === undefined || input.effectiveOn === undefined) {
+      throw badRequest('To reverse a receipt, choose the receipt and the date of the reversal.');
+    }
+    const id = await pool.transaction(async (tx) => {
+      if (input.kind === 'add') {
+        const flat = await tx.query('SELECT 1 FROM flats WHERE id = $1 AND society_id = $2', [input.flatId ?? null, principal.societyId]);
+        if (flat.rows[0] === undefined) throw notFound('That flat');
+      } else {
+        const pay = await tx.query('SELECT 1 FROM payments WHERE id = $1 AND society_id = $2', [input.paymentId ?? null, principal.societyId]);
+        if (pay.rows[0] === undefined) throw notFound('That receipt');
+        const open = await tx.query(
+          `SELECT 1 FROM receipt_requests WHERE payment_id = $1 AND kind = 'reverse'
+              AND (decision IS NULL OR decision = 'approved')`, [input.paymentId ?? null]);
+        if (open.rows[0] !== undefined) throw conflict('That receipt already has a reversal waiting for a decision, or already reversed.');
+      }
+      const made = await tx.query<{ id: string }>(
+        `INSERT INTO receipt_requests
+           (society_id, kind, flat_id, amount_paise, received_on, method, instrument_ref, bank_account_id,
+            payment_id, effective_on, reason, requested_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+        [principal.societyId, input.kind, input.flatId ?? null, input.amountPaise ?? null, input.receivedOn ?? null,
+          input.method ?? null, input.instrumentRef ?? null, input.bankAccountId ?? null, input.paymentId ?? null,
+          input.effectiveOn ?? null, input.reason.trim(), principal.userId],
+      );
+      await audit(tx, {
+        societyId: principal.societyId, actorUser: principal.userId, actorLabel: principal.email,
+        action: 'payment.request', subjectTable: 'receipt_requests', subjectId: made.rows[0].id,
+        detail: { kind: input.kind, reason: input.reason }, requestId: ctx.requestId,
+      });
+      return made.rows[0].id;
+    });
+    return created({ id, note: 'Prepared. The treasurer has to approve it before anything is posted.' });
+  });
+
+  const decideReceiptRequest = route('POST', '/api/receipt-requests/:id/decide', async (ctx) => {
+    const principal = need(ctx, 'payment.reverse');
+    await requestsReady();
+    const input = ctx.body(v.object({
+      decision: v.enumOf(['approved', 'rejected'] as const),
+      note: v.text({ max: 500 }).optional(),
+    }));
+    if (input.decision === 'rejected' && (input.note ?? '').trim().length < 3) {
+      throw badRequest('Say why it is rejected.');
+    }
     const result = await pool.transaction(async (tx) => {
-      const found = await tx.query<{ receipt_no: string; posted_entry_id: string | null }>(
-        'SELECT receipt_no, posted_entry_id FROM payments WHERE id = $1 AND society_id = $2',
+      const found = await tx.query<{
+        kind: string; flat_id: string | null; amount_paise: string | null; received_on: string | null;
+        method: string | null; instrument_ref: string | null; bank_account_id: string | null;
+        payment_id: string | null; effective_on: string | null; reason: string; requested_by: string; decision: string | null;
+      }>(
+        `SELECT kind, flat_id, amount_paise::text, received_on::text, method, instrument_ref, bank_account_id,
+                payment_id, effective_on::text, reason, requested_by, decision
+           FROM receipt_requests WHERE id = $1 AND society_id = $2 FOR UPDATE`,
         [ctx.params.id, principal.societyId],
       );
-      const payment = found.rows[0];
-      if (payment === undefined) throw notFound('That payment');
-      if (payment.posted_entry_id === null) throw conflict('That payment was never posted.');
-
-      // The payment row stays, and so do its allocations. What changes is the
-      // ledger, by a mirror entry — which is why a bounced cheque leaves a
-      // visible history rather than a gap.
-      const reversalId = await reverseEntry(tx, {
-        societyId: principal.societyId,
-        entryId: payment.posted_entry_id,
-        date: input.on,
-        reason: `Reversal of receipt ${payment.receipt_no}: ${input.reason}`,
-        postedBy: principal.userId,
-        postedByLabel: principal.email,
-      });
+      const req = found.rows[0];
+      if (req === undefined) throw notFound('That request');
+      if (req.decision !== null) throw conflict('That request has already been decided.');
+      if (req.requested_by === principal.userId) {
+        throw new ForbiddenError('You prepared this request, so someone else has to decide it.');
+      }
+      let resultPaymentId: string | null = null;
+      let reversalEntryId: string | null = null;
+      let note = input.decision === 'rejected' ? 'Rejected. Nothing was posted.' : '';
+      if (input.decision === 'approved') {
+        if (req.kind === 'add') {
+          const flat = await tx.query<{ flat_no: string }>('SELECT flat_no FROM flats WHERE id = $1', [req.flat_id]);
+          const done = await takePayment(tx, principal, {
+            flatId: req.flat_id as string, flatNo: flat.rows[0].flat_no,
+            amountPaise: Number(req.amount_paise), receivedOn: req.received_on as string, method: req.method as string,
+            ...(req.instrument_ref === null ? {} : { instrumentRef: req.instrument_ref }),
+            ...(req.bank_account_id === null ? {} : { bankAccountId: req.bank_account_id }),
+          }, `receipt-request:${ctx.params.id}`, ctx.requestId);
+          resultPaymentId = (done as { paymentId?: string }).paymentId ?? null;
+          note = `Approved and recorded as ${(done as { receiptNo?: string }).receiptNo ?? 'a receipt'}.`;
+        } else {
+          const reversed = await reverseReceipt(tx, principal, {
+            paymentId: req.payment_id as string, on: req.effective_on as string, reason: req.reason, requestId: ctx.requestId,
+          });
+          reversalEntryId = reversed.reversalEntryId;
+          note = `Approved. Receipt ${reversed.receiptNo} is reversed by a mirror entry; the history stays.`;
+        }
+      }
+      await tx.query(
+        `UPDATE receipt_requests SET decided_by = $2, decided_at = now(), decision = $3, decision_note = $4,
+                result_payment_id = $5, reversal_entry_id = $6 WHERE id = $1`,
+        [ctx.params.id, principal.userId, input.decision, input.note ?? null, resultPaymentId, reversalEntryId],
+      );
       await audit(tx, {
-        societyId: principal.societyId,
-        actorUser: principal.userId,
-        actorLabel: principal.email,
-        action: 'payment.reverse',
-        subjectTable: 'payments',
-        subjectId: ctx.params.id,
-        detail: { receiptNo: payment.receipt_no, reason: input.reason, reversalEntryId: reversalId },
-        requestId: ctx.requestId,
+        societyId: principal.societyId, actorUser: principal.userId, actorLabel: principal.email,
+        action: 'payment.request.decide', subjectTable: 'receipt_requests', subjectId: ctx.params.id,
+        detail: { decision: input.decision, kind: req.kind }, requestId: ctx.requestId,
       });
-      return { receiptNo: payment.receipt_no, reversalEntryId: reversalId };
+      return note;
     });
-
-    return ok(result);
+    return ok({ note: result });
   });
 
   const flatDues = route('GET', '/api/flats/:id/dues', async (ctx) => {
@@ -2723,6 +2902,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     billingRun, listBillingDocuments, approveDocument, releaseDocument, convertDocument,
     cancelDocument, cancelUnsentPeriod,
     recordPayment, importPayments, listPayments, reversePayment,
+    listReceiptRequests, requestReceipt, decideReceiptRequest,
     listVendors, addVendor, addVendorBill, listVendorBills, approveVendorBill,
     bookVendorBillRoute, payVendorBill, remitTdsRoute,
     listBankAccounts, addBankAccount, importStatement, listBankTransactions, matchBankTransaction, reconcile,

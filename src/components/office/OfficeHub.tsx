@@ -40,7 +40,7 @@ const SECTIONS: readonly Section[] = [
   {
     key: 'governance', label: 'Approvals & admin',
     blurb: 'Rates, GST and settings approval, financial periods, users and roles, flats and owners, helpdesk.',
-    anyOf: ['settings.manage', 'rate.approve', 'period.close', 'period.reopen', 'user.manage', 'member.manage', 'ticket.assign', 'ticket.resolve'],
+    anyOf: ['settings.manage', 'rate.approve', 'payment.request', 'payment.reverse', 'period.close', 'period.reopen', 'user.manage', 'member.manage', 'ticket.assign', 'ticket.resolve'],
   },
   {
     key: 'reports', label: 'Reports',

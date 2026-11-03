@@ -509,3 +509,43 @@ export interface MailLogRow {
 export function listMailLog(client: ApiClient): Promise<{ emailDelivers: boolean; provider: string; messages: MailLogRow[] }> {
   return client.get('/api/notifications/log');
 }
+
+// --- receipts and advances: prepared by one person, decided by another ---------
+
+export interface ReceiptRequest {
+  readonly id: string;
+  readonly kind: 'add' | 'reverse';
+  readonly flatNo: string | null;
+  readonly receiptNo: string | null;
+  readonly amountPaise: number | null;
+  readonly receivedOn: string | null;
+  readonly effectiveOn: string | null;
+  readonly method: string | null;
+  readonly instrumentRef: string | null;
+  readonly reason: string;
+  readonly requestedBy: string;
+  readonly requestedAt: string;
+  readonly decidedBy: string | null;
+  readonly decidedAt: string | null;
+  readonly decision: 'approved' | 'rejected' | null;
+  readonly decisionNote: string | null;
+  readonly resultReceiptNo: string | null;
+}
+
+export function listReceiptRequests(client: ApiClient): Promise<{ available: boolean; requests: ReceiptRequest[] }> {
+  return client.get('/api/receipt-requests');
+}
+
+export type ReceiptRequestInput =
+  | { kind: 'add'; flatId: string; amountPaise: number; receivedOn: string; method: string; instrumentRef?: string; reason: string }
+  | { kind: 'reverse'; paymentId: string; effectiveOn: string; reason: string };
+
+export function requestReceipt(client: ApiClient, input: ReceiptRequestInput): Promise<{ id: string; note: string }> {
+  return client.post('/api/receipt-requests', input);
+}
+
+export function decideReceiptRequest(
+  client: ApiClient, id: string, decision: 'approved' | 'rejected', note?: string,
+): Promise<{ note: string }> {
+  return client.post(`/api/receipt-requests/${encodeURIComponent(id)}/decide`, { decision, ...(note === undefined ? {} : { note }) });
+}

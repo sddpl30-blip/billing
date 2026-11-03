@@ -32,7 +32,7 @@
 
 import type { Queryable } from './pg';
 import { hasPermission, type Principal } from './rbac';
-import { DEFAULT_GST_MEMBER_THRESHOLD_RUPEES } from './settings';
+import { DEFAULT_GST_MEMBER_THRESHOLD_RUPEES, arrearsLabelDate } from './settings';
 
 export interface EngineLeg {
   readonly accountCode: string;
@@ -153,6 +153,7 @@ export interface BooksSnapshotView {
    */
   /** Opening dues brought forward (OB/…), by number, with their opening date. */
   readonly openingAsAt: Readonly<Record<string, string>>;
+  readonly arrearsLabelDate: string;
   readonly upcomingRate: {
     readonly ratePerSqFt: number;
     readonly basis: string;
@@ -512,6 +513,7 @@ export async function buildSnapshot(
           approved: rate.approved_by !== null,
         },
     openingAsAt,
+    arrearsLabelDate: await arrearsLabelDate(tx, societyId),
     upcomingRate: upcoming === undefined
       ? null
       : {
