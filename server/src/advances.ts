@@ -101,3 +101,36 @@ export async function flatsWithAdvances(
   );
   return result.rows.map(r => ({ flatId: r.id, flatNo: r.flat_no }));
 }
+
+/**
+ * Sets a flat's advance against what it now owes, automatically, at the two
+ * moments it matters: when a bill becomes a tax invoice and when a receipt is
+ * taken. Without this the advance sat on the member-advance account until
+ * someone pressed "Apply advances", while the invoice it should have settled
+ * stayed open: a flat paying the net figure on its bill was left with arrears
+ * showing and an advance beside them.
+ *
+ * Quiet when there is nothing to apply. `on` is the day of the conversion or
+ * the receipt.
+ */
+export async function settleAdvanceFor(
+  tx: Queryable,
+  input: {
+    societyId: string; on: string; postedBy: string | null; postedByLabel: string;
+    flatId?: string; documentId?: string;
+  },
+): Promise<AdvanceApplication | null> {
+  const found = input.flatId !== undefined
+    ? await tx.query<{ id: string; flat_no: string }>(
+        'SELECT id, flat_no FROM flats WHERE id = $1 AND society_id = $2', [input.flatId, input.societyId])
+    : await tx.query<{ id: string; flat_no: string }>(
+        `SELECT f.id, f.flat_no FROM billing_documents d JOIN flats f ON f.id = d.flat_id
+          WHERE d.id = $1 AND d.society_id = $2`, [input.documentId ?? null, input.societyId]);
+  const flat = found.rows[0];
+  if (flat === undefined) return null;
+  const applied = await applyAdvance(tx, {
+    societyId: input.societyId, flatId: flat.id, flatNo: flat.flat_no, on: input.on,
+    postedBy: input.postedBy, postedByLabel: input.postedByLabel,
+  });
+  return applied.appliedPaise > 0 ? applied : null;
+}

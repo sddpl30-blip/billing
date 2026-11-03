@@ -41,6 +41,7 @@ import { formatRupees, percentOf } from '../../src/accounting/money';
 import { alignDueDatesOnRelease, listDocuments, runBilling } from './billing';
 import { cancellationCreditNote, generateDocument } from './documents';
 import { allocateNumber, lockFlatBalance } from './series';
+import { settleAdvanceFor } from './advances';
 import { canonicalPeriod, isoDateInIndia } from '../../src/accounting/clock';
 import {
   ageing, balanceSheet, collectionSummary, gstSummary, incomeAndExpenditure, memberStatement,
@@ -162,6 +163,13 @@ async function takePayment(
       gst: await gstTreatment(tx, principal.societyId),
       invoicePrefix: await invoicePrefix(tx, principal.societyId),
     },
+  });
+
+  // Any advance the flat holds goes against what is still open, so a receipt
+  // for the net figure on a bill leaves nothing showing as owed.
+  await settleAdvanceFor(tx, {
+    societyId: principal.societyId, flatId: input.flatId, on: input.receivedOn,
+    postedBy: principal.userId, postedByLabel: principal.email,
   });
 
   await audit(tx, {
@@ -944,6 +952,11 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
         gst,
         invoicePrefix: prefix,
       });
+      // The flat's advance, if it holds one, is set against what it now owes.
+      const advance = await settleAdvanceFor(tx, {
+        societyId: principal.societyId, documentId: ctx.params.id, on: input.on,
+        postedBy: principal.userId, postedByLabel: principal.email,
+      });
       await audit(tx, {
         societyId: principal.societyId,
         actorUser: principal.userId,
@@ -955,10 +968,11 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
           taxInvoiceNo: converted.taxInvoiceNo,
           grossPaise: converted.gross,
           because: input.because,
+          ...(advance === null ? {} : { advanceAppliedPaise: advance.appliedPaise }),
         },
         requestId: ctx.requestId,
       });
-      return converted;
+      return { ...converted, advanceAppliedPaise: advance?.appliedPaise ?? 0 };
     });
 
     return ok({ ...result, posted: true });

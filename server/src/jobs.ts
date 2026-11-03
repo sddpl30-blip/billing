@@ -20,6 +20,7 @@ import type { Logger } from './logger';
 import type { EmailProvider } from './providers/email';
 import { convertToTaxInvoice } from './posting';
 import { alignDueDatesOnRelease, runBilling } from './billing';
+import { settleAdvanceFor } from './advances';
 import { generateDocument } from './documents';
 import { gstTreatment, invoicePrefix } from './settings';
 import { audit } from './audit';
@@ -124,16 +125,21 @@ const dueDateConversion: Handler = async (job, ctx) => {
       const result = await ctx.pool.transaction(async (tx) => {
         const gst = await gstTreatment(tx, societyId);
         const prefix = await invoicePrefix(tx, societyId);
-        return convertToTaxInvoice(tx, {
+        const postedBy = typeof job.payload.requestedBy === 'string' ? job.payload.requestedBy : null;
+        const postedByLabel = `scheduler (${job.runKey})`;
+        const converted = await convertToTaxInvoice(tx, {
           societyId,
           documentId: document.id,
           on,
           because: 'due-date-reached',
-          postedBy: typeof job.payload.requestedBy === 'string' ? job.payload.requestedBy : null,
-          postedByLabel: `scheduler (${job.runKey})`,
+          postedBy,
+          postedByLabel,
           gst,
           invoicePrefix: prefix,
         });
+        // The flat's advance, if any, is set against what it now owes.
+        await settleAdvanceFor(tx, { societyId, documentId: document.id, on, postedBy, postedByLabel });
+        return converted;
       });
       converted.push(result.taxInvoiceNo);
     } catch (err) {

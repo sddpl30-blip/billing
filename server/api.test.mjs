@@ -4832,16 +4832,19 @@ await check('an opening advance is applied to the next bill', async () => {
   const converted = await oTreasurer.post(`/api/billing/documents/${doc.documentId}/convert`, { on: '2026-10-16', because: 'due-date-reached' });
   equal(converted.status, 200, 'converted');
 
-  const applied = await oTreasurer.post('/api/advances/apply', { on: '2026-10-16', flatId: oFlat('A-102').id });
-  equal(applied.status, 200, `status ${JSON.stringify(applied.body).slice(0, 200)}`);
-  equal(applied.body.appliedPaise, 120_000, 'the whole advance');
-  equal(applied.body.applications[0].allocations[0].taxInvoiceNo, converted.body.taxInvoiceNo, 'against the October bill');
+  // Set against the bill by the conversion itself, not by a button.
+  equal(converted.body.advanceAppliedPaise, 120_000, 'the whole advance, applied when the bill became a tax invoice');
+  const advanceEntry = psql(
+    `SELECT count(*) FROM journal_entries WHERE society_id = '${oFixture.societyId}' AND source_kind = 'advance-adjustment'
+        AND narration LIKE '%A-102%' AND narration LIKE '%${converted.body.taxInvoiceNo}%';`,
+  );
+  equal(Number(advanceEntry.out), 1, 'one entry for it, against the October bill');
 
   const dues = await oTreasurer.get(`/api/flats/${oFlat('A-102').id}/dues?asAt=2026-10-16`);
   equal(dues.body.advancePaise, 0, 'nothing left on account');
   equal(dues.body.outstandingPaise, converted.body.gross - 120_000, 'the bill, less the advance');
   const again = await oTreasurer.post('/api/advances/apply', { on: '2026-10-16', flatId: oFlat('A-102').id });
-  equal(again.body.appliedPaise, 0, 'applying again finds nothing to apply');
+  equal(again.body.appliedPaise, 0, 'applying by hand afterwards finds nothing to apply');
 });
 
 await check('the opening payable is a booked bill the payment route can settle', async () => {
@@ -4871,6 +4874,35 @@ await check('the opening entry and everything after it restore in the browser en
 suite('go-live: society profile');
 
 const GSTIN_WB = '19AAACI1681G1ZM';
+
+await check('a receipt for the net figure leaves nothing owed when the flat holds an advance', async () => {
+  // The flat paid ahead, then pays what is left of its bill: the advance has
+  // to go against the rest, or the bill stays open beside a credit balance.
+  const flat = oFlat('C-302');
+  const list = await oTreasurer.get('/api/billing/documents?period=Oct%202026');
+  const doc = (list.body.documents ?? []).find(d => d.flatNo === 'C-302' && d.state !== 'cancelled');
+  truthy(doc, 'the October bill for C-302');
+  const ahead = await oManager.post('/api/payments', {
+    flatId: flat.id, amountPaise: 300_000, receivedOn: '2026-10-02', method: 'neft',
+  }, { 'Idempotency-Key': oKey('advance-ahead') });
+  equal(ahead.status, 201, `advance ${JSON.stringify(ahead.body).slice(0, 200)}`);
+  const before = await oTreasurer.get(`/api/flats/${flat.id}/dues?asAt=2026-10-16`);
+  const held = before.body.advancePaise;
+  truthy(held > 0, `an advance is on file (${held})`);
+
+  // Approved only now: while it was a draft the receipt could not touch it, so it was money ahead.
+  if (doc.state === 'draft') {
+    equal((await oTreasurer.post(`/api/billing/documents/${doc.id}/approve`, { on: '2026-10-01' })).status, 200, 'approved');
+  }
+  const net = doc.gross - held;
+  const pay = await oManager.post('/api/payments', {
+    flatId: flat.id, amountPaise: net, receivedOn: '2026-10-16', method: 'upi', againstDocumentId: doc.id,
+  }, { 'Idempotency-Key': oKey('net-figure') });
+  equal(pay.status, 201, `pay ${JSON.stringify(pay.body).slice(0, 200)}`);
+  const after = await oTreasurer.get(`/api/flats/${flat.id}/dues?asAt=2026-10-16`);
+  equal(after.body.advancePaise, 0, 'no advance left beside the bill');
+  equal(after.body.outstandingPaise, 0, 'and nothing owed');
+});
 
 await check('anyone with report access can read it; only settings.manage can change it', async () => {
   const r = await oManager.get('/api/society');
@@ -5052,7 +5084,16 @@ await check('money on account sits on the advance account, not on the receivable
        JOIN payments p ON p.id = a.payment_id
       WHERE p.society_id = '${fixture.societyId}' AND a.document_id IS NULL;`,
   );
-  equal(held, Number(unallocated.out), 'advances against the unallocated receipt slices');
+  // Money on account is either still on the advance account or has been set
+  // against a bill (automatically, when the bill became a tax invoice or the
+  // next receipt came in), which debits the account with "Advance applied".
+  const applied = psql(
+    `SELECT COALESCE(SUM(p.debit), 0)
+       FROM journal_postings p JOIN journal_entries e ON e.id = p.entry_id
+      WHERE p.society_id = '${fixture.societyId}' AND p.account_code = '2300'
+        AND e.source_kind = 'advance-adjustment' AND p.memo = 'Advance applied';`,
+  );
+  equal(held + Number(applied.out), Number(unallocated.out), 'advances held plus advances applied, against the unallocated receipt slices');
   truthy(held > 0, 'there is money on account to check');
   equal(advances.class, 'liability', 'the advance account class');
 });
