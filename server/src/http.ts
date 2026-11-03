@@ -93,6 +93,22 @@ export interface AppDependencies {
   readonly resolveSession: (token: string | undefined) => Promise<Principal | null>;
 }
 
+/**
+ * Plain-language messages for the rules a person is most likely to run into,
+ * by constraint name, so the screen says what is wrong and what to do.
+ */
+const KNOWN_CONSTRAINTS: Record<string, string> = {
+  users_one_active_email:
+    'That e-mail address already belongs to an active account. Find it in Users & roles: press Welcome on its row, ' +
+    'or Deactivate it first if you want to add it again.',
+  users_society_id_email_key:
+    'That e-mail address already has an account. Find it in Users & roles: press Welcome on its row, or Deactivate it first.',
+  user_login_emails_one:
+    'That address is already linked to an account as a sign-in address. Remove it from that account first.',
+  billing_documents_one_live_per_period:
+    'That flat already has a live bill for that month. Cancel or correct that bill instead of raising another.',
+};
+
 export function createApp(routes: readonly RouteDefinition[], deps: AppDependencies) {
   const compiled: CompiledRoute[] = routes.map(r => ({
     ...r,
@@ -391,6 +407,7 @@ export function toReply(err: unknown, log: Logger, config: Config): Reply {
         body: {
           error: 'constraint_violated',
           message:
+            (err.constraint !== undefined ? KNOWN_CONSTRAINTS[err.constraint] : undefined) ??
             'The database refused this change because it would break a rule the books rely on.',
           ...(err.constraint === undefined ? {} : { constraint: err.constraint }),
         },

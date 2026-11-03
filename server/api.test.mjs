@@ -2586,6 +2586,16 @@ await check('a new account is created with roles and no password by default', as
   newUserId = r.body.id;
 });
 
+await check('adding an e-mail that already has an active account says so, and what to do', async () => {
+  const email = `dup.${stamp}@${domain}`;
+  equal((await secretary.post('/api/users', { email, roles: ['resident'] })).status, 201, 'the first is created');
+  const again = await secretary.post('/api/users', { email: email.toUpperCase(), roles: ['resident'] });
+  equal(again.status, 409, 'the second is refused');
+  matches(again.body.message, /already has an active account \(resident\)/, 'names the account and its role');
+  matches(again.body.message, /Welcome/, 'says what to do');
+  truthy(!/rule the books rely on/.test(again.body.message), 'not the database\'s generic words');
+});
+
 await check('an account cannot be both maker and checker', async () => {
   const r = await secretary.post('/api/users', {
     email: `both.${stamp}@${domain}`,

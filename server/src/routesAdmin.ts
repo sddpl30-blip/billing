@@ -809,6 +809,26 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         if (owner.rows[0] === undefined) throw notFound('That owner');
       }
 
+      // An address belongs to one active account across the whole database
+      // (sign-in is by address alone). Said plainly, with what to do, rather
+      // than as the database's own refusal.
+      const taken = await tx.query<{ society_id: string; roles: string | null }>(
+        `SELECT u.society_id,
+                (SELECT string_agg(r.role, ', ' ORDER BY r.role) FROM user_roles r WHERE r.user_id = u.id) AS roles
+           FROM users u WHERE lower(u.email) = lower($1) AND u.is_active LIMIT 1`,
+        [input.email],
+      );
+      if (taken.rows[0] !== undefined) {
+        throw conflict(
+          taken.rows[0].society_id === principal.societyId
+            ? `${input.email} already has an active account (${taken.rows[0].roles ?? 'no role'}). ` +
+              'Find it in the list: press Welcome on its row to send it the welcome e-mail, or Deactivate it first ' +
+              'if you want to add it again.'
+            : `${input.email} already has an active account in another society on this system. ` +
+              'An address can belong to only one active account, so use a different address.',
+        );
+      }
+
       const inserted = await tx.query<{ id: string }>(
         `INSERT INTO users (society_id, email, password_hash, owner_id)
          VALUES ($1,$2,$3,$4)
