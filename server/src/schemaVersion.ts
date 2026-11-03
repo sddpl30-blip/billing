@@ -13,7 +13,7 @@
  */
 
 /** The newest migration: with it applied, every feature of this build works. */
-export const EXPECTED_SCHEMA_VERSION = '013_payment_qr.sql';
+export const EXPECTED_SCHEMA_VERSION = '014_receipt_requests.sql';
 
 /**
  * The oldest schema the books can be opened on. Below it, health is degraded

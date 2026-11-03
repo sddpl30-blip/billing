@@ -233,6 +233,8 @@ export interface SnapshotResponse {
   } | null;
   /** Opening dues (OB/…) by number, with their opening date. Absent from older servers. */
   readonly openingAsAt?: Readonly<Record<string, string>>;
+  /** The Office > Settings "Arrears label date" (ISO), which opening dues read "upto". */
+  readonly arrearsLabelDate?: string;
   /** The next rate, when one starts after today. Absent from older servers. */
   readonly upcomingRate?: {
     readonly ratePerSqFt: number; readonly basis: string;

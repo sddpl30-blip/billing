@@ -34,6 +34,8 @@ export type Permission =
   // Money in
   | 'payment.record'
   | 'payment.reverse'
+  // Prepare a request to add or reverse a receipt; the treasurer (payment.reverse) decides it.
+  | 'payment.request'
   // Money out
   | 'vendor.manage'
   | 'vendor.bill.approve'
@@ -88,6 +90,7 @@ const GRANTS: Record<Role, readonly Permission[]> = {
     'report.read',
     'billing.run',
     'payment.record',
+    'payment.request',
     'vendor.manage',
     'bank.import',
     'bank.match',
@@ -108,6 +111,7 @@ const GRANTS: Record<Role, readonly Permission[]> = {
     'billing.cancel',
     'rate.approve',
     'payment.reverse',
+    'payment.request',
     'vendor.bill.approve',
     'vendor.bill.book',
     'vendor.pay',
@@ -127,6 +131,7 @@ const GRANTS: Record<Role, readonly Permission[]> = {
     'report.read',
     'ledger.read',
     'billing.release',
+    'payment.request',
     'period.reopen',
     'ticket.read.any',
     'ticket.assign',
