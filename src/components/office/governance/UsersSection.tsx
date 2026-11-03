@@ -156,7 +156,14 @@ export function UsersSection({ ctx }: { ctx: OfficeContext }) {
             const done = await run('add', () => addUser(ctx.client, input), `${input.email} added.`);
             if (done) {
               setAdding(false);
-              if (input.sendWelcome === true) void sendQueuedNow(ctx.client).catch(() => undefined);
+              if (input.sendWelcome === true) {
+                // Said, not swallowed: "added" does not mean the mail went.
+                void sendQueuedNow(ctx.client).then(r => {
+                  if (!r.delivered) ctx.toast('The account is added, but no e-mail service is set up, so the welcome e-mail was not sent.', 'error');
+                  else if (r.failed > 0) ctx.toast(`The account is added, but the welcome e-mail could not be sent. Open E-mail log to see the exact reason.`, 'error');
+                  else ctx.toast(`Welcome e-mail sent to ${input.email}.`, 'info');
+                }).catch(err => ctx.toast(`The account is added, but sending the welcome e-mail failed: ${err instanceof Error ? err.message : 'unknown error'}`, 'error'));
+              }
             }
           }}
         />

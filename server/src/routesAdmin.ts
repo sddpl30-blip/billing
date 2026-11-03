@@ -661,6 +661,38 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     return ok(batch);
   });
 
+  /**
+   * The e-mail the portal has tried to send, newest first, with what the
+   * provider answered: the exact error for a failed one. Without this a
+   * refusal by the mail service was recorded and shown to nobody. No message
+   * text is returned, only who it was for, what it was about, and how it went.
+   */
+  const mailLog = route('GET', '/api/notifications/log', async (ctx) => {
+    const principal = need(ctx, 'notice.send');
+    const result = await pool.query<{
+      id: string; template: string; to_address: string; subject: string | null; state: string;
+      attempts: string; provider: string | null; last_error: string | null;
+      queued_at: string; sent_at: string | null;
+    }>(
+      `SELECT id, template, to_address, subject, state, attempts::text, provider, last_error,
+              queued_at::text, sent_at::text
+         FROM notifications
+        WHERE society_id = $1 AND channel = 'email'
+        ORDER BY queued_at DESC
+        LIMIT 100`,
+      [principal.societyId],
+    );
+    return ok({
+      emailDelivers: deps.email.delivers,
+      provider: deps.email.name,
+      messages: result.rows.map(r => ({
+        id: r.id, template: r.template, to: r.to_address, subject: r.subject, state: r.state,
+        attempts: Number(r.attempts), provider: r.provider, error: r.last_error,
+        queuedAt: r.queued_at, sentAt: r.sent_at,
+      })),
+    });
+  });
+
   /** Whether migration 011 (linked sign-in addresses) is applied. */
   const hasLoginEmails = async (q: Queryable): Promise<boolean> =>
     ['t', 'true'].includes((await q.query<{ present: string }>(
@@ -1217,7 +1249,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     issueNote, listNotes,
     queueNotices, listNotifications,
     listUsers, addUser, setRoles, deactivateUser, changeUserEmail, setUserPassword,
-    sendWelcome, sendNow, addLoginEmail, removeLoginEmail,
+    sendWelcome, sendNow, mailLog, addLoginEmail, removeLoginEmail,
     addFlat, setOwner,
   ];
 }
