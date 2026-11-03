@@ -193,3 +193,16 @@ export function invoiceTotals(rows: readonly UnifiedInvoice[]): InvoiceTotals {
     legacyRows,
   };
 }
+
+/**
+ * What the society is owed on invoices that have been posted, in paise: tax
+ * invoices, including opening dues brought forward, at what is still
+ * outstanding on each. A proforma posts nothing and is not owed yet, so it is
+ * never arrears, however many are waiting to be sent; a cancelled document is
+ * not owed at all.
+ */
+export function arrearsOutstanding(documents: readonly RegisterView[]): number {
+  return documents
+    .filter(d => d.state === 'tax-invoice')
+    .reduce((sum, d) => sum + d.outstanding, 0);
+}
