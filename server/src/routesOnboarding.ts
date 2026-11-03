@@ -22,6 +22,7 @@ import {
 } from './openingBalances';
 import { applyAdvance, flatsWithAdvances } from './advances';
 import { hasBankDetails, readProfile, validateProfile, writeProfile } from './societyProfile';
+import { checkQrImage, hasPaymentQr, readQr } from './paymentQr';
 import { isoDateInIndia } from '../../src/accounting/clock';
 
 export interface OnboardingRouteDependencies {
@@ -284,6 +285,54 @@ export function createOnboardingRoutes(deps: OnboardingRouteDependencies): Route
     return ok({ ...profile, canEdit: hasPermission(principal, 'settings.manage') });
   });
 
+  /** The payment QR the office has uploaded, for the preview on the profile screen. */
+  const getQr = route('GET', '/api/society/payment-qr', async (ctx) => {
+    const principal = need(ctx, 'report.read');
+    const qr = await readQr(pool, principal.societyId);
+    return ok({
+      present: qr !== null,
+      available: await hasPaymentQr(pool),
+      ...(qr === null ? {} : { imageBase64: qr.jpegBase64, widthPx: qr.widthPx, heightPx: qr.heightPx }),
+    });
+  });
+
+  /** Replaces the payment QR (a JPEG, base64), or removes it when `imageBase64` is null. */
+  const putQr = route('PUT', '/api/society/payment-qr', async (ctx) => {
+    const principal = need(ctx, 'settings.manage');
+    const input = ctx.body(v.object({ imageBase64: v.string({ max: 600_000 }).optional(), remove: v.boolean().optional() }));
+    if (!(await hasPaymentQr(pool))) {
+      throw badRequest(
+        'The payment QR needs database migration 013. Run docs/neon/013-apply.sql in Neon ' +
+        '(societybooks database) once, then upload again.',
+      );
+    }
+    if (input.remove === true) {
+      await pool.transaction(async (tx) => {
+        await tx.query('UPDATE societies SET pay_qr_jpeg = NULL WHERE id = $1', [principal.societyId]);
+        await audit(tx, {
+          societyId: principal.societyId, actorUser: principal.userId, actorLabel: principal.email,
+          action: 'society.payment-qr', subjectTable: 'societies', subjectId: principal.societyId,
+          detail: { removed: true }, requestId: ctx.requestId,
+        });
+      });
+      return ok({ present: false, note: 'The payment QR code is removed. Bills print without it.' });
+    }
+    if (input.imageBase64 === undefined) throw badRequest('Send the image, or ask to remove it.');
+    const { bytes, info } = checkQrImage(input.imageBase64);
+    await pool.transaction(async (tx) => {
+      await tx.query("UPDATE societies SET pay_qr_jpeg = decode($2, 'base64') WHERE id = $1", [principal.societyId, bytes.toString('base64')]);
+      await audit(tx, {
+        societyId: principal.societyId, actorUser: principal.userId, actorLabel: principal.email,
+        action: 'society.payment-qr', subjectTable: 'societies', subjectId: principal.societyId,
+        detail: { widthPx: info.widthPx, heightPx: info.heightPx, bytes: bytes.length }, requestId: ctx.requestId,
+      });
+    });
+    return ok({
+      present: true, widthPx: info.widthPx, heightPx: info.heightPx,
+      note: `Payment QR saved (${info.widthPx} × ${info.heightPx}). Every unsent bill prints it from now on.`,
+    });
+  });
+
   const putSociety = route('PUT', '/api/society', async (ctx) => {
     const principal = need(ctx, 'settings.manage');
     const input = ctx.body(v.object({
@@ -299,6 +348,7 @@ export function createOnboardingRoutes(deps: OnboardingRouteDependencies): Route
       payBranch: v.string({ max: 100 }).optional(),
       payAccountNo: v.string({ max: 30 }).optional(),
       payIfsc: v.string({ max: 20 }).optional(),
+      payUpiId: v.string({ max: 120 }).optional(),
     }));
     const upper = (s: string | undefined): string | null => blankToNull(s)?.toUpperCase().replace(/\s+/g, '') ?? null;
     const next = {
@@ -314,6 +364,7 @@ export function createOnboardingRoutes(deps: OnboardingRouteDependencies): Route
       payBranch: blankToNull(input.payBranch),
       payAccountNo: blankToNull(input.payAccountNo)?.replace(/\s+/g, '') ?? null,
       payIfsc: upper(input.payIfsc),
+      payUpiId: blankToNull(input.payUpiId)?.replace(/\s+/g, '') ?? null,
     };
     const problems = validateProfile(next);
     if (problems.length > 0) {
@@ -324,6 +375,13 @@ export function createOnboardingRoutes(deps: OnboardingRouteDependencies): Route
         && !(await hasBankDetails(pool))) {
       throw badRequest(
         'Bank details for invoices need database migration 012. Run docs/neon/012-apply.sql in Neon ' +
+        '(societybooks database) once, then save again.',
+      );
+    }
+
+    if (next.payUpiId !== null && !(await hasPaymentQr(pool))) {
+      throw badRequest(
+        'The UPI ID and QR code need database migration 013. Run docs/neon/013-apply.sql in Neon ' +
         '(societybooks database) once, then save again.',
       );
     }
@@ -364,6 +422,6 @@ export function createOnboardingRoutes(deps: OnboardingRouteDependencies): Route
     importFlatsRoute,
     readOpeningRoute, saveOpening, discardOpening, approveOpening, reverseOpeningRoute,
     applyAdvances,
-    getSociety, putSociety,
+    getSociety, putSociety, getQr, putQr,
   ];
 }

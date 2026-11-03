@@ -186,6 +186,8 @@ export interface PdfImage {
   readonly jpeg: Buffer;
   readonly widthPx: number;
   readonly heightPx: number;
+  /** A one-component (grey) JPEG; otherwise three-component RGB. */
+  readonly gray?: boolean;
 }
 
 /** Splits text into lines no wider than `width` at `size`. */
@@ -237,7 +239,7 @@ export function buildPdf(
   const imageRefs = Object.entries(images).map(([name, image]) => {
     const number = add(
       `<< /Type /XObject /Subtype /Image /Width ${image.widthPx} /Height ${image.heightPx} ` +
-      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.jpeg.length} >>\n` +
+      `/ColorSpace /${image.gray === true ? 'DeviceGray' : 'DeviceRGB'} /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.jpeg.length} >>\n` +
       `stream\n${image.jpeg.toString('latin1')}\nendstream`,
     );
     return `/${name} ${number} 0 R`;

@@ -26,7 +26,7 @@
 -- applied has since changed. This file ends by recording the same rows, so a
 -- database created from it is consistent with the runner too.
 --
--- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql, 010_opening_balances.sql, 011_login_emails.sql, 012_opening_dues_and_pi_details.sql
+-- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql, 010_opening_balances.sql, 011_login_emails.sql, 012_opening_dues_and_pi_details.sql, 013_payment_qr.sql
 
 -- ====================================================================
 -- 001_initial.sql
@@ -1880,6 +1880,33 @@ COMMIT;
 
 
 -- ====================================================================
+-- 013_payment_qr.sql
+-- ====================================================================
+
+-- Migration 013: the association's UPI ID and payment QR code, for the
+-- proforma invoice.
+--
+-- The QR is the bank's static BHIM-UPI code (it carries no amount). It is
+-- kept with the society's profile, as an image the office uploads, so it can
+-- be changed without a release. The image is a JPEG of at most 400 KB; the
+-- application checks that it is a real JPEG, roughly square and sharp enough
+-- to print at 3 cm.
+
+BEGIN;
+
+ALTER TABLE societies
+  ADD COLUMN pay_upi_id  TEXT CHECK (pay_upi_id IS NULL OR pay_upi_id ~ '^[A-Za-z0-9._-]{2,80}@[A-Za-z0-9.-]{2,40}$'),
+  ADD COLUMN pay_qr_jpeg BYTEA CHECK (pay_qr_jpeg IS NULL OR octet_length(pay_qr_jpeg) <= 400000);
+
+COMMENT ON COLUMN societies.pay_upi_id IS
+  'The UPI ID members pay to, printed under the QR code on proforma invoices.';
+COMMENT ON COLUMN societies.pay_qr_jpeg IS
+  'The static payment QR code as a JPEG, printed on proforma invoices. Uploaded by the office in the society profile.';
+
+COMMIT;
+
+
+-- ====================================================================
 -- The runner's own record, so both migration tools agree about this database.
 -- ====================================================================
 
@@ -1895,5 +1922,6 @@ INSERT INTO schema_migrations (version, checksum) VALUES
   ('009_bank_match_once.sql', '3eacc49926960f12'),
   ('010_opening_balances.sql', '8a7848408bf3bb7c'),
   ('011_login_emails.sql', '03b8ff5c00ba0fbc'),
-  ('012_opening_dues_and_pi_details.sql', '1b087ac6a91c060e')
+  ('012_opening_dues_and_pi_details.sql', '1b087ac6a91c060e'),
+  ('013_payment_qr.sql', 'cff7733b7d9b036f')
 ON CONFLICT (version) DO NOTHING;

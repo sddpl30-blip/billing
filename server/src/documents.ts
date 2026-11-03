@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import { A4, PdfPage, buildPdf, money, textWidth, wrapText } from './pdf';
 import { societyLogo } from './societyLogo';
 import { migrationApplied, periodBounds, societyInitials } from './billing';
+import { hasPaymentQr, readQr } from './paymentQr';
 import { billPeriodLabel, isOpeningDocument } from '../../src/accounting/billLabel';
 import type { Queryable } from './pg';
 import { badRequest, notFound } from './http';
@@ -86,6 +87,10 @@ export interface ProformaDetails {
   /** The flat's dues from earlier bills and arrears, less any advance held. Negative is a credit. */
   readonly previousOutstanding: number;
   readonly daysToPay: number;
+  /** The UPI ID printed under the QR, from the society profile (migration 013). */
+  readonly upiId?: string | null;
+  /** The payment QR (a JPEG, base64) with its size and colour model; absent means none uploaded. */
+  readonly qr?: { readonly jpegBase64: string; readonly widthPx: number; readonly heightPx: number; readonly gray: boolean } | null;
 }
 
 export interface ReceiptPayload {
@@ -258,19 +263,24 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
   cell(2, 'Billing Period', `${dotted(pi.periodFrom)} to ${dotted(pi.periodTo)}`);
   page.cursor = rowTop - 34 - 12;
 
-  // Bill to, and where to pay.
-  const half = width / 2;
+  // Bill to, and where to pay. With a payment QR on file the right-hand side
+  // also carries a "Scan and pay" block (about 3 cm square, the UPI ID beneath
+  // it), and the box is taller to hold it; without one nothing extra is drawn.
+  const qr = pi.qr ?? null;
+  const split = qr === null ? width / 2 : width * 0.40;
   const boxTop = page.cursor;
-  const boxHeight = 74;
+  const boxHeight = qr === null ? 74 : 130;
+  const rightX = left + split + 6;
   page.frame(left, boxTop - boxHeight, width, boxHeight);
-  page.line(left + half, boxTop, left + half, boxTop - boxHeight, 0.55, 0.6);
+  page.line(left + split, boxTop, left + split, boxTop - boxHeight, 0.55, 0.6);
   page.box(left + 0.5, boxTop - 16, width - 1, 15.5, 0.92);
   page.text('BILL TO', { x: left + 6, y: boxTop - 12, size: 8.5, face: 'bold' });
-  page.text('ASSOCIATION BANK DETAILS', { x: left + half + 6, y: boxTop - 12, size: 8.5, face: 'bold' });
+  page.text('ASSOCIATION BANK DETAILS', { x: rightX, y: boxTop - 12, size: 8.5, face: 'bold' });
   page.text(payload.ownerName ?? 'Owner not on record', { x: left + 6, y: boxTop - 32, size: 10, face: 'bold' });
   page.text(`Unit No.: ${payload.flatNo}`, { x: left + 6, y: boxTop - 47, size: 9.5 });
+  let bankEnd = boxTop - 30;
   if (pi.bank === null) {
-    page.text('Not yet entered in the society profile.', { x: left + half + 6, y: boxTop - 32, size: 9, grey: 0.4 });
+    page.text('Not yet entered in the society profile.', { x: rightX, y: boxTop - 32, size: 9, grey: 0.4 });
   } else {
     const bankLines = [
       `Bank: ${pi.bank.name}`,
@@ -278,7 +288,26 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
       `Account No.: ${pi.bank.accountNo}`,
       `IFSC: ${pi.bank.ifsc}`,
     ];
-    bankLines.forEach((line, i) => page.text(line, { x: left + half + 6, y: boxTop - 30 - i * 12.5, size: 9 }));
+    bankLines.forEach((line, i) => page.text(line, { x: rightX, y: boxTop - 30 - i * 12.5, size: 9 }));
+    bankEnd = boxTop - 30 - (bankLines.length - 1) * 12.5;
+  }
+  if (qr !== null) {
+    const side = 85;                                  // 3 cm
+    const qrX = right - 6 - side;
+    const qrTop = boxTop - 20;
+    page.text('SCAN AND PAY', { x: right - 6 - textWidth('SCAN AND PAY', 8.5, 'bold'), y: boxTop - 12, size: 8.5, face: 'bold' });
+    page.image('Qr', qrX, qrTop - side, side, side);
+    // The UPI ID under it, broken wherever it has to be to stay inside the box.
+    const idWidth = right - 6 - (rightX + 120);
+    const idLines = pi.upiId === null || pi.upiId === undefined ? [] : wrapAnywhere(`UPI ID: ${pi.upiId}`, idWidth + side - 6, 6.5);
+    idLines.forEach((line, i) => page.text(line, { x: right - 6 - Math.max(side, ...idLines.map(l => textWidth(l, 6.5))), y: qrTop - side - 8 - i * 7.5, size: 6.5 }));
+    // What this QR is, to the left of it, under the bank lines.
+    const note = 'Static QR: it carries no amount, so enter the amount shown on this bill. ' +
+      'Please quote the PI number and unit number in the payment remarks.';
+    wrapText(note, qrX - rightX - 10, 7.5).forEach((line, i) =>
+      page.text(line, { x: rightX, y: bankEnd - 22 - i * 9, size: 7.5, grey: 0.25 }));
+  } else if (pi.upiId !== null && pi.upiId !== undefined) {
+    page.text(`UPI ID: ${pi.upiId}`, { x: rightX, y: bankEnd - 12.5, size: 9 });
   }
   page.cursor = boxTop - boxHeight - 14;
 
@@ -357,7 +386,10 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
   page.text('PAYMENT DETAILS', { size: 9.5, face: 'bold' });
   page.down(13);
   paragraph(
-    'Please remit payment to the association bank account mentioned above. Kindly quote the PI number and unit ' +
+    (qr === null
+      ? 'Please remit payment to the association bank account mentioned above. '
+      : 'Please remit payment to the association bank account mentioned above, or scan the QR code with any UPI app. ') +
+    'Kindly quote the PI number and unit ' +
     'number in the payment narration and share the transaction reference with the Association' +
     (pi.contactEmail === null ? '.' : ` at ${pi.contactEmail}.`),
   );
@@ -385,7 +417,28 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
     title: `Proforma invoice ${payload.documentNo}`,
     author: pi.societyName,
     subject: `Unit ${payload.flatNo}, ${dotted(pi.periodFrom)} to ${dotted(pi.periodTo)}`,
-  }, logo === null ? {} : { Logo: logo });
+  }, {
+    ...(logo === null ? {} : { Logo: logo }),
+    ...(qr === null ? {} : {
+      Qr: { jpeg: Buffer.from(qr.jpegBase64, 'base64'), widthPx: qr.widthPx, heightPx: qr.heightPx, gray: qr.gray },
+    }),
+  });
+}
+
+/** Breaks text into lines no wider than `width`, anywhere a line is full: for a UPI ID, which has no spaces. */
+function wrapAnywhere(text: string, width: number, size: number): string[] {
+  const lines: string[] = [];
+  let current = '';
+  for (const character of text) {
+    if (current !== '' && textWidth(current + character, size) > width) {
+      lines.push(current);
+      current = character;
+    } else {
+      current += character;
+    }
+  }
+  if (current !== '') lines.push(current);
+  return lines;
 }
 
 function renderStandardInvoice(stored: InvoicePayload): Buffer {
@@ -743,10 +796,12 @@ async function proformaDetails(
   const found = await tx.query<{
     name: string; tan: string | null; contact_email: string | null;
     pay_bank_name: string | null; pay_branch: string | null; pay_account_no: string | null; pay_ifsc: string | null;
+    pay_upi_id: string | null;
   }>(
     `SELECT name, tan, contact_email, ${withBank
       ? 'pay_bank_name, pay_branch, pay_account_no, pay_ifsc'
-      : 'NULL AS pay_bank_name, NULL AS pay_branch, NULL AS pay_account_no, NULL AS pay_ifsc'}
+      : 'NULL AS pay_bank_name, NULL AS pay_branch, NULL AS pay_account_no, NULL AS pay_ifsc'},
+            ${(await hasPaymentQr(tx)) ? 'pay_upi_id' : 'NULL AS pay_upi_id'}
        FROM societies WHERE id = $1`,
     [input.societyId],
   );
@@ -804,6 +859,13 @@ async function proformaDetails(
     ratePerSqFt: rate === null ? null : rate.ratePerSqFt,
     previousOutstanding: owed - advance,
     daysToPay: await dueDays(tx, input.societyId),
+    upiId: soc.pay_upi_id,
+    qr: await (async () => {
+      const stored = await readQr(tx, input.societyId);
+      return stored === null
+        ? null
+        : { jpegBase64: stored.jpegBase64, widthPx: stored.widthPx, heightPx: stored.heightPx, gray: stored.components === 1 };
+    })(),
   };
 }
 
