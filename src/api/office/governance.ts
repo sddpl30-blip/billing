@@ -237,6 +237,8 @@ export interface FlatRow {
   /** Every address the owner's bills go to, comma-separated. Shown to those who manage members. */
   readonly ownerEmails?: string | null;
   readonly ownerPhone?: string | null;
+  /** The owner's GSTIN, when the owner is a registered business. */
+  readonly ownerGstin?: string | null;
   readonly billable: boolean;
 }
 
@@ -557,7 +559,7 @@ export function decideReceiptRequest(
 
 /** Corrects the current owner's e-mail address(es) and phone. Not a sale; nothing else moves. */
 export function editContact(
-  client: ApiClient, flatId: string, input: { emails?: string; phone?: string; reason?: string },
+  client: ApiClient, flatId: string, input: { emails?: string; phone?: string; gstin?: string; reason?: string },
 ): Promise<{ flat: string; note: string }> {
   return client.post(`/api/flats/${encodeURIComponent(flatId)}/contact`, input);
 }

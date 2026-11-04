@@ -26,7 +26,7 @@
 -- applied has since changed. This file ends by recording the same rows, so a
 -- database created from it is consistent with the runner too.
 --
--- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql, 010_opening_balances.sql, 011_login_emails.sql, 012_opening_dues_and_pi_details.sql, 013_payment_qr.sql, 014_receipt_requests.sql, 015_owner_extra_emails.sql
+-- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql, 010_opening_balances.sql, 011_login_emails.sql, 012_opening_dues_and_pi_details.sql, 013_payment_qr.sql, 014_receipt_requests.sql, 015_owner_extra_emails.sql, 016_owner_gstin.sql
 
 -- ====================================================================
 -- 001_initial.sql
@@ -1982,6 +1982,27 @@ COMMIT;
 
 
 -- ====================================================================
+-- 016_owner_gstin.sql
+-- ====================================================================
+
+-- Migration 016: an owner's GSTIN, for owners that are registered businesses.
+--
+-- Optional. When present it is printed with the owner's name under "Bill to" on
+-- the proforma and the tax invoice. The application checks the state code and
+-- the check character; the database checks the shape. Additive.
+
+BEGIN;
+
+ALTER TABLE owners
+  ADD COLUMN gstin TEXT CHECK (gstin IS NULL OR gstin ~ '^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$');
+
+COMMENT ON COLUMN owners.gstin IS
+  'The owner''s GSTIN when the owner is a registered business, printed under "Bill to" on proforma and tax invoices.';
+
+COMMIT;
+
+
+-- ====================================================================
 -- The runner's own record, so both migration tools agree about this database.
 -- ====================================================================
 
@@ -2000,5 +2021,6 @@ INSERT INTO schema_migrations (version, checksum) VALUES
   ('012_opening_dues_and_pi_details.sql', '1b087ac6a91c060e'),
   ('013_payment_qr.sql', 'cff7733b7d9b036f'),
   ('014_receipt_requests.sql', '8f8ca777f5cbb08f'),
-  ('015_owner_extra_emails.sql', '7aba7bf96980d437')
+  ('015_owner_extra_emails.sql', '7aba7bf96980d437'),
+  ('016_owner_gstin.sql', 'd71b5ce16089c78b')
 ON CONFLICT (version) DO NOTHING;
