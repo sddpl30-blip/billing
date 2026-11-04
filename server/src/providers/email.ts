@@ -41,6 +41,8 @@ export interface EmailProvider {
   send(message: EmailMessage): Promise<EmailDelivery>;
   /** The addresses the service itself refuses to send to (a hard bounce, a spam complaint), when it can say. */
   blockedAddresses?(): Promise<BlockedAddress[]>;
+  /** Takes one address off the service's block-list, so it is sent to again. */
+  unblockAddress?(email: string): Promise<void>;
 }
 
 export function localDevEmailProvider(log: Logger): EmailProvider {

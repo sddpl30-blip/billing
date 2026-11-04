@@ -734,6 +734,43 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     return ok({ checked: true, provider: deps.email.name, problem: null, totalBlocked: blockedList.length, blocked });
   });
 
+  /**
+   * Takes one owner's address off the mail service's block-list. Only an
+   * address that is a current owner's can be unblocked, so the service's key
+   * cannot be used to un-block anyone else. The audit trail records who did it.
+   */
+  const unblockOwner = route('POST', '/api/notifications/unblock', async (ctx) => {
+    const principal = need(ctx, 'member.manage');
+    const input = ctx.body(v.object({ email: v.email() }));
+    if (deps.email.unblockAddress === undefined) {
+      throw badRequest(`The e-mail service in use (${deps.email.name}) has no block-list to take an address off.`);
+    }
+    const email = input.email.trim().toLowerCase();
+    const withExtra = await migrationApplied(pool, '015_owner_extra_emails.sql');
+    const holders = await pool.query<{ flat_no: string; email: string; extra: string | null }>(
+      `SELECT f.flat_no, o.email, ${withExtra ? 'o.extra_emails' : 'NULL::text'} AS extra
+         FROM flat_ownership fo JOIN flats f ON f.id = fo.flat_id JOIN owners o ON o.id = fo.owner_id
+        WHERE f.society_id = $1 AND fo.role = 'owner' AND fo.held_until IS NULL`,
+      [principal.societyId],
+    );
+    const flat = holders.rows.find(h =>
+      [h.email, ...(h.extra === null || h.extra === '' ? [] : h.extra.split(/[,;]\s*/))].some(a => a.trim().toLowerCase() === email));
+    if (flat === undefined) throw badRequest('That is not the address of a current owner, so it is not unblocked from here.');
+    try {
+      await deps.email.unblockAddress(email);
+    } catch (err) {
+      throw badRequest(err instanceof Error ? err.message : 'Brevo did not unblock the address.');
+    }
+    await pool.transaction(async (tx) => {
+      await audit(tx, {
+        societyId: principal.societyId, actorUser: principal.userId, actorLabel: principal.email,
+        action: 'email.unblock', subjectTable: 'owners', subjectId: flat.flat_no,
+        detail: { flat: flat.flat_no, email }, requestId: ctx.requestId,
+      });
+    });
+    return ok({ email, flat: flat.flat_no, note: `${email} (flat ${flat.flat_no}) is off the block-list. If the address is wrong it will bounce and be blocked again, so correct it first. Press Resend bill to send the bill.` });
+  });
+
   /** Whether migration 011 (linked sign-in addresses) is applied. */
   const hasLoginEmails = async (q: Queryable): Promise<boolean> =>
     ['t', 'true'].includes((await q.query<{ present: string }>(
@@ -1290,7 +1327,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     issueNote, listNotes,
     queueNotices, listNotifications,
     listUsers, addUser, setRoles, deactivateUser, changeUserEmail, setUserPassword,
-    sendWelcome, sendNow, mailLog, blockedOwners, addLoginEmail, removeLoginEmail,
+    sendWelcome, sendNow, mailLog, blockedOwners, unblockOwner, addLoginEmail, removeLoginEmail,
     addFlat, setOwner,
   ];
 }
