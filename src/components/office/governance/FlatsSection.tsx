@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  AREA_BASES, addFlat, editContact, listDispatches, listFlats, readBlockList, resendBill, setOwner, type AreaBasis, type FlatRow, type NewFlat, type OwnerChange,
+  AREA_BASES, addFlat, editContact, listDispatches, listFlats, readBlockList, resendBill, setOwner, unblockAddress, type AreaBasis, type FlatRow, type NewFlat, type OwnerChange,
 } from '../../../api/office/governance';
 import type { OfficeContext } from '../types';
 import { FlatImportDialog, downloadFlatTemplate } from './FlatImportDialog';
@@ -48,6 +48,15 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
             {blockList.data.blocked.map(b => (
               <li key={`${b.flatNo}-${b.email}`} className="break-all">
                 <strong>{b.flatNo}</strong> {b.owner}: {b.email}{b.primary ? ' (primary)' : ' (additional)'} — {b.reason}
+                {ctx.can('member.manage') && (
+                  <Button className="ml-2" disabled={busy !== null} aria-label={`Unblock ${b.email} in Brevo`}
+                    onClick={() => {
+                      if (!window.confirm(`Take ${b.email} off Brevo's block-list?\n\nIf this address is wrong it will bounce and be blocked again. Correct it first with Edit contact.`)) return;
+                      void run(`unblock:${b.email}`, () => unblockAddress(ctx.client, b.email), r => (r as { note: string }).note);
+                    }}>
+                    {busy === `unblock:${b.email}` ? 'Unblocking…' : 'Unblock in Brevo'}
+                  </Button>
+                )}
               </li>
             ))}
           </ul>

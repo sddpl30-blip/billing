@@ -50,6 +50,27 @@ export function brevoProvider(settings: BrevoSettings, log: Logger): EmailProvid
      * after a hard bounce, a spam complaint or an unsubscribe. Read-only. Up
      * to 2,000 are read, a hundred a request.
      */
+    /** Removes one address from Brevo's transactional block-list (DELETE, by address). */
+    async unblockAddress(email: string): Promise<void> {
+      const base = settings.apiUrl.replace(/\/smtp\/email$/, '/smtp/blockedContacts');
+      let response: { ok: boolean; status: number; text(): Promise<string> };
+      try {
+        response = await fetch(`${base}/${encodeURIComponent(email)}`, {
+          method: 'DELETE',
+          headers: { 'api-key': settings.apiKey, accept: 'application/json' },
+          signal: AbortSignal.timeout(settings.timeoutMs),
+        });
+      } catch (err) {
+        throw new Error(`Brevo could not be reached: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // 204 is removed; 404 means it was not on the list, which is the state wanted.
+      if (response.ok || response.status === 404) return;
+      const text = await response.text();
+      let message = text.slice(0, 200);
+      try { const parsed = JSON.parse(text) as { message?: unknown }; if (typeof parsed.message === 'string') message = parsed.message; } catch { /* not JSON */ }
+      throw new Error(`Brevo refused to unblock the address (${response.status}): ${message}`);
+    },
+
     async blockedAddresses(): Promise<BlockedAddress[]> {
       const base = settings.apiUrl.replace(/\/smtp\/email$/, '/smtp/blockedContacts');
       const out: BlockedAddress[] = [];

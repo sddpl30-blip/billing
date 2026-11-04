@@ -605,3 +605,8 @@ export interface BlockList {
 export function readBlockList(client: ApiClient): Promise<BlockList> {
   return client.get('/api/notifications/blocked');
 }
+
+/** Takes an owner's address off the mail service's block-list. Wrong addresses bounce and are blocked again. */
+export function unblockAddress(client: ApiClient, email: string): Promise<{ email: string; flat: string; note: string }> {
+  return client.post('/api/notifications/unblock', { email });
+}

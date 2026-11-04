@@ -3102,11 +3102,19 @@ await check('bulk e-mail: a preview counts, a send queues one per address, and t
 
 await check('Brevo: the API key, sender and message go to Brevo, and only its messageId counts as sent', async () => {
   const seen = [];
+  const deletes = [];
   const fake = createHttpServer((req, res) => {
     let body = '';
     req.on('data', c => { body += c; });
     req.on('end', () => {
-      if (req.method === 'GET' && req.url.startsWith('/v3/smtp/blockedContacts')) {
+      if (req.method === 'DELETE' && req.url.startsWith('/v3/smtp/blockedContacts/')) {
+        deletes.push(decodeURIComponent(req.url.split('/').pop()));
+        const who = decodeURIComponent(req.url.split('/').pop());
+        res.writeHead(who === 'gone@example.invalid' ? 404 : who === 'refused@example.invalid' ? 403 : 204, { 'content-type': 'application/json' });
+        res.end(who === 'refused@example.invalid' ? JSON.stringify({ message: 'key has no permission' }) : '');
+        return;
+      }
+    if (req.method === 'GET' && req.url.startsWith('/v3/smtp/blockedContacts')) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ contacts: [
           { email: 'Blocked.One@Example.invalid', reason: { code: 'hardBounce', message: 'Hard bounce' }, blockedAt: '2026-11-01T10:00:00Z' },
@@ -3138,6 +3146,12 @@ await check('Brevo: the API key, sender and message go to Brevo, and only its me
     equal(seen[0].body.sender.name, 'MVRA', 'sender name');
     equal(seen[0].body.textContent, 'Body', 'text');
     equal(seen[0].body.attachment[0].content, Buffer.from('%PDF').toString('base64'), 'attachment, base64');
+    await brevo.unblockAddress('Blocked.One@example.invalid');
+    equal(deletes[0], 'Blocked.One@example.invalid', 'the address is removed from the block-list by DELETE');
+    await brevo.unblockAddress('gone@example.invalid');
+    let denied = null;
+    try { await brevo.unblockAddress('refused@example.invalid'); } catch (err) { denied = err; }
+    truthy(denied !== null && /key has no permission/.test(denied.message), 'a refusal is reported with Brevo\'s reason');
     const blocked = await brevo.blockedAddresses();
     equal(blocked.length, 2, 'both blocked contacts are read');
     equal(blocked[0].email, 'blocked.one@example.invalid', 'lower-cased');
@@ -5232,6 +5246,10 @@ await check('an owner\'s e-mail is corrected without a sale, bills go to every a
   equal(bl.status, 200, 'the block-list status is readable by those who manage members');
   equal(bl.body.checked, false, 'a provider that cannot say reports that it did not check');
   equal((await oTreasurer.get('/api/notifications/blocked')).status, 403, 'and not by everyone');
+  const un = await oManager.post('/api/notifications/unblock', { email: 'someone@example.invalid' });
+  equal(un.status, 400, 'a service with no block-list cannot unblock');
+  matches(un.body.message, /no block-list/, 'and says so');
+  equal((await oTreasurer.post('/api/notifications/unblock', { email: 'someone@example.invalid' })).status, 403, 'only those who manage members');
 
   // GSTIN: optional, checked, audited, and printed under Bill to.
   equal((await oManager.post(`/api/flats/${flat.id}/contact`, { gstin: '19AAJCS2234A1ZX' })).status, 400, 'a wrong check character is refused');
