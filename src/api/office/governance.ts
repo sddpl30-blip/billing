@@ -234,6 +234,9 @@ export interface FlatRow {
   readonly areaBasis: AreaBasis | null;
   readonly nonOccupied: boolean;
   readonly owner: string | null;
+  /** Every address the owner's bills go to, comma-separated. Shown to those who manage members. */
+  readonly ownerEmails?: string | null;
+  readonly ownerPhone?: string | null;
   readonly billable: boolean;
 }
 
@@ -548,4 +551,32 @@ export function decideReceiptRequest(
   client: ApiClient, id: string, decision: 'approved' | 'rejected', note?: string,
 ): Promise<{ note: string }> {
   return client.post(`/api/receipt-requests/${encodeURIComponent(id)}/decide`, { decision, ...(note === undefined ? {} : { note }) });
+}
+
+// --- contact corrections and resending a bill ----------------------------------
+
+/** Corrects the current owner's e-mail address(es) and phone. Not a sale; nothing else moves. */
+export function editContact(
+  client: ApiClient, flatId: string, input: { emails?: string; phone?: string; reason?: string },
+): Promise<{ flat: string; note: string }> {
+  return client.post(`/api/flats/${encodeURIComponent(flatId)}/contact`, input);
+}
+
+export interface Dispatch {
+  readonly at: string;
+  readonly by: string | null;
+  readonly channel: string;
+  readonly delivered: boolean;
+  readonly failure: string | null;
+  readonly note: string;
+}
+
+export async function listDispatches(client: ApiClient, documentId: string): Promise<Dispatch[]> {
+  const body = await client.get<{ dispatches: Dispatch[] }>(`/api/billing/documents/${encodeURIComponent(documentId)}/dispatches`);
+  return body.dispatches;
+}
+
+/** E-mails a released bill again, to the owner's addresses as they now stand. Logged in the dispatch history. */
+export function resendBill(client: ApiClient, documentId: string): Promise<{ delivered: boolean; note: string }> {
+  return client.post(`/api/billing/documents/${encodeURIComponent(documentId)}/release`, { channel: 'email' });
 }

@@ -23,6 +23,7 @@ import { connect as tlsConnect, type TLSSocket } from 'node:tls';
 import { randomUUID } from 'node:crypto';
 import type { EmailDelivery, EmailMessage, EmailProvider } from './email';
 import type { Logger } from '../logger';
+import { recipientsOf } from '../contactEmails';
 
 export interface SmtpSettings {
   readonly host: string;
@@ -359,11 +360,13 @@ export function smtpProvider(settings: SmtpSettings, log: Logger): EmailProvider
           [250],
           'the sender was refused',
         );
-        expect(
-          await session.send(`RCPT TO:<${message.to}>`),
-          [250, 251],
-          'the recipient was refused',
-        );
+        for (const recipient of recipientsOf(message.to)) {
+          expect(
+            await session.send(`RCPT TO:<${recipient}>`),
+            [250, 251],
+            `the recipient was refused (${recipient})`,
+          );
+        }
         expect(await session.send('DATA'), [354], 'DATA was refused');
 
         const body = composeMessage(message, {

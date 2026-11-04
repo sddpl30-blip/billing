@@ -23,6 +23,7 @@ import { alignDueDatesOnRelease, runBilling } from './billing';
 import { settleAdvanceFor } from './advances';
 import { generateDocument } from './documents';
 import { gstTreatment, invoicePrefix } from './settings';
+import { ownerMailSql } from './contactEmails';
 import { audit } from './audit';
 
 export type JobKind = 'monthly-billing' | 'due-date-conversion' | 'notification-dispatch' | 'scheduled-release';
@@ -328,7 +329,7 @@ const scheduledRelease: Handler = async (job, ctx) => {
       owner_email: string | null; to_user: string | null;
     }>(
       `SELECT d.id, d.proforma_no, d.gross::text, d.due_on::text, f.flat_no,
-              o.email AS owner_email, u.id AS to_user
+              ${await ownerMailSql(tx)} AS owner_email, u.id AS to_user
          FROM billing_documents d
          JOIN flats f ON f.id = d.flat_id
          LEFT JOIN flat_ownership fo

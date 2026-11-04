@@ -3130,6 +3130,8 @@ await check('Brevo: the API key, sender and message go to Brevo, and only its me
     equal(seen[0].body.sender.name, 'MVRA', 'sender name');
     equal(seen[0].body.textContent, 'Body', 'text');
     equal(seen[0].body.attachment[0].content, Buffer.from('%PDF').toString('base64'), 'attachment, base64');
+    await brevo.send({ to: 'one@example.invalid, two@example.invalid', subject: 'Hello', text: 'Body' });
+    equal(seen[seen.length - 1].body.to.map(t => t.email).join(' '), 'one@example.invalid two@example.invalid', 'every address on the list is a recipient');
     let refused = null;
     try { await brevo.send({ to: 'bounce@example.invalid', subject: 'x', text: 'y' }); } catch (err) { refused = err; }
     truthy(refused !== null, 'a refusal throws');
@@ -5176,6 +5178,51 @@ await check('a receipt is added and then reversed, each needing a different pers
   const rejected = await oSecretary.post('/api/receipt-requests', { ...add, instrumentRef: 'REQ-TEST-2' });
   equal((await oTreasurer.post(`/api/receipt-requests/${rejected.body.id}/decide`, { decision: 'rejected', note: 'Not received' })).status, 200, 'a rejection with a reason');
   equal((await oTreasurer.get('/api/payments')).body.payments.filter(p => p.instrumentRef === 'REQ-TEST-2').length, 0, 'and posts nothing');
+});
+
+suite('flat contact correction and resending a bill');
+
+await check('an owner\'s e-mail is corrected without a sale, bills go to every address, the audit keeps old and new, and a bill can be sent again', async () => {
+  const flat = oFlat('B-101');
+  const other = oFlat('A-102');
+  const ownerOf = (f) => psql(`SELECT o.email FROM owners o JOIN flat_ownership fo ON fo.owner_id = o.id WHERE fo.flat_id = '${f.id}' AND fo.held_until IS NULL AND fo.role = 'owner';`).out;
+  const oldEmail = ownerOf(flat);
+  const tenure = () => oCount(`SELECT count(*) FROM flat_ownership WHERE flat_id = '${flat.id}';`);
+  const entries = () => oCount(`SELECT count(*) FROM journal_entries WHERE society_id = '${oFixture.societyId}';`);
+  const tenureBefore = tenure(); const entriesBefore = entries();
+
+  equal((await oManager.post(`/api/flats/${flat.id}/contact`, {})).status, 400, 'nothing to change is refused');
+  equal((await oManager.post(`/api/flats/${flat.id}/contact`, { emails: 'not-an-address' })).status, 400, 'a bad address is refused');
+  equal((await oTreasurer.post(`/api/flats/${flat.id}/contact`, { emails: 'x@example.invalid' })).status, 403, 'only those who manage members');
+  equal((await oManager.post(`/api/flats/${flat.id}/contact`, { emails: ownerOf(other) })).status, 409, 'another owner\'s primary address cannot be taken');
+
+  const saved = await oManager.post(`/api/flats/${flat.id}/contact`, {
+    emails: 'Fixed.Owner@example.invalid; second@example.invalid, third@example.invalid', phone: '9800000001', reason: 'typo corrected',
+  });
+  equal(saved.status, 200, `saved ${JSON.stringify(saved.body).slice(0, 200)}`);
+  const listed = (await oManager.get('/api/flats')).body.flats.find(f => f.id === flat.id);
+  equal(listed.ownerEmails, 'fixed.owner@example.invalid, second@example.invalid, third@example.invalid', 'every address is listed, primary first');
+  equal(listed.ownerPhone, '9800000001', 'the phone');
+  equal(ownerOf(flat), 'fixed.owner@example.invalid', 'the primary address is the first');
+  equal(tenure(), tenureBefore, 'no tenure changed');
+  equal(entries(), entriesBefore, 'no ledger entry');
+  const trail = psql(`SELECT detail::text FROM audit_log WHERE society_id = '${oFixture.societyId}' AND action = 'owner.contact' ORDER BY id DESC LIMIT 1;`).out;
+  matches(trail, new RegExp(oldEmail.replace(/[.]/g, '\\.')), 'the audit line keeps the old address');
+  matches(trail, /fixed\.owner@example\.invalid, second@example\.invalid, third@example\.invalid/, 'and the new ones');
+
+  // Back to one address, so what follows is unaffected.
+  equal((await oManager.post(`/api/flats/${flat.id}/contact`, { emails: oldEmail })).status, 200, 'restored');
+  equal((await oManager.get('/api/flats')).body.flats.find(f => f.id === flat.id).ownerEmails, oldEmail, 'one address again');
+
+  // Resend a released bill: recorded in the dispatch history either way.
+  const docId = psql(`SELECT id FROM billing_documents WHERE society_id = '${oFixture.societyId}' AND state IN ('released','tax-invoice') AND opening_batch_id IS NULL ORDER BY id LIMIT 1;`).out;
+  truthy(docId !== '', 'a released bill exists to resend');
+  const before = (await oTreasurer.get(`/api/billing/documents/${docId}/dispatches`)).body.dispatches.length;
+  const again = await oTreasurer.post(`/api/billing/documents/${docId}/release`, { channel: 'email' });
+  equal(again.status, 200, `resend ${JSON.stringify(again.body).slice(0, 200)}`);
+  const after = (await oTreasurer.get(`/api/billing/documents/${docId}/dispatches`)).body.dispatches;
+  equal(after.length, before + 1, 'the resend is in the dispatch history');
+  truthy(['released', 'tax-invoice'].includes(psql(`SELECT state FROM billing_documents WHERE id = '${docId}';`).out), 'and the bill is not changed');
 });
 
 suite('consistency');

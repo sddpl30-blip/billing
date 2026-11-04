@@ -19,7 +19,8 @@ import { badRequest, conflict, notFound, route, type RequestContext, type Reply,
 import { v } from './validate';
 import { requirePermission, type Principal } from './rbac';
 import { audit } from './audit';
-import { recalculateProforma } from './billing';
+import { migrationApplied, recalculateProforma } from './billing';
+import { parseEmails } from './contactEmails';
 import { canonicalPeriod } from '../../src/accounting/clock';
 import { A, accountBalance, postEntry, type Leg } from './posting';
 import { lockFlatBalance } from './series';
@@ -279,6 +280,95 @@ export function createEditRoutes(deps: EditDependencies): RouteDefinition[] {
     return owner.rows[0].owner_id;
   }));
 
+  /**
+   * Corrects how to reach the flat's current owner: e-mail address(es) and
+   * phone. Not a sale or a move: no tenure, no ledger, no bill is touched.
+   * The first address is the owner's primary one; any others also receive
+   * the owner's bills. The audit line keeps the old and the new.
+   */
+  const editContact = route('POST', '/api/flats/:id/contact', async ctx => {
+    const principal = who(ctx);
+    requirePermission(principal, 'member.manage');
+    const input = ctx.body(v.object({
+      emails: v.string({ max: 1000 }).optional(),
+      phone: v.string({ max: 20 }).optional(),
+      reason: v.text({ max: 300 }).optional(),
+    }));
+    if (input.emails === undefined && input.phone === undefined) throw badRequest('Nothing to change.');
+    let list: string[] | null = null;
+    if (input.emails !== undefined) {
+      try { list = parseEmails(input.emails); } catch (err) { throw badRequest(err instanceof Error ? err.message : 'Check the e-mail addresses.'); }
+      if (list.length === 0) throw badRequest('Give at least one e-mail address.');
+      if (list.length > 8) throw badRequest('At most eight addresses.');
+    }
+    const result = await pool.transaction(async (tx) => {
+      const withExtra = await migrationApplied(tx, '015_owner_extra_emails.sql');
+      const held = await tx.query<{ owner_id: string; flat_no: string }>(
+        `SELECT fo.owner_id, f.flat_no FROM flat_ownership fo JOIN flats f ON f.id = fo.flat_id
+          WHERE fo.flat_id = $1 AND f.society_id = $2 AND fo.role = 'owner' AND fo.held_until IS NULL LIMIT 1`,
+        [ctx.params.id, principal.societyId],
+      );
+      if (held.rows[0] === undefined) throw notFound('A current owner for that flat');
+      const ownerId = held.rows[0].owner_id;
+      const before = await tx.query<{ email: string; extra: string | null; phone: string | null }>(
+        `SELECT email, ${withExtra ? 'extra_emails' : 'NULL::text'} AS extra, phone
+           FROM owners WHERE id = $1 AND society_id = $2 FOR UPDATE`,
+        [ownerId, principal.societyId],
+      );
+      const b = before.rows[0];
+      if (b === undefined) throw notFound('That owner');
+      const wasEmails = [b.email, ...(b.extra === null || b.extra === '' ? [] : b.extra.split(/[,;]\s*/))];
+      if (list !== null && list.length > 1 && !withExtra) {
+        throw badRequest('More than one address needs database migration 015. Run docs/neon/015-apply.sql in Neon once.');
+      }
+      if (list !== null && list[0] !== b.email.toLowerCase()) {
+        const taken = await tx.query<{ flat_no: string | null }>(
+          `SELECT (SELECT f2.flat_no FROM flat_ownership fo2 JOIN flats f2 ON f2.id = fo2.flat_id
+                    WHERE fo2.owner_id = o.id AND fo2.held_until IS NULL LIMIT 1) AS flat_no
+             FROM owners o WHERE o.society_id = $1 AND lower(o.email) = $2 AND o.id <> $3`,
+          [principal.societyId, list[0], ownerId],
+        );
+        if (taken.rows[0] !== undefined) {
+          throw conflict(
+            `${list[0]} is already the primary address of another owner` +
+            `${taken.rows[0].flat_no === null ? '' : ` (flat ${taken.rows[0].flat_no})`}. ` +
+            'Put it after another address as an additional one, or correct that owner first.',
+          );
+        }
+      }
+      if (list !== null) {
+        await tx.query(
+          withExtra
+            ? 'UPDATE owners SET email = $3, extra_emails = $4 WHERE id = $1 AND society_id = $2'
+            : 'UPDATE owners SET email = $3 WHERE id = $1 AND society_id = $2',
+          withExtra
+            ? [ownerId, principal.societyId, list[0], list.length > 1 ? list.slice(1).join(', ') : null]
+            : [ownerId, principal.societyId, list[0]],
+        );
+      }
+      if (input.phone !== undefined) {
+        await tx.query('UPDATE owners SET phone = $3 WHERE id = $1 AND society_id = $2', [ownerId, principal.societyId, input.phone.trim() === '' ? null : input.phone.trim()]);
+      }
+      await audit(tx, {
+        societyId: principal.societyId, actorUser: principal.userId, actorLabel: principal.email,
+        action: 'owner.contact', subjectTable: 'owners', subjectId: ownerId,
+        detail: {
+          flat: held.rows[0].flat_no,
+          ...(input.reason === undefined ? {} : { reason: input.reason.trim() }),
+          ...(list === null ? {} : { emails: { from: wasEmails.join(', '), to: list.join(', ') } }),
+          ...(input.phone === undefined ? {} : { phone: { from: b.phone, to: input.phone.trim() === '' ? null : input.phone.trim() } }),
+        },
+        requestId: ctx.requestId,
+      });
+      return { flat: held.rows[0].flat_no, emails: list };
+    });
+    return ok({
+      ...result,
+      note: `Contact for flat ${result.flat} updated. Nothing else changed: no ownership, no ledger entry. ` +
+        'Bills already sent are not re-sent; use "Resend bill" on the flat.',
+    });
+  });
+
   const editRate = route('POST', '/api/rates/:id/edit', async (ctx) => {
     const principal = who(ctx);
     requirePermission(principal, 'settings.manage');
@@ -386,5 +476,5 @@ export function createEditRoutes(deps: EditDependencies): RouteDefinition[] {
     });
   });
 
-  return [editDocument, changeMonth, editFlat, correctOwner, correctFlatOwner, editRate, amendOpening];
+  return [editDocument, changeMonth, editFlat, correctOwner, correctFlatOwner, editContact, editRate, amendOpening];
 }

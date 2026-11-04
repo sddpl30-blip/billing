@@ -31,6 +31,7 @@ import { generateDocument } from './documents';
 import { A, accountBalance, postEntry, type Leg } from './posting';
 import { allocateNumber, lockFlatBalance } from './series';
 import { gstTreatment } from './settings';
+import { ownerMailSql } from './contactEmails';
 import { insertFlat, recordHolder, upsertOwner } from './members';
 import { formatRupees } from '../../src/accounting/money';
 import { gstHalf } from '../../src/accounting/transactions';
@@ -460,7 +461,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
         due_on: string; flat_no: string; owner_email: string | null; to_user: string | null;
       }>(
         `SELECT d.id, d.proforma_no, d.tax_invoice_no, d.gross::text, d.due_on::text, f.flat_no,
-                o.email AS owner_email, u.id AS to_user
+                ${await ownerMailSql(tx)} AS owner_email, u.id AS to_user
            FROM billing_documents d
            JOIN flats f ON f.id = d.flat_id
            LEFT JOIN flat_ownership fo
