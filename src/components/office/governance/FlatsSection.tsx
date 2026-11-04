@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  AREA_BASES, addFlat, editContact, listDispatches, listFlats, resendBill, setOwner, type AreaBasis, type FlatRow, type NewFlat, type OwnerChange,
+  AREA_BASES, addFlat, editContact, listDispatches, listFlats, readBlockList, resendBill, setOwner, type AreaBasis, type FlatRow, type NewFlat, type OwnerChange,
 } from '../../../api/office/governance';
 import type { OfficeContext } from '../types';
 import { FlatImportDialog, downloadFlatTemplate } from './FlatImportDialog';
@@ -12,7 +12,9 @@ import {
 /** Flats and who holds them. Dues stay with the flat when the owner changes. */
 export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
   const flats = useLoad(() => listFlats(ctx.client), [ctx]);
-  const { busy, run } = useWrite(ctx, flats.refresh);
+  const blockList = useLoad(() => (ctx.can('notice.send') || ctx.can('member.manage') ? readBlockList(ctx.client) : Promise.resolve(null)), [ctx]);
+  const blockedFlats = new Set((blockList.data?.blocked ?? []).map(b => b.flatNo));
+  const { busy, run } = useWrite(ctx, async () => { await Promise.all([flats.refresh(), blockList.refresh()]); });
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
   const [changing, setChanging] = useState<FlatRow | null>(null);
@@ -39,6 +41,27 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
         <label htmlFor="gov-flat-filter" className={labelClass}>Find a flat or owner</label>
         <input id="gov-flat-filter" className={`${inputClass} sm:max-w-xs`} value={filter} onChange={e => setFilter(e.target.value)} placeholder="e.g. B-204" />
       </div>
+      {blockList.data !== null && blockList.data.checked && blockList.data.blocked.length > 0 && (
+        <div role="alert" className="rounded-xl border-2 border-red-300 bg-red-50 p-3 text-xs text-red-900 space-y-1">
+          <p className="font-bold uppercase tracking-wider text-[10px]">Brevo block-list status: bills to these addresses will not arrive</p>
+          <ul className="space-y-0.5">
+            {blockList.data.blocked.map(b => (
+              <li key={`${b.flatNo}-${b.email}`} className="break-all">
+                <strong>{b.flatNo}</strong> {b.owner}: {b.email}{b.primary ? ' (primary)' : ' (additional)'} — {b.reason}
+              </li>
+            ))}
+          </ul>
+          <p>Correct the address with Edit contact if it was wrong, or remove it from Brevo (Transactional → Blocklist) if it is right, then press Resend bill.</p>
+        </div>
+      )}
+      {blockList.data !== null && blockList.data.checked && blockList.data.blocked.length === 0 && (
+        <p className="text-[11px] text-[var(--mv-muted)]">Brevo block-list status: none of the owners' addresses is blocked.</p>
+      )}
+      {blockList.data !== null && !blockList.data.checked && blockList.data.problem !== null && (
+        <p className="text-[11px] text-amber-900 bg-amber-50 border border-amber-300 rounded-xl p-2">
+          Brevo block-list status could not be read: {blockList.data.problem}
+        </p>
+      )}
       <LoadState loaded={flats} empty={filter === '' ? 'No flats are on record.' : 'No flat matches.'} isEmpty={list.length === 0} />
       {list.length > 0 && (
         <Table head={['Flat', 'Owner', 'Billing area', 'Status', '']}>
@@ -57,6 +80,7 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
                 {f.ownerGstin !== undefined && f.ownerGstin !== null && f.ownerGstin !== '' && (
                   <span className="block text-[10px] text-[var(--mv-muted)] font-mono">GSTIN {f.ownerGstin}</span>
                 )}
+                {blockedFlats.has(f.flatNo) && <Badge tone="warn">E-mail blocked</Badge>}
                 {f.ownerEmails !== undefined && f.owner !== null && (
                   <span className="block text-[10px] text-[var(--mv-muted)] break-all">{f.ownerEmails === null || f.ownerEmails === '' ? 'no e-mail' : f.ownerEmails}</span>
                 )}

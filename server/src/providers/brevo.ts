@@ -14,7 +14,7 @@
 
 import type { Logger } from '../logger';
 import { recipientsOf } from '../contactEmails';
-import type { EmailDelivery, EmailMessage, EmailProvider } from './email';
+import type { BlockedAddress, EmailDelivery, EmailMessage, EmailProvider } from './email';
 
 export interface BrevoSettings {
   readonly apiKey: string;
@@ -45,6 +45,43 @@ export function brevoProvider(settings: BrevoSettings, log: Logger): EmailProvid
   return {
     name: 'brevo',
     delivers: true,
+    /**
+     * Brevo's transactional block-list: the addresses it will not send to,
+     * after a hard bounce, a spam complaint or an unsubscribe. Read-only. Up
+     * to 2,000 are read, a hundred a request.
+     */
+    async blockedAddresses(): Promise<BlockedAddress[]> {
+      const base = settings.apiUrl.replace(/\/smtp\/email$/, '/smtp/blockedContacts');
+      const out: BlockedAddress[] = [];
+      for (let offset = 0; offset < 2000; offset += 100) {
+        let response: { ok: boolean; status: number; text(): Promise<string> };
+        try {
+          response = await fetch(`${base}?limit=100&offset=${offset}`, {
+            headers: { 'api-key': settings.apiKey, accept: 'application/json' },
+            signal: AbortSignal.timeout(settings.timeoutMs),
+          });
+        } catch (err) {
+          throw new Error(`Brevo could not be reached: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        const text = await response.text();
+        let parsed: { contacts?: unknown; message?: unknown } = {};
+        try { parsed = text === '' ? {} : JSON.parse(text) as typeof parsed; } catch { /* not JSON */ }
+        if (!response.ok) {
+          throw new Error(`Brevo refused the block-list request (${response.status}): ${typeof parsed.message === 'string' ? parsed.message : text.slice(0, 200)}`);
+        }
+        const contacts = Array.isArray(parsed.contacts) ? parsed.contacts as Array<{ email?: unknown; reason?: { message?: unknown; code?: unknown }; blockedAt?: unknown }> : [];
+        for (const c of contacts) {
+          if (typeof c.email !== 'string') continue;
+          out.push({
+            email: c.email.toLowerCase(),
+            reason: typeof c.reason?.message === 'string' ? c.reason.message : typeof c.reason?.code === 'string' ? c.reason.code : 'blocked',
+            blockedAt: typeof c.blockedAt === 'string' ? c.blockedAt : null,
+          });
+        }
+        if (contacts.length < 100) break;
+      }
+      return out;
+    },
     async send(message: EmailMessage): Promise<EmailDelivery> {
       const body = {
         sender: { email: settings.from, ...(settings.fromName === undefined ? {} : { name: settings.fromName }) },
