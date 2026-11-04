@@ -22,9 +22,10 @@ import { SocietyProfileSection } from './governance/SocietyProfileSection';
 import { MyPasswordSection } from './governance/MyPasswordSection';
 import { NoticesSection } from './governance/NoticesSection';
 import { ReceiptsSection } from './governance/ReceiptsSection';
+import { TaxInvoicesSection } from './governance/TaxInvoicesSection';
 import { BulkEmailSection } from './governance/BulkEmailSection';
 
-type TabKey = 'rates' | 'settings' | 'periods' | 'corrections' | 'receipts' | 'maillog' | 'users' | 'flats' | 'opening' | 'profile' | 'helpdesk' | 'notices' | 'email' | 'password';
+type TabKey = 'rates' | 'settings' | 'periods' | 'corrections' | 'receipts' | 'taxinv' | 'maillog' | 'users' | 'flats' | 'opening' | 'profile' | 'helpdesk' | 'notices' | 'email' | 'password';
 
 interface Tab {
   readonly key: TabKey;
@@ -39,6 +40,7 @@ const TABS: readonly Tab[] = [
   { key: 'periods', label: 'Periods', anyOf: ['period.close', 'period.reopen'] },
   { key: 'corrections', label: 'Corrections', anyOf: ['billing.run', 'member.manage', 'settings.manage'] },
   { key: 'receipts', label: 'Receipts & advances', anyOf: ['payment.request', 'payment.reverse'] },
+  { key: 'taxinv', label: 'Tax invoices', anyOf: ['billing.convert', 'billing.release', 'payment.record'] },
   { key: 'users', label: 'Users & roles', anyOf: ['user.manage'] },
   { key: 'maillog', label: 'E-mail log', anyOf: ['notice.send'] },
   { key: 'flats', label: 'Flats & owners', anyOf: ['member.manage'] },
@@ -86,6 +88,7 @@ export default function GovernancePanel({ ctx }: { ctx: OfficeContext }) {
         {current.key === 'periods' && <PeriodsSection ctx={ctx} />}
         {current.key === 'corrections' && <CorrectionsSection ctx={ctx} />}
         {current.key === 'receipts' && <ReceiptsSection ctx={ctx} />}
+        {current.key === 'taxinv' && <TaxInvoicesSection ctx={ctx} />}
         {current.key === 'maillog' && <MailLogSection ctx={ctx} />}
         {current.key === 'users' && <UsersSection ctx={ctx} />}
         {current.key === 'flats' && <FlatsSection ctx={ctx} />}

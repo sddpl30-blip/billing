@@ -51,6 +51,8 @@ export interface InvoicePayload {
   readonly ownerName: string | null;
   /** The owner's GSTIN when the owner is a registered business, printed with the name under "Bill to". */
   readonly ownerGstin?: string | null;
+  /** The payment this tax invoice was issued against, when it came through the treasurer's queue. */
+  readonly payment?: { readonly receiptNos: string; readonly paidOn: string; readonly paidPaise: number };
   readonly lines: ReadonlyArray<{ head: string; label: string; amount: number; taxable: boolean }>;
   readonly taxableValue: number;
   readonly cgst: number;
@@ -580,6 +582,13 @@ function renderStandardInvoice(stored: InvoicePayload): Buffer {
     );
   } else if (payload.kind === 'tax-invoice') {
     page.down(8);
+    if (payload.payment !== undefined) {
+      page.text(
+        `Payment received: INR ${money(payload.payment.paidPaise)} on ${dotted(payload.payment.paidOn)}, receipt ${payload.payment.receiptNos}.`,
+        { size: 9.5 },
+      );
+      page.down(13);
+    }
     page.text(
       payload.outstanding <= 0
         ? 'Settled in full. Nothing outstanding on this invoice.'
@@ -736,6 +745,16 @@ export async function invoicePayload(
   const row = result.rows[0];
   if (row === undefined) throw notFound('That document');
 
+  // The payment a tax invoice issued through the treasurer's queue was issued against.
+  const paid = (await migrationApplied(tx, '017_tax_invoice_requests.sql'))
+    ? (await tx.query<{ receipt_nos: string; paid_on: string; paid_paise: string }>(
+        `SELECT receipt_nos, paid_on::text, paid_paise::text FROM tax_invoice_requests WHERE document_id = $1`,
+        [input.documentId],
+      )).rows[0]
+    : undefined;
+  const payment = paid === undefined ? null
+    : { receiptNos: paid.receipt_nos, paidOn: paid.paid_on, paidPaise: Number(paid.paid_paise) };
+
   const lineRows = await tx.query<{ head: string; amount: string; taxable: string }>(
     `SELECT head, amount::text, taxable::text FROM billing_document_lines
       WHERE document_id = $1 ORDER BY position`,
@@ -800,6 +819,7 @@ export async function invoicePayload(
     flatNo: row.flat_no,
     ownerName: row.owner,
     ownerGstin: row.owner_gstin,
+    ...(payment === null ? {} : { payment }),
     lines,
     taxableValue,
     cgst,

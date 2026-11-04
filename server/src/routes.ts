@@ -39,6 +39,7 @@ import {
 } from './posting';
 import { formatRupees, percentOf } from '../../src/accounting/money';
 import { ownerMailSql } from './contactEmails';
+import { emailTaxInvoice } from './taxInvoiceMail';
 import { alignDueDatesOnRelease, listDocuments, migrationApplied, runBilling } from './billing';
 import { cancellationCreditNote, generateDocument } from './documents';
 import { allocateNumber, lockFlatBalance } from './series';
@@ -48,7 +49,7 @@ import {
   ageing, balanceSheet, collectionSummary, gstSummary, incomeAndExpenditure, memberStatement,
   tdsSummary, trialBalance,
 } from './reports';
-import { gstTreatment, invoicePrefix, readSettings, writeSetting } from './settings';
+import { conversionMode, gstTreatment, invoicePrefix, readSettings, writeSetting } from './settings';
 import { BULK_PAYMENTS_MAX_BYTES, checkBulkPayments } from './bulkPayments';
 
 export interface RouteDependencies {
@@ -108,6 +109,43 @@ const today = (): string => isoDateInIndia(); // India's date, not UTC's: see cl
  * receipt number, the posting and the audit row. Shared by the single
  * payment screen and the bulk upload, so the two cannot drift apart.
  */
+/**
+ * In approval mode, the proformas this payment settles go to the treasurer's
+ * queue instead of becoming tax invoices: the one named, or else the flat's
+ * oldest issued proformas until the money is used up (a partial payment still
+ * queues the proforma it part-pays). A proforma already queued just gains the
+ * receipt.
+ */
+async function queueTaxInvoices(
+  tx: Queryable,
+  principal: Principal,
+  input: { flatId: string; amountPaise: number; receivedOn: string; receiptNo: string; againstDocumentId?: string },
+): Promise<void> {
+  const candidates = await tx.query<{ id: string; gross: string; state: string; issued_on: string }>(
+    `SELECT id, gross::text, state, issued_on::text FROM billing_documents
+      WHERE society_id = $1 AND flat_id = $2 AND state IN ('approved', 'released')
+        AND issued_on <= $3::date AND ($4::uuid IS NULL OR id = $4::uuid)
+      ORDER BY issued_on, proforma_no`,
+    [principal.societyId, input.flatId, input.receivedOn, input.againstDocumentId ?? null],
+  );
+  let left = input.amountPaise;
+  for (const doc of candidates.rows) {
+    if (left <= 0) break;
+    const part = Math.min(left, Number(doc.gross));
+    left -= part;
+    await tx.query(
+      `INSERT INTO tax_invoice_requests (society_id, document_id, flat_id, receipt_nos, paid_on, paid_paise, requested_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (document_id) DO UPDATE
+          SET receipt_nos = tax_invoice_requests.receipt_nos || ', ' || EXCLUDED.receipt_nos,
+              paid_on = GREATEST(tax_invoice_requests.paid_on, EXCLUDED.paid_on),
+              paid_paise = tax_invoice_requests.paid_paise + EXCLUDED.paid_paise
+        WHERE tax_invoice_requests.decision IS NULL`,
+      [principal.societyId, doc.id, input.flatId, input.receiptNo, input.receivedOn, part, principal.userId],
+    );
+  }
+}
+
 async function takePayment(
   tx: Queryable,
   principal: Principal,
@@ -142,6 +180,8 @@ async function takePayment(
     },
   );
 
+  const awaitApproval = (await conversionMode(tx, principal.societyId)) === 'approval'
+    && (await migrationApplied(tx, '017_tax_invoice_requests.sql'));
   const receipt = await recordReceipt(tx, {
     societyId: principal.societyId,
     flatId: input.flatId,
@@ -158,13 +198,25 @@ async function takePayment(
     ...(input.againstDocumentId !== undefined
       ? { againstDocumentId: input.againstDocumentId }
       : {}),
-    // A payment for a proforma converts it, as the browser's register
-    // does; see recordReceipt.
-    conversion: {
-      gst: await gstTreatment(tx, principal.societyId),
-      invoicePrefix: await invoicePrefix(tx, principal.societyId),
-    },
+    // A payment for a proforma converts it, as the browser's register does;
+    // see recordReceipt. In "approval" mode (Office > Settings) it does not:
+    // the receipt stands, and the proforma waits in the treasurer's queue.
+    ...(awaitApproval
+      ? {}
+      : {
+          conversion: {
+            gst: await gstTreatment(tx, principal.societyId),
+            invoicePrefix: await invoicePrefix(tx, principal.societyId),
+          },
+        }),
   });
+
+  if (awaitApproval) {
+    await queueTaxInvoices(tx, principal, {
+      flatId: input.flatId, amountPaise: input.amountPaise, receivedOn: input.receivedOn,
+      receiptNo, ...(input.againstDocumentId === undefined ? {} : { againstDocumentId: input.againstDocumentId }),
+    });
+  }
 
   // Any advance the flat holds goes against what is still open, so a receipt
   // for the net figure on a bill leaves nothing showing as owed.
@@ -970,6 +1022,125 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     });
 
     return ok({ id: ctx.params.id, state: 'released', ...result });
+  });
+
+  // --- tax invoices waiting for the treasurer (conversion mode "approval") ---
+
+  const taxInvoiceQueue = route('GET', '/api/tax-invoice-requests', async (ctx) => {
+    const principal = who(ctx);
+    if (!hasPermission(principal, 'billing.convert') && !hasPermission(principal, 'billing.release') && !hasPermission(principal, 'payment.record')) {
+      requirePermission(principal, 'billing.convert');
+    }
+    const mode = await conversionMode(pool, principal.societyId);
+    if (!(await migrationApplied(pool, '017_tax_invoice_requests.sql'))) {
+      return ok({ available: false, mode, pending: [], recent: [] });
+    }
+    const rows = await pool.query<{
+      id: string; document_id: string; flat_no: string; proforma_no: string; period: string; gross: string;
+      receipt_nos: string; paid_on: string; paid_paise: string; requested_by: string | null; requested_at: string;
+      decided_at: string | null; tax_invoice_no: string | null;
+      last_channel: string | null; last_delivered: string | null; last_failure: string | null; last_note: string | null; last_at: string | null;
+    }>(
+      `SELECT r.id, r.document_id, f.flat_no, d.proforma_no, d.period, d.gross::text, r.receipt_nos, r.paid_on::text,
+              r.paid_paise::text, ru.email AS requested_by, r.requested_at::text, r.decided_at::text, r.tax_invoice_no,
+              a.channel AS last_channel, a.delivered::text AS last_delivered, a.failure AS last_failure, a.note AS last_note,
+              a.attempted_at::text AS last_at
+         FROM tax_invoice_requests r
+         JOIN billing_documents d ON d.id = r.document_id
+         JOIN flats f ON f.id = r.flat_id
+         LEFT JOIN users ru ON ru.id = r.requested_by
+         LEFT JOIN LATERAL (SELECT channel, delivered, failure, note, attempted_at FROM dispatch_attempts
+                             WHERE document_id = r.document_id ORDER BY attempted_at DESC LIMIT 1) a ON true
+        WHERE r.society_id = $1
+        ORDER BY (r.decision IS NULL) DESC, COALESCE(r.decided_at, r.requested_at) DESC
+        LIMIT 200`,
+      [principal.societyId],
+    );
+    const shape = (r: typeof rows.rows[number]) => ({
+      id: r.id, documentId: r.document_id, flatNo: r.flat_no, proformaNo: r.proforma_no, period: r.period,
+      grossPaise: Number(r.gross), receiptNos: r.receipt_nos, paidOn: r.paid_on, paidPaise: Number(r.paid_paise),
+      requestedBy: r.requested_by, requestedAt: r.requested_at, taxInvoiceNo: r.tax_invoice_no,
+    });
+    const mail = (r: typeof rows.rows[number]) => {
+      if (r.last_at === null) return { state: 'none', note: null, at: null };
+      const delivered = r.last_delivered === 't' || r.last_delivered === 'true';
+      const failure = r.last_failure ?? '';
+      const state = failure.startsWith('blocked') ? 'blocked'
+        : failure === 'no-recipient' ? 'in-app'
+        : delivered ? 'sent' : 'failed';
+      return { state, note: r.last_note, at: r.last_at };
+    };
+    return ok({
+      available: true,
+      mode,
+      pending: rows.rows.filter(r => r.decided_at === null).map(shape),
+      recent: rows.rows.filter(r => r.decided_at !== null).map(r => ({ ...shape(r), decidedAt: r.decided_at, email: mail(r) })),
+    });
+  });
+
+  const approveTaxInvoices = route('POST', '/api/tax-invoice-requests/approve', async (ctx) => {
+    const principal = need(ctx, 'billing.convert');
+    const input = ctx.body(v.object({ ids: v.array(v.uuid(), { max: 200 }) }));
+    if (input.ids.length === 0) throw badRequest('Choose at least one.');
+    const results: Array<Record<string, unknown>> = [];
+    for (const id of input.ids) {
+      // One transaction each: a failure on one never undoes the others.
+      try {
+        const issued = await pool.transaction(async (tx) => {
+          const found = await tx.query<{ document_id: string; paid_on: string; requested_by: string | null; decision: string | null; flat_no: string }>(
+            `SELECT r.document_id, r.paid_on::text, r.requested_by, r.decision, f.flat_no
+               FROM tax_invoice_requests r JOIN flats f ON f.id = r.flat_id
+              WHERE r.id = $1 AND r.society_id = $2 FOR UPDATE OF r`,
+            [id, principal.societyId],
+          );
+          const req = found.rows[0];
+          if (req === undefined) throw notFound('That request');
+          if (req.decision !== null) throw conflict('Already approved.');
+          if (req.requested_by === principal.userId) throw new ForbiddenError('You recorded this payment, so someone else has to approve its tax invoice.');
+          const converted = await convertToTaxInvoice(tx, {
+            societyId: principal.societyId, documentId: req.document_id, on: req.paid_on, because: 'payment-received',
+            postedBy: principal.userId, postedByLabel: principal.email,
+            gst: await gstTreatment(tx, principal.societyId), invoicePrefix: await invoicePrefix(tx, principal.societyId),
+          });
+          // The money already received is set against the invoice just issued.
+          const advance = await settleAdvanceFor(tx, {
+            societyId: principal.societyId, documentId: req.document_id, on: req.paid_on,
+            postedBy: principal.userId, postedByLabel: principal.email,
+          });
+          await tx.query(
+            `UPDATE tax_invoice_requests SET decided_by = $2, decided_at = now(), decision = 'approved', tax_invoice_no = $3 WHERE id = $1`,
+            [id, principal.userId, converted.taxInvoiceNo],
+          );
+          await audit(tx, {
+            societyId: principal.societyId, actorUser: principal.userId, actorLabel: principal.email,
+            action: 'tax-invoice.approve', subjectTable: 'billing_documents', subjectId: req.document_id,
+            detail: { taxInvoiceNo: converted.taxInvoiceNo, grossPaise: converted.gross, advanceAppliedPaise: advance?.appliedPaise ?? 0 },
+            requestId: ctx.requestId,
+          });
+          return { documentId: req.document_id, flatNo: req.flat_no, taxInvoiceNo: converted.taxInvoiceNo };
+        });
+        const mailed = await emailTaxInvoice(pool, deps.email, {
+          societyId: principal.societyId, documentId: issued.documentId, userId: principal.userId,
+          userLabel: principal.email, requestId: ctx.requestId, today: isoDateInIndia(),
+        });
+        results.push({ id, ok: true, ...issued, email: mailed.outcome, emailNote: mailed.note });
+      } catch (err) {
+        results.push({ id, ok: false, error: err instanceof Error ? err.message : 'failed' });
+      }
+    }
+    const done = results.filter(r => r.ok === true).length;
+    return ok({ approved: done, failed: results.length - done, results });
+  });
+
+  /** Sends an issued tax invoice again (after an address was corrected or unblocked). */
+  const resendTaxInvoice = route('POST', '/api/billing/documents/:id/resend-tax-invoice', async (ctx) => {
+    const principal = who(ctx);
+    if (!hasPermission(principal, 'billing.release') && !hasPermission(principal, 'billing.convert')) requirePermission(principal, 'billing.release');
+    const mailed = await emailTaxInvoice(pool, deps.email, {
+      societyId: principal.societyId, documentId: ctx.params.id, userId: principal.userId,
+      userLabel: principal.email, requestId: ctx.requestId, today: isoDateInIndia(),
+    });
+    return ok({ email: mailed.outcome, note: mailed.note });
   });
 
   const convertDocument = route('POST', '/api/billing/documents/:id/convert', async (ctx) => {
@@ -2937,6 +3108,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     getSettings, putSetting, approveSetting,
     listRates, addRate, approveRate,
     billingRun, listBillingDocuments, approveDocument, releaseDocument, convertDocument,
+    taxInvoiceQueue, approveTaxInvoices, resendTaxInvoice,
     cancelDocument, cancelUnsentPeriod,
     recordPayment, importPayments, listPayments, reversePayment,
     listReceiptRequests, requestReceipt, decideReceiptRequest, documentDispatches,
