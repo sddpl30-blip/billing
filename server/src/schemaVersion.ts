@@ -13,7 +13,7 @@
  */
 
 /** The newest migration: with it applied, every feature of this build works. */
-export const EXPECTED_SCHEMA_VERSION = '015_owner_extra_emails.sql';
+export const EXPECTED_SCHEMA_VERSION = '016_owner_gstin.sql';
 
 /**
  * The oldest schema the books can be opened on. Below it, health is degraded

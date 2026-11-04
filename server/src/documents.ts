@@ -49,6 +49,8 @@ export interface InvoicePayload {
   readonly dueOn: string;
   readonly flatNo: string;
   readonly ownerName: string | null;
+  /** The owner's GSTIN when the owner is a registered business, printed with the name under "Bill to". */
+  readonly ownerGstin?: string | null;
   readonly lines: ReadonlyArray<{ head: string; label: string; amount: number; taxable: boolean }>;
   readonly taxableValue: number;
   readonly cgst: number;
@@ -289,6 +291,9 @@ function renderProformaInvoice(payload: InvoicePayload, pi: ProformaDetails): Bu
   page.text('ASSOCIATION BANK DETAILS', { x: rightX, y: boxTop - 12, size: 8.5, face: 'bold' });
   page.text(payload.ownerName ?? 'Owner not on record', { x: left + 6, y: boxTop - 32, size: 10, face: 'bold' });
   page.text(`Unit No.: ${payload.flatNo}`, { x: left + 6, y: boxTop - 47, size: 9.5 });
+  if (payload.ownerGstin !== null && payload.ownerGstin !== undefined) {
+    page.text(`GSTIN: ${payload.ownerGstin}`, { x: left + 6, y: boxTop - 61, size: 9.5 });
+  }
   let bankEnd = boxTop - 30;
   if (pi.bank === null) {
     page.text('Not yet entered in the society profile.', { x: rightX, y: boxTop - 32, size: 9, grey: 0.4 });
@@ -482,6 +487,10 @@ function renderStandardInvoice(stored: InvoicePayload): Buffer {
   if (payload.ownerName !== null) {
     page.down(13);
     page.text(payload.ownerName, { size: 10 });
+  }
+  if (payload.ownerGstin !== null && payload.ownerGstin !== undefined) {
+    page.down(12);
+    page.text(`GSTIN: ${payload.ownerGstin}`, { size: 9.5 });
   }
 
   const labelX = right - 190;
@@ -692,7 +701,7 @@ export async function invoicePayload(
   const result = await tx.query<{
     proforma_no: string; tax_invoice_no: string | null; period: string; state: string;
     issued_on: string; due_on: string; gross: string; estimated_tax: string;
-    flat_no: string; owner: string | null; outstanding: string;
+    flat_no: string; owner: string | null; owner_gstin: string | null; outstanding: string;
     cgst: string; sgst: string; rate_bps: string | null; taxable_value: string | null;
     opening_as_at: string | null;
   }>(
@@ -702,6 +711,10 @@ export async function invoicePayload(
                JOIN owners o ON o.id = fo.owner_id
               WHERE fo.flat_id = d.flat_id AND fo.role = 'owner' AND fo.held_until IS NULL
               LIMIT 1) AS owner,
+            ${(await migrationApplied(tx, '016_owner_gstin.sql')) ? `(SELECT o.gstin FROM flat_ownership fo
+               JOIN owners o ON o.id = fo.owner_id
+              WHERE fo.flat_id = d.flat_id AND fo.role = 'owner' AND fo.held_until IS NULL
+              LIMIT 1)` : 'NULL::text'} AS owner_gstin,
             COALESCE((
               SELECT SUM(p.debit - p.credit)
                 FROM journal_postings p
@@ -786,6 +799,7 @@ export async function invoicePayload(
     dueOn: row.due_on,
     flatNo: row.flat_no,
     ownerName: row.owner,
+    ownerGstin: row.owner_gstin,
     lines,
     taxableValue,
     cgst,

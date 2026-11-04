@@ -21,6 +21,7 @@ import { requirePermission, type Principal } from './rbac';
 import { audit } from './audit';
 import { migrationApplied, recalculateProforma } from './billing';
 import { parseEmails } from './contactEmails';
+import { gstinProblem } from './societyProfile';
 import { canonicalPeriod } from '../../src/accounting/clock';
 import { A, accountBalance, postEntry, type Leg } from './posting';
 import { lockFlatBalance } from './series';
@@ -292,9 +293,16 @@ export function createEditRoutes(deps: EditDependencies): RouteDefinition[] {
     const input = ctx.body(v.object({
       emails: v.string({ max: 1000 }).optional(),
       phone: v.string({ max: 20 }).optional(),
+      gstin: v.string({ max: 20 }).optional(),
       reason: v.text({ max: 300 }).optional(),
     }));
-    if (input.emails === undefined && input.phone === undefined) throw badRequest('Nothing to change.');
+    if (input.emails === undefined && input.phone === undefined && input.gstin === undefined) throw badRequest('Nothing to change.');
+    // Blank clears it. Otherwise it must be a real GSTIN, with the state code and check character right.
+    const gstin = input.gstin === undefined ? undefined : input.gstin.replace(/\s+/g, '').toUpperCase();
+    if (gstin !== undefined && gstin !== '') {
+      const problem = gstinProblem(gstin);
+      if (problem !== null) throw badRequest(problem);
+    }
     let list: string[] | null = null;
     if (input.emails !== undefined) {
       try { list = parseEmails(input.emails); } catch (err) { throw badRequest(err instanceof Error ? err.message : 'Check the e-mail addresses.'); }
@@ -303,6 +311,10 @@ export function createEditRoutes(deps: EditDependencies): RouteDefinition[] {
     }
     const result = await pool.transaction(async (tx) => {
       const withExtra = await migrationApplied(tx, '015_owner_extra_emails.sql');
+      const withGstin = await migrationApplied(tx, '016_owner_gstin.sql');
+      if (gstin !== undefined && !withGstin) {
+        throw badRequest('The GSTIN needs database migration 016. Run docs/neon/016-apply.sql in Neon once.');
+      }
       const held = await tx.query<{ owner_id: string; flat_no: string }>(
         `SELECT fo.owner_id, f.flat_no FROM flat_ownership fo JOIN flats f ON f.id = fo.flat_id
           WHERE fo.flat_id = $1 AND f.society_id = $2 AND fo.role = 'owner' AND fo.held_until IS NULL LIMIT 1`,
@@ -310,8 +322,8 @@ export function createEditRoutes(deps: EditDependencies): RouteDefinition[] {
       );
       if (held.rows[0] === undefined) throw notFound('A current owner for that flat');
       const ownerId = held.rows[0].owner_id;
-      const before = await tx.query<{ email: string; extra: string | null; phone: string | null }>(
-        `SELECT email, ${withExtra ? 'extra_emails' : 'NULL::text'} AS extra, phone
+      const before = await tx.query<{ email: string; extra: string | null; phone: string | null; gstin: string | null }>(
+        `SELECT email, ${withExtra ? 'extra_emails' : 'NULL::text'} AS extra, phone, ${withGstin ? 'gstin' : 'NULL::text'} AS gstin
            FROM owners WHERE id = $1 AND society_id = $2 FOR UPDATE`,
         [ownerId, principal.societyId],
       );
@@ -349,6 +361,9 @@ export function createEditRoutes(deps: EditDependencies): RouteDefinition[] {
       if (input.phone !== undefined) {
         await tx.query('UPDATE owners SET phone = $3 WHERE id = $1 AND society_id = $2', [ownerId, principal.societyId, input.phone.trim() === '' ? null : input.phone.trim()]);
       }
+      if (gstin !== undefined) {
+        await tx.query('UPDATE owners SET gstin = $3 WHERE id = $1 AND society_id = $2', [ownerId, principal.societyId, gstin === '' ? null : gstin]);
+      }
       await audit(tx, {
         societyId: principal.societyId, actorUser: principal.userId, actorLabel: principal.email,
         action: 'owner.contact', subjectTable: 'owners', subjectId: ownerId,
@@ -356,6 +371,7 @@ export function createEditRoutes(deps: EditDependencies): RouteDefinition[] {
           flat: held.rows[0].flat_no,
           ...(input.reason === undefined ? {} : { reason: input.reason.trim() }),
           ...(list === null ? {} : { emails: { from: wasEmails.join(', '), to: list.join(', ') } }),
+          ...(gstin === undefined ? {} : { gstin: { from: b.gstin, to: gstin === '' ? null : gstin } }),
           ...(input.phone === undefined ? {} : { phone: { from: b.phone, to: input.phone.trim() === '' ? null : input.phone.trim() } }),
         },
         requestId: ctx.requestId,

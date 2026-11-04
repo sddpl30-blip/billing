@@ -54,6 +54,9 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
               </td>
               <td className={`${cellClass} break-words`}>
                 {f.owner ?? <span className="text-[var(--mv-muted)]">no current owner</span>}
+                {f.ownerGstin !== undefined && f.ownerGstin !== null && f.ownerGstin !== '' && (
+                  <span className="block text-[10px] text-[var(--mv-muted)] font-mono">GSTIN {f.ownerGstin}</span>
+                )}
                 {f.ownerEmails !== undefined && f.owner !== null && (
                   <span className="block text-[10px] text-[var(--mv-muted)] break-all">{f.ownerEmails === null || f.ownerEmails === '' ? 'no e-mail' : f.ownerEmails}</span>
                 )}
@@ -275,17 +278,18 @@ function OwnerDialog({ flat, busy, onClose, onSubmit }: {
 /** Fixes a typo in how to reach the owner. It is not a sale or a move, and nothing else changes. */
 function ContactDialog({ flat, busy, onClose, onSubmit }: {
   flat: FlatRow; busy: boolean; onClose: () => void;
-  onSubmit: (input: { emails: string; phone: string; reason?: string }) => void;
+  onSubmit: (input: { emails: string; phone: string; gstin: string; reason?: string }) => void;
 }) {
   const [emails, setEmails] = useState(flat.ownerEmails ?? '');
   const [phone, setPhone] = useState(flat.ownerPhone ?? '');
+  const [gstin, setGstin] = useState(flat.ownerGstin ?? '');
   const [reason, setReason] = useState('');
   return (
     <FormDialog
       id="gov-edit-contact" title={`Edit contact: flat ${flat.flatNo}`} submitLabel="Save contact" busy={busy}
-      intro={`For ${flat.owner ?? 'the owner'}. This corrects the details only: no change of ownership, no ledger entry. The old and new values are written to the audit trail.`}
+      intro={`For ${flat.owner ?? 'the owner'} (to change the name, use Corrections). This corrects the details only: no change of ownership, no ledger entry. The old and new values are written to the audit trail.`}
       onClose={onClose}
-      onSubmit={() => onSubmit({ emails: emails.trim(), phone: phone.trim(), ...(reason.trim() === '' ? {} : { reason: reason.trim() }) })}
+      onSubmit={() => onSubmit({ emails: emails.trim(), phone: phone.trim(), gstin: gstin.trim(), ...(reason.trim() === '' ? {} : { reason: reason.trim() }) })}
     >
       <div>
         <label htmlFor="ct-emails" className={labelClass}>E-mail address(es)</label>
@@ -295,6 +299,12 @@ function ContactDialog({ flat, busy, onClose, onSubmit }: {
       <div>
         <label htmlFor="ct-phone" className={labelClass}>Phone</label>
         <input id="ct-phone" className={inputClass} inputMode="tel" maxLength={20} value={phone} onChange={e => setPhone(e.target.value)} />
+      </div>
+ <div>
+        <label htmlFor="ct-gstin" className={labelClass}>GSTIN (only if the owner is a registered business)</label>
+        <input id="ct-gstin" className={`${inputClass} uppercase font-mono`} maxLength={15} value={gstin}
+          onChange={e => setGstin(e.target.value.toUpperCase().replace(/\s+/g, ''))} placeholder="e.g. 19AAAAA0000A1Z5" />
+        <p className="text-[10px] text-[var(--mv-muted)] mt-1">15 characters; the server checks the state code and the last character. Printed with the name under "Bill to" on the proforma and tax invoice. Leave blank for an individual; clear it to remove.</p>
       </div>
       <div>
         <label htmlFor="ct-reason" className={labelClass}>Note (optional)</label>

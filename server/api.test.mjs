@@ -5214,6 +5214,39 @@ await check('an owner\'s e-mail is corrected without a sale, bills go to every a
   equal((await oManager.post(`/api/flats/${flat.id}/contact`, { emails: oldEmail })).status, 200, 'restored');
   equal((await oManager.get('/api/flats')).body.flats.find(f => f.id === flat.id).ownerEmails, oldEmail, 'one address again');
 
+  // GSTIN: optional, checked, audited, and printed under Bill to.
+  equal((await oManager.post(`/api/flats/${flat.id}/contact`, { gstin: '19AAJCS2234A1ZX' })).status, 400, 'a wrong check character is refused');
+  equal((await oManager.post(`/api/flats/${flat.id}/contact`, { gstin: '99AAJCS2234A1ZO' })).status, 400, 'a state code the GST system does not use is refused');
+  equal((await oManager.post(`/api/flats/${flat.id}/contact`, { gstin: '19AAJCS2234' })).status, 400, 'a short one is refused');
+  const doc = psql(`SELECT d.id FROM billing_documents d JOIN flat_ownership fo ON fo.flat_id = d.flat_id AND fo.held_until IS NULL
+                     WHERE d.society_id = '${oFixture.societyId}' AND d.state IN ('released','tax-invoice') AND d.opening_batch_id IS NULL
+                     ORDER BY d.id LIMIT 1;`).out;
+  const docFlat = psql(`SELECT flat_id FROM billing_documents WHERE id = '${doc}';`).out;
+  const gs = await oManager.post(`/api/flats/${docFlat}/contact`, { gstin: ' 19aajcs2234a1zo ' });
+  equal(gs.status, 200, `GSTIN saved ${JSON.stringify(gs.body).slice(0, 200)}`);
+  equal((await oManager.get('/api/flats')).body.flats.find(f => f.id === docFlat).ownerGstin, '19AAJCS2234A1ZO', 'listed, upper-cased');
+  matches(psql(`SELECT detail::text FROM audit_log WHERE society_id = '${oFixture.societyId}' AND action = 'owner.contact' ORDER BY id DESC LIMIT 1;`).out, /19AAJCS2234A1ZO/, 'the audit line has it');
+  const pdfOf = async () => Buffer.from(await (await fetch(`${base}/api/billing/documents/${doc}/pdf?regenerate=true`, {
+    headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') } })).arrayBuffer()).toString('latin1');
+  matches(await pdfOf(), /GSTIN: 19AAJCS2234A1ZO/, 'the bill prints the owner GSTIN under Bill to');
+  // The tax invoice (and an opening statement) use the other layout: same line.
+  const taxDoc = psql(`SELECT d.id FROM billing_documents d WHERE d.society_id = '${oFixture.societyId}' AND d.state = 'tax-invoice'
+                        AND d.opening_batch_id IS NULL AND d.flat_id = '${docFlat}' ORDER BY d.id LIMIT 1;`).out;
+  if (taxDoc !== '') {
+    const taxPdf = Buffer.from(await (await fetch(`${base}/api/billing/documents/${taxDoc}/pdf?regenerate=true`, {
+      headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') } })).arrayBuffer()).toString('latin1');
+    matches(taxPdf, /GSTIN: 19AAJCS2234A1ZO/, 'the tax invoice prints it too');
+  }
+  const obDoc = psql(`SELECT d.id FROM billing_documents d WHERE d.society_id = '${oFixture.societyId}' AND d.opening_batch_id IS NOT NULL
+                       AND d.state <> 'cancelled' AND d.flat_id = '${docFlat}' ORDER BY d.id LIMIT 1;`).out;
+  if (obDoc !== '') {
+    const obPdf = Buffer.from(await (await fetch(`${base}/api/billing/documents/${obDoc}/pdf?regenerate=true`, {
+      headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') } })).arrayBuffer()).toString('latin1');
+    matches(obPdf, /GSTIN: 19AAJCS2234A1ZO/, 'and so does the opening statement of arrears');
+  }
+  equal((await oManager.post(`/api/flats/${docFlat}/contact`, { gstin: '' })).status, 200, 'cleared');
+  truthy(!/GSTIN: 19AAJCS2234A1ZO/.test(await pdfOf()), 'and then it is not printed');
+
   // Resend a released bill: recorded in the dispatch history either way.
   const docId = psql(`SELECT id FROM billing_documents WHERE society_id = '${oFixture.societyId}' AND state IN ('released','tax-invoice') AND opening_batch_id IS NULL ORDER BY id LIMIT 1;`).out;
   truthy(docId !== '', 'a released bill exists to resend');

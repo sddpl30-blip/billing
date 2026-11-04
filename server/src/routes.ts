@@ -475,7 +475,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     const result = await pool.query<{
       id: string; flat_no: string; wing: string | null; floor: string | null;
       billing_area_sqft: string | null; area_basis: string | null; non_occupied: string;
-      owner: string | null; owner_emails: string | null; owner_phone: string | null;
+      owner: string | null; owner_emails: string | null; owner_phone: string | null; owner_gstin: string | null;
     }>(
       `SELECT f.id, f.flat_no, f.wing, f.floor::text, f.billing_area_sqft::text,
               f.area_basis, f.non_occupied::text,
@@ -490,7 +490,11 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
               (SELECT o.phone FROM flat_ownership fo
                  JOIN owners o ON o.id = fo.owner_id
                 WHERE fo.flat_id = f.id AND fo.role = 'owner' AND fo.held_until IS NULL
-                LIMIT 1) AS owner_phone
+                LIMIT 1) AS owner_phone,
+              ${(await migrationApplied(pool, '016_owner_gstin.sql')) ? `(SELECT o.gstin FROM flat_ownership fo
+                 JOIN owners o ON o.id = fo.owner_id
+                WHERE fo.flat_id = f.id AND fo.role = 'owner' AND fo.held_until IS NULL
+                LIMIT 1)` : 'NULL::text'} AS owner_gstin
          FROM flats f
         WHERE f.society_id = $1${filter}
         ORDER BY f.flat_no`,
@@ -507,7 +511,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
         nonOccupied: r.non_occupied === 't' || r.non_occupied === 'true',
         owner: r.owner,
         // Only the people who manage members see how to reach an owner.
-        ...(hasPermission(principal, 'member.manage') ? { ownerEmails: r.owner_emails, ownerPhone: r.owner_phone } : {}),
+        ...(hasPermission(principal, 'member.manage') ? { ownerEmails: r.owner_emails, ownerPhone: r.owner_phone, ownerGstin: r.owner_gstin } : {}),
         // Said plainly, because a flat in this state cannot be billed and the
         // screen should show why rather than an empty row.
         billable: r.billing_area_sqft !== null && r.area_basis !== null,

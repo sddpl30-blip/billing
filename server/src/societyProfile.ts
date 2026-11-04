@@ -122,6 +122,19 @@ function isStateCode(code: string): boolean {
 }
 
 /**
+ * Why a GSTIN is not usable, or null when it is: fifteen characters in the
+ * official shape, a real state code, and the right check character.
+ */
+export function gstinProblem(gstin: string): string | null {
+  if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(gstin)) {
+    return 'A GSTIN is 15 characters: two digits (the state), five letters, four digits, a letter, a letter or digit, Z, and a check character.';
+  }
+  if (!isStateCode(gstin.slice(0, 2))) return `${gstin.slice(0, 2)} is not a state code the GST system uses.`;
+  if (gstinCheckDigit(gstin.slice(0, 14)) !== gstin[14]) return 'The last character does not match the others, so the GSTIN has a typing mistake.';
+  return null;
+}
+
+/**
  * Checks a proposed profile and returns every problem, keyed by field. The
  * database checks the formats again (migration 010); this is where a person
  * is told which field and why.
