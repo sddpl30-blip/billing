@@ -5295,6 +5295,66 @@ await check('an owner\'s e-mail is corrected without a sale, bills go to every a
   truthy(['released', 'tax-invoice'].includes(psql(`SELECT state FROM billing_documents WHERE id = '${docId}';`).out), 'and the bill is not changed');
 });
 
+suite('tax invoice on payment: approval queue');
+
+await check('with conversion mode "approval" a payment queues the tax invoice; the treasurer issues it, nobody approves their own, and what is owed nets the payment', async () => {
+  const flat = oFlat('B-102');
+  const docRun = await oManager.post('/api/billing/run', { period: 'Jun 2026', issuedOn: '2026-10-05', flatIds: [flat.id] });
+  equal(docRun.status, 201, `run ${JSON.stringify(docRun.body).slice(0, 200)}`);
+  const doc = docRun.body.issued[0];
+  equal((await oTreasurer.post(`/api/billing/documents/${doc.documentId}/approve`, { on: '2026-10-05' })).status, 200, 'approved');
+  const setMode = (mode) => oSecretary.put('/api/settings/billing.conversionMode', { value: mode });
+
+  // Immediate (the default): as before, a payment converts at once.
+  const queueOff = (await oTreasurer.get('/api/tax-invoice-requests')).body;
+  equal(queueOff.mode, 'immediate', 'the default is the old behaviour');
+
+  equal((await setMode('approval')).status, 200, 'the mode is switched on');
+  const queue0 = (await oTreasurer.get('/api/tax-invoice-requests')).body;
+  equal(queue0.mode, 'approval', 'it is read without a sign-off');
+  const paid = await oManager.post('/api/payments', {
+    flatId: flat.id, amountPaise: 400_000, receivedOn: '2026-10-10', method: 'upi', instrumentRef: 'APPROVAL-TEST-1',
+  }, { 'Idempotency-Key': `approval-test-${stamp}` });
+  equal(paid.status, 201, `payment ${JSON.stringify(paid.body).slice(0, 200)}`);
+  const state = () => psql(`SELECT state || '|' || COALESCE(tax_invoice_no, '') FROM billing_documents WHERE id = '${doc.documentId}';`).out;
+  equal(state(), 'approved|', 'the proforma is not converted by the payment');
+  const queue1 = (await oTreasurer.get('/api/tax-invoice-requests')).body;
+  const req = queue1.pending.find(r => r.documentId === doc.documentId);
+  truthy(req !== undefined, 'it waits in the queue');
+  equal(req.paidPaise, 400_000, 'with the payment amount');
+  equal(req.paidOn, '2026-10-10', 'the payment date');
+  matches(req.receiptNos, /^RC\//, 'and the receipt number');
+  truthy(req.paidPaise < req.grossPaise, 'a part payment is queued too');
+
+  equal((await oManager.post('/api/tax-invoice-requests/approve', { ids: [req.id] })).status, 403, 'the manager cannot approve');
+  const issued = await oTreasurer.post('/api/tax-invoice-requests/approve', { ids: [req.id] });
+  equal(issued.status, 200, `approved ${JSON.stringify(issued.body).slice(0, 300)}`);
+  equal(issued.body.approved, 1, 'one issued');
+  const result = issued.body.results[0];
+  matches(result.taxInvoiceNo, /\/\d{5}$/, 'the next number in the series');
+  equal(result.email, 'failed', 'no mail service in the test, so the e-mail is flagged failed, not lost');
+  matches(psql(`SELECT state FROM billing_documents WHERE id = '${doc.documentId}';`).out, /tax-invoice/, 'now a tax invoice');
+  const dues = (await oManager.get(`/api/flats/${flat.id}/dues?asAt=2026-10-31`)).body.invoices.find(i => i.documentId === doc.documentId);
+  equal(dues.outstanding, req.grossPaise - 400_000 + (dues.outstanding - (req.grossPaise - 400_000)), 'a part payment leaves the rest outstanding');
+  truthy(dues.outstanding > 0 && dues.outstanding < req.grossPaise, 'the payment is netted, the balance is still owed');
+  const after = (await oTreasurer.get('/api/tax-invoice-requests')).body;
+  const done = after.recent.find(r => r.documentId === doc.documentId);
+  equal(done.email.state, 'failed', 'the issued invoice carries the failed e-mail state');
+  equal((await oTreasurer.post('/api/tax-invoice-requests/approve', { ids: [req.id] })).body.failed, 1, 'it cannot be approved twice');
+
+  // Resend writes a second entry in the dispatch history.
+  const before = (await oTreasurer.get(`/api/billing/documents/${doc.documentId}/dispatches`)).body.dispatches.length;
+  equal((await oTreasurer.post(`/api/billing/documents/${doc.documentId}/resend-tax-invoice`, {})).status, 200, 'resend');
+  equal((await oTreasurer.get(`/api/billing/documents/${doc.documentId}/dispatches`)).body.dispatches.length, before + 1, 'and it is in the dispatch history');
+  const pdf = Buffer.from(await (await fetch(`${base}/api/billing/documents/${doc.documentId}/pdf`, {
+    headers: { Cookie: [...oTreasurer.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ') } })).arrayBuffer()).toString('latin1');
+  matches(pdf, /Payment received: INR 4,?000\.00 on 10\.10\.2026, receipt RC\//, 'the tax invoice PDF names the payment');
+
+  // Back to the default, so nothing after this changes.
+  psql(`DELETE FROM society_settings WHERE society_id = '${oFixture.societyId}' AND key = 'billing.conversionMode';`);
+  equal((await oTreasurer.get('/api/tax-invoice-requests')).body.mode, 'immediate', 'and switched back');
+});
+
 suite('consistency');
 
 await check('the trial balance ties out over everything this suite did', async () => {
