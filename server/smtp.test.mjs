@@ -291,6 +291,16 @@ async function against(options, fn) {
 
 suite('an unencrypted conversation');
 
+await check('a message to several addresses names each of them to the server', async () => {
+  await against({}, async (port, server) => {
+    const provider = smtpProvider(settings(port), quiet);
+    await provider.send({ ...message, to: 'owner@flat.localhost, second@flat.localhost' });
+    const commands = server.transcript.map(l => l.split(':')[0].split(' ')[0].toUpperCase());
+    equal(commands.join(' '), 'EHLO MAIL RCPT RCPT DATA QUIT', 'one RCPT per address');
+    matches(server.messages[0], /^To: owner@flat\.localhost, second@flat\.localhost/m, 'both in the To header');
+  });
+});
+
 await check('a message is delivered, in the right order, and comes back with the queue id', async () => {
   await against({}, async (port, server) => {
     const provider = smtpProvider(settings(port), quiet);

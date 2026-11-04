@@ -13,6 +13,7 @@
  */
 
 import type { Logger } from '../logger';
+import { recipientsOf } from '../contactEmails';
 import type { EmailDelivery, EmailMessage, EmailProvider } from './email';
 
 export interface BrevoSettings {
@@ -47,7 +48,7 @@ export function brevoProvider(settings: BrevoSettings, log: Logger): EmailProvid
     async send(message: EmailMessage): Promise<EmailDelivery> {
       const body = {
         sender: { email: settings.from, ...(settings.fromName === undefined ? {} : { name: settings.fromName }) },
-        to: [{ email: message.to }],
+        to: recipientsOf(message.to).map(email => ({ email })),
         subject: message.subject,
         textContent: message.text,
         ...(message.attachments !== undefined && message.attachments.length > 0

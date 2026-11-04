@@ -26,7 +26,7 @@
 -- applied has since changed. This file ends by recording the same rows, so a
 -- database created from it is consistent with the runner too.
 --
--- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql, 010_opening_balances.sql, 011_login_emails.sql, 012_opening_dues_and_pi_details.sql, 013_payment_qr.sql, 014_receipt_requests.sql
+-- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql, 010_opening_balances.sql, 011_login_emails.sql, 012_opening_dues_and_pi_details.sql, 013_payment_qr.sql, 014_receipt_requests.sql, 015_owner_extra_emails.sql
 
 -- ====================================================================
 -- 001_initial.sql
@@ -1959,6 +1959,29 @@ COMMIT;
 
 
 -- ====================================================================
+-- 015_owner_extra_emails.sql
+-- ====================================================================
+
+-- Migration 015: more than one e-mail address for a flat's bills.
+--
+-- owners.email stays the owner's one primary address (it is unique, and it is
+-- what sign-in links to). Further addresses that should also receive that
+-- owner's bills are kept alongside, as a comma-separated list. Corrected from
+-- the Flats & owners screen ("Edit contact"), which writes an audit line with
+-- the old and new values. Additive: nothing reads it until it exists.
+
+BEGIN;
+
+ALTER TABLE owners
+  ADD COLUMN extra_emails TEXT CHECK (extra_emails IS NULL OR length(extra_emails) <= 1000);
+
+COMMENT ON COLUMN owners.extra_emails IS
+  'Further e-mail addresses (comma-separated) that also receive this owner''s bills. owners.email is the primary one.';
+
+COMMIT;
+
+
+-- ====================================================================
 -- The runner's own record, so both migration tools agree about this database.
 -- ====================================================================
 
@@ -1976,5 +1999,6 @@ INSERT INTO schema_migrations (version, checksum) VALUES
   ('011_login_emails.sql', '03b8ff5c00ba0fbc'),
   ('012_opening_dues_and_pi_details.sql', '1b087ac6a91c060e'),
   ('013_payment_qr.sql', 'cff7733b7d9b036f'),
-  ('014_receipt_requests.sql', '8f8ca777f5cbb08f')
+  ('014_receipt_requests.sql', '8f8ca777f5cbb08f'),
+  ('015_owner_extra_emails.sql', '7aba7bf96980d437')
 ON CONFLICT (version) DO NOTHING;

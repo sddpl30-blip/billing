@@ -38,6 +38,7 @@ import {
   payVendor, recordReceipt, remitTds, reverseEntry, tdsQuarter,
 } from './posting';
 import { formatRupees, percentOf } from '../../src/accounting/money';
+import { ownerMailSql } from './contactEmails';
 import { alignDueDatesOnRelease, listDocuments, migrationApplied, runBilling } from './billing';
 import { cancellationCreditNote, generateDocument } from './documents';
 import { allocateNumber, lockFlatBalance } from './series';
@@ -474,14 +475,22 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     const result = await pool.query<{
       id: string; flat_no: string; wing: string | null; floor: string | null;
       billing_area_sqft: string | null; area_basis: string | null; non_occupied: string;
-      owner: string | null;
+      owner: string | null; owner_emails: string | null; owner_phone: string | null;
     }>(
       `SELECT f.id, f.flat_no, f.wing, f.floor::text, f.billing_area_sqft::text,
               f.area_basis, f.non_occupied::text,
               (SELECT o.full_name FROM flat_ownership fo
                  JOIN owners o ON o.id = fo.owner_id
                 WHERE fo.flat_id = f.id AND fo.role = 'owner' AND fo.held_until IS NULL
-                LIMIT 1) AS owner
+                LIMIT 1) AS owner,
+              (SELECT ${await ownerMailSql(pool)} FROM flat_ownership fo
+                 JOIN owners o ON o.id = fo.owner_id
+                WHERE fo.flat_id = f.id AND fo.role = 'owner' AND fo.held_until IS NULL
+                LIMIT 1) AS owner_emails,
+              (SELECT o.phone FROM flat_ownership fo
+                 JOIN owners o ON o.id = fo.owner_id
+                WHERE fo.flat_id = f.id AND fo.role = 'owner' AND fo.held_until IS NULL
+                LIMIT 1) AS owner_phone
          FROM flats f
         WHERE f.society_id = $1${filter}
         ORDER BY f.flat_no`,
@@ -497,6 +506,8 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
         areaBasis: r.area_basis,
         nonOccupied: r.non_occupied === 't' || r.non_occupied === 'true',
         owner: r.owner,
+        // Only the people who manage members see how to reach an owner.
+        ...(hasPermission(principal, 'member.manage') ? { ownerEmails: r.owner_emails, ownerPhone: r.owner_phone } : {}),
         // Said plainly, because a flat in this state cannot be billed and the
         // screen should show why rather than an empty row.
         billable: r.billing_area_sqft !== null && r.area_basis !== null,
@@ -819,6 +830,28 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     return ok({ id: ctx.params.id, state: 'approved', ...result });
   });
 
+  /** What was sent for one document, and what the provider answered. */
+  const documentDispatches = route('GET', '/api/billing/documents/:id/dispatches', async (ctx) => {
+    const principal = need(ctx, 'billing.release');
+    const rows = await pool.query<{
+      attempted_at: string; by_user: string | null; channel: string; delivered: string; failure: string | null; note: string;
+    }>(
+      `SELECT a.attempted_at::text, u.email AS by_user, a.channel, a.delivered::text, a.failure, a.note
+         FROM dispatch_attempts a
+         JOIN billing_documents d ON d.id = a.document_id
+         LEFT JOIN users u ON u.id = a.by_user
+        WHERE a.document_id = $1 AND d.society_id = $2
+        ORDER BY a.attempted_at DESC LIMIT 50`,
+      [ctx.params.id, principal.societyId],
+    );
+    return ok({
+      dispatches: rows.rows.map(r => ({
+        at: r.attempted_at, by: r.by_user, channel: r.channel,
+        delivered: r.delivered === 't' || r.delivered === 'true', failure: r.failure, note: r.note,
+      })),
+    });
+  });
+
   const releaseDocument = route('POST', '/api/billing/documents/:id/release', async (ctx) => {
     const principal = need(ctx, 'billing.release');
     const input = ctx.body(v.object({
@@ -831,7 +864,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
         flat_no: string; owner_email: string | null; due_on: string;
       }>(
         `SELECT d.proforma_no, d.state, d.period, d.gross::text, f.flat_no, d.due_on::text,
-                (SELECT o.email FROM flat_ownership fo
+                (SELECT ${await ownerMailSql(tx)} FROM flat_ownership fo
                    JOIN owners o ON o.id = fo.owner_id
                   WHERE fo.flat_id = d.flat_id AND fo.role = 'owner' AND fo.held_until IS NULL
                   LIMIT 1) AS owner_email
@@ -2902,7 +2935,7 @@ export function createRoutes(deps: RouteDependencies): RouteDefinition[] {
     billingRun, listBillingDocuments, approveDocument, releaseDocument, convertDocument,
     cancelDocument, cancelUnsentPeriod,
     recordPayment, importPayments, listPayments, reversePayment,
-    listReceiptRequests, requestReceipt, decideReceiptRequest,
+    listReceiptRequests, requestReceipt, decideReceiptRequest, documentDispatches,
     listVendors, addVendor, addVendorBill, listVendorBills, approveVendorBill,
     bookVendorBillRoute, payVendorBill, remitTdsRoute,
     listBankAccounts, addBankAccount, importStatement, listBankTransactions, matchBankTransaction, reconcile,

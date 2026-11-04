@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  AREA_BASES, addFlat, listFlats, setOwner, type AreaBasis, type FlatRow, type NewFlat, type OwnerChange,
+  AREA_BASES, addFlat, editContact, listDispatches, listFlats, resendBill, setOwner, type AreaBasis, type FlatRow, type NewFlat, type OwnerChange,
 } from '../../../api/office/governance';
 import type { OfficeContext } from '../types';
 import { FlatImportDialog, downloadFlatTemplate } from './FlatImportDialog';
@@ -16,6 +16,8 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
   const [changing, setChanging] = useState<FlatRow | null>(null);
+  const [contact, setContact] = useState<FlatRow | null>(null);
+  const [resending, setResending] = useState<FlatRow | null>(null);
   const [filter, setFilter] = useState('');
   const list = (flats.data ?? []).filter(f => {
     const q = filter.trim().toLowerCase();
@@ -50,7 +52,12 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
                   </span>
                 )}
               </td>
-              <td className={`${cellClass} break-words`}>{f.owner ?? <span className="text-[var(--mv-muted)]">no current owner</span>}</td>
+              <td className={`${cellClass} break-words`}>
+                {f.owner ?? <span className="text-[var(--mv-muted)]">no current owner</span>}
+                {f.ownerEmails !== undefined && f.owner !== null && (
+                  <span className="block text-[10px] text-[var(--mv-muted)] break-all">{f.ownerEmails === null || f.ownerEmails === '' ? 'no e-mail' : f.ownerEmails}</span>
+                )}
+              </td>
               <td className={`${cellClass} whitespace-nowrap`}>
                 {f.billingAreaSqFt === null ? '—' : `${f.billingAreaSqFt.toLocaleString('en-IN')} sq ft ${f.areaBasis ?? '· basis pending verification'}`}
               </td>
@@ -63,7 +70,11 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
                 </div>
               </td>
               <td className={`${cellClass} text-right whitespace-nowrap`}>
-                <Button onClick={() => setChanging(f)} aria-label={`Change owner of ${f.flatNo}`}>Change owner</Button>
+                <div className="flex flex-wrap gap-1 justify-end">
+                  {f.owner !== null && <Button onClick={() => setContact(f)} aria-label={`Edit contact of ${f.flatNo}`}>Edit contact</Button>}
+                  {f.owner !== null && ctx.can('billing.release') && <Button onClick={() => setResending(f)} aria-label={`Resend bill of ${f.flatNo}`}>Resend bill</Button>}
+                  <Button onClick={() => setChanging(f)} aria-label={`Change owner of ${f.flatNo}`}>Change owner</Button>
+                </div>
               </td>
             </tr>
           ))}
@@ -90,6 +101,20 @@ export function FlatsSection({ ctx }: { ctx: OfficeContext }) {
             if (done) setAdding(false);
           }}
         />
+      )}
+      {contact !== null && (
+        <ContactDialog
+          flat={contact}
+          busy={busy === 'contact'}
+          onClose={() => setContact(null)}
+          onSubmit={async input => {
+            const done = await run('contact', () => editContact(ctx.client, contact.id, input), r => (r as { note: string }).note);
+            if (done) setContact(null);
+          }}
+        />
+      )}
+      {resending !== null && (
+        <ResendDialog ctx={ctx} flat={resending} onClose={() => setResending(null)} />
       )}
       {changing !== null && (
         <OwnerDialog
@@ -243,6 +268,92 @@ function OwnerDialog({ flat, busy, onClose, onSubmit }: {
         </label>
       </div>
       {problem !== null && <p role="alert" className="text-xs text-red-700">{problem}</p>}
+    </FormDialog>
+  );
+}
+
+/** Fixes a typo in how to reach the owner. It is not a sale or a move, and nothing else changes. */
+function ContactDialog({ flat, busy, onClose, onSubmit }: {
+  flat: FlatRow; busy: boolean; onClose: () => void;
+  onSubmit: (input: { emails: string; phone: string; reason?: string }) => void;
+}) {
+  const [emails, setEmails] = useState(flat.ownerEmails ?? '');
+  const [phone, setPhone] = useState(flat.ownerPhone ?? '');
+  const [reason, setReason] = useState('');
+  return (
+    <FormDialog
+      id="gov-edit-contact" title={`Edit contact: flat ${flat.flatNo}`} submitLabel="Save contact" busy={busy}
+      intro={`For ${flat.owner ?? 'the owner'}. This corrects the details only: no change of ownership, no ledger entry. The old and new values are written to the audit trail.`}
+      onClose={onClose}
+      onSubmit={() => onSubmit({ emails: emails.trim(), phone: phone.trim(), ...(reason.trim() === '' ? {} : { reason: reason.trim() }) })}
+    >
+      <div>
+        <label htmlFor="ct-emails" className={labelClass}>E-mail address(es)</label>
+        <textarea id="ct-emails" data-autofocus className={inputClass} rows={2} maxLength={1000} value={emails} onChange={e => setEmails(e.target.value)} />
+        <p className="text-[10px] text-[var(--mv-muted)] mt-1">Separate several with a comma or semicolon. The first is the primary address; bills go to all of them.</p>
+      </div>
+      <div>
+        <label htmlFor="ct-phone" className={labelClass}>Phone</label>
+        <input id="ct-phone" className={inputClass} inputMode="tel" maxLength={20} value={phone} onChange={e => setPhone(e.target.value)} />
+      </div>
+      <div>
+        <label htmlFor="ct-reason" className={labelClass}>Note (optional)</label>
+        <input id="ct-reason" className={inputClass} maxLength={300} value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. typo corrected as told by the owner" />
+      </div>
+    </FormDialog>
+  );
+}
+
+interface FlatBill { id: string; proformaNo: string; taxInvoiceNo: string | null; flatNo: string; period: string; state: string }
+
+/** Sends a released bill again to the addresses on record now, and shows what was sent before. */
+function ResendDialog({ ctx, flat, onClose }: { ctx: OfficeContext; flat: FlatRow; onClose: () => void }) {
+  const docs = useLoad(
+    async () => (await ctx.client.get<{ documents: FlatBill[] }>('/api/billing/documents')).documents
+      .filter(d => d.flatNo === flat.flatNo && (d.state === 'released' || d.state === 'tax-invoice') && !d.proformaNo.startsWith('OB/')),
+    [ctx, flat.id],
+  );
+  const [chosen, setChosen] = useState('');
+  const history = useLoad(() => (chosen === '' ? Promise.resolve([]) : listDispatches(ctx.client, chosen)), [ctx, chosen]);
+  const { busy, run } = useWrite(ctx, history.refresh);
+  const list = docs.data ?? [];
+  return (
+    <FormDialog
+      id="gov-resend-bill" title={`Resend bill: flat ${flat.flatNo}`} submitLabel="Send again" busy={busy === 'resend'}
+      intro={`Goes to: ${flat.ownerEmails ?? 'no e-mail on record'}. Only a bill already released can be sent again; the PDF is the copy that was issued.`}
+      onClose={onClose}
+      onSubmit={() => {
+        if (chosen === '') return;
+        void run('resend', () => resendBill(ctx.client, chosen), r => (r as { note: string }).note);
+      }}
+    >
+      <LoadState loaded={docs} empty="This flat has no released bill." isEmpty={list.length === 0} />
+      {list.length > 0 && (
+        <div>
+          <label htmlFor="rs-doc" className={labelClass}>Bill</label>
+          <select id="rs-doc" data-autofocus className={inputClass} value={chosen} onChange={e => setChosen(e.target.value)}>
+            <option value="">Choose…</option>
+            {list.map(d => <option key={d.id} value={d.id}>{d.taxInvoiceNo ?? d.proformaNo} · {d.period}</option>)}
+          </select>
+        </div>
+      )}
+      {chosen !== '' && (
+        <div className="space-y-1">
+          <p className={labelClass}>Sent so far</p>
+          {(history.data ?? []).length === 0
+            ? <p className="text-xs text-[var(--mv-muted)]">Nothing recorded yet.</p>
+            : (
+              <ul className="text-xs space-y-1 max-h-40 overflow-y-auto">
+                {(history.data ?? []).map((d, i) => (
+                  <li key={i} className="break-words">
+                    {d.at.slice(0, 16).replace('T', ' ')} · {d.channel} · {d.delivered ? <Badge tone="ok">sent</Badge> : <Badge tone="warn">not delivered</Badge>}
+                    <span className="block text-[var(--mv-muted)]">{d.failure ?? d.note}{d.by === null ? '' : ` — ${d.by}`}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+        </div>
+      )}
     </FormDialog>
   );
 }
