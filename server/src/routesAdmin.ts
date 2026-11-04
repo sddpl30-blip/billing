@@ -32,6 +32,7 @@ import { A, accountBalance, postEntry, type Leg } from './posting';
 import { allocateNumber, lockFlatBalance } from './series';
 import { gstTreatment } from './settings';
 import { ownerMailSql } from './contactEmails';
+import { migrationApplied } from './billing';
 import { insertFlat, recordHolder, upsertOwner } from './members';
 import { formatRupees } from '../../src/accounting/money';
 import { gstHalf } from '../../src/accounting/transactions';
@@ -694,6 +695,45 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     });
   });
 
+  /**
+   * Owners whose bill address the mail service itself is refusing (its
+   * block-list). A bill e-mailed to a blocked address never arrives, and the
+   * service may say nothing, so the office is told before it releases.
+   */
+  const blockedOwners = route('GET', '/api/notifications/blocked', async (ctx) => {
+    const principal = who(ctx);
+    if (!hasPermission(principal, 'notice.send') && !hasPermission(principal, 'member.manage')) requirePermission(principal, 'notice.send');
+    if (deps.email.blockedAddresses === undefined) {
+      return ok({ checked: false, provider: deps.email.name, problem: null, blocked: [] });
+    }
+    let blockedList: Array<{ email: string; reason: string; blockedAt: string | null }>;
+    try {
+      blockedList = await deps.email.blockedAddresses();
+    } catch (err) {
+      return ok({ checked: false, provider: deps.email.name, problem: err instanceof Error ? err.message : 'The block-list could not be read.', blocked: [] });
+    }
+    const byEmail = new Map(blockedList.map(b => [b.email, b]));
+    const withExtra = await migrationApplied(pool, '015_owner_extra_emails.sql');
+    const holders = await pool.query<{ flat_no: string; full_name: string; email: string; extra: string | null }>(
+      `SELECT f.flat_no, o.full_name, o.email, ${withExtra ? 'o.extra_emails' : 'NULL::text'} AS extra
+         FROM flat_ownership fo JOIN flats f ON f.id = fo.flat_id JOIN owners o ON o.id = fo.owner_id
+        WHERE f.society_id = $1 AND fo.role = 'owner' AND fo.held_until IS NULL
+        ORDER BY f.flat_no`,
+      [principal.societyId],
+    );
+    const blocked: Array<Record<string, unknown>> = [];
+    for (const h of holders.rows) {
+      const all = [h.email, ...(h.extra === null || h.extra === '' ? [] : h.extra.split(/[,;]\s*/))];
+      all.forEach((address, i) => {
+        const hit = byEmail.get(address.trim().toLowerCase());
+        if (hit !== undefined) {
+          blocked.push({ flatNo: h.flat_no, owner: h.full_name, email: address.trim(), primary: i === 0, reason: hit.reason, blockedAt: hit.blockedAt });
+        }
+      });
+    }
+    return ok({ checked: true, provider: deps.email.name, problem: null, totalBlocked: blockedList.length, blocked });
+  });
+
   /** Whether migration 011 (linked sign-in addresses) is applied. */
   const hasLoginEmails = async (q: Queryable): Promise<boolean> =>
     ['t', 'true'].includes((await q.query<{ present: string }>(
@@ -1250,7 +1290,7 @@ export function createAdminRoutes(deps: AdminRouteDependencies): RouteDefinition
     issueNote, listNotes,
     queueNotices, listNotifications,
     listUsers, addUser, setRoles, deactivateUser, changeUserEmail, setUserPassword,
-    sendWelcome, sendNow, mailLog, addLoginEmail, removeLoginEmail,
+    sendWelcome, sendNow, mailLog, blockedOwners, addLoginEmail, removeLoginEmail,
     addFlat, setOwner,
   ];
 }

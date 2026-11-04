@@ -29,10 +29,18 @@ export interface EmailDelivery {
   readonly providerMessageId: string;
 }
 
+export interface BlockedAddress {
+  readonly email: string;
+  readonly reason: string;
+  readonly blockedAt: string | null;
+}
+
 export interface EmailProvider {
   readonly name: string;
   readonly delivers: boolean;
   send(message: EmailMessage): Promise<EmailDelivery>;
+  /** The addresses the service itself refuses to send to (a hard bounce, a spam complaint), when it can say. */
+  blockedAddresses?(): Promise<BlockedAddress[]>;
 }
 
 export function localDevEmailProvider(log: Logger): EmailProvider {

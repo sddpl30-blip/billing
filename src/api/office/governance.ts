@@ -582,3 +582,26 @@ export async function listDispatches(client: ApiClient, documentId: string): Pro
 export function resendBill(client: ApiClient, documentId: string): Promise<{ delivered: boolean; note: string }> {
   return client.post(`/api/billing/documents/${encodeURIComponent(documentId)}/release`, { channel: 'email' });
 }
+
+// --- the mail service's block-list ---------------------------------------------
+
+export interface BlockedOwner {
+  readonly flatNo: string;
+  readonly owner: string;
+  readonly email: string;
+  readonly primary: boolean;
+  readonly reason: string;
+  readonly blockedAt: string | null;
+}
+
+export interface BlockList {
+  /** False when the service cannot say (no Brevo, or its key may not read the list). */
+  readonly checked: boolean;
+  readonly provider: string;
+  readonly problem: string | null;
+  readonly blocked: BlockedOwner[];
+}
+
+export function readBlockList(client: ApiClient): Promise<BlockList> {
+  return client.get('/api/notifications/blocked');
+}

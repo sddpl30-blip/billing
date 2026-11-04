@@ -3106,6 +3106,14 @@ await check('Brevo: the API key, sender and message go to Brevo, and only its me
     let body = '';
     req.on('data', c => { body += c; });
     req.on('end', () => {
+      if (req.method === 'GET' && req.url.startsWith('/v3/smtp/blockedContacts')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ contacts: [
+          { email: 'Blocked.One@Example.invalid', reason: { code: 'hardBounce', message: 'Hard bounce' }, blockedAt: '2026-11-01T10:00:00Z' },
+          { email: 'complained@example.invalid', reason: { code: 'contactFlaggedAsSpam' } },
+        ], count: 2 }));
+        return;
+      }
       seen.push({ key: req.headers['api-key'], body: JSON.parse(body) });
       if (JSON.parse(body).to[0].email === 'bounce@example.invalid') {
         res.writeHead(400, { 'content-type': 'application/json' });
@@ -3130,6 +3138,11 @@ await check('Brevo: the API key, sender and message go to Brevo, and only its me
     equal(seen[0].body.sender.name, 'MVRA', 'sender name');
     equal(seen[0].body.textContent, 'Body', 'text');
     equal(seen[0].body.attachment[0].content, Buffer.from('%PDF').toString('base64'), 'attachment, base64');
+    const blocked = await brevo.blockedAddresses();
+    equal(blocked.length, 2, 'both blocked contacts are read');
+    equal(blocked[0].email, 'blocked.one@example.invalid', 'lower-cased');
+    equal(blocked[0].reason, 'Hard bounce', 'with Brevo\'s reason');
+    equal(blocked[1].reason, 'contactFlaggedAsSpam', 'or its code');
     await brevo.send({ to: 'one@example.invalid, two@example.invalid', subject: 'Hello', text: 'Body' });
     equal(seen[seen.length - 1].body.to.map(t => t.email).join(' '), 'one@example.invalid two@example.invalid', 'every address on the list is a recipient');
     let refused = null;
@@ -5213,6 +5226,12 @@ await check('an owner\'s e-mail is corrected without a sale, bills go to every a
   // Back to one address, so what follows is unaffected.
   equal((await oManager.post(`/api/flats/${flat.id}/contact`, { emails: oldEmail })).status, 200, 'restored');
   equal((await oManager.get('/api/flats')).body.flats.find(f => f.id === flat.id).ownerEmails, oldEmail, 'one address again');
+
+  // The block-list route: in tests the e-mail provider is local-dev, which cannot say.
+  const bl = await oManager.get('/api/notifications/blocked');
+  equal(bl.status, 200, 'the block-list status is readable by those who manage members');
+  equal(bl.body.checked, false, 'a provider that cannot say reports that it did not check');
+  equal((await oTreasurer.get('/api/notifications/blocked')).status, 403, 'and not by everyone');
 
   // GSTIN: optional, checked, audited, and printed under Bill to.
   equal((await oManager.post(`/api/flats/${flat.id}/contact`, { gstin: '19AAJCS2234A1ZX' })).status, 400, 'a wrong check character is refused');
