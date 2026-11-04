@@ -31,6 +31,10 @@ const KNOWN: Record<string, { label: string; treatment: boolean; help: string }>
     label: 'Arrears label date', treatment: false,
     help: 'The date opening dues read "Arrears upto …" on every screen, report, PDF and e-mail. A label only: the opening balances, their postings, amounts and due dates do not change. Takes effect as soon as it is saved; bills already sent keep the label they went with.',
   },
+  'billing.conversionMode': {
+    label: 'Tax invoice on payment', treatment: false,
+    help: '"immediate": a payment turns the proforma into a tax invoice at once (as before). "approval": the payment waits as a request in the treasurer\'s Tax invoices queue; the tax invoice is numbered, posted and e-mailed only when the treasurer approves. Takes effect when saved. GST is worked out on the whole invoice at conversion in both modes.',
+  },
   'billing.dayOfMonth': { label: 'Billing day of month', treatment: false, help: 'The day of the month the monthly run is scheduled for.' },
 };
 
@@ -67,6 +71,9 @@ function gstExample(opts: { ratePercent: number; thresholdRupees: number; sinkin
 /** Payment terms a live society must enter and approve before billing. Unset, they are pending verification. */
 const PAYMENT_TERMS = ['billing.dueDays', 'billing.sinkingFundPercent'];
 const ARREARS_LABEL = 'billing.arrearsLabelDate';
+const CONVERSION_MODE = 'billing.conversionMode';
+/** Working settings: they take effect when saved and carry no sign-off. */
+const NO_SIGN_OFF = [ARREARS_LABEL, CONVERSION_MODE];
 
 function describe(key: string, value: unknown): string {
   if (PAYMENT_TERMS.includes(key) && (value === undefined || value === null)) {
@@ -84,6 +91,7 @@ function describe(key: string, value: unknown): string {
       : 'No GST charged';
   }
   if (key === ARREARS_LABEL) return typeof value === 'string' ? arrearsLabel(value) : 'Not set';
+  if (key === CONVERSION_MODE) return value === 'approval' ? 'approval: the treasurer approves each tax invoice' : 'immediate: a payment issues the tax invoice at once';
   if (key === FUNDS_THROUGH_INCOME) {
     return value === true ? 'On — contributions credited to income' : 'Off — contributions credited to the fund';
   }
@@ -108,7 +116,7 @@ export function SettingsSection({ ctx }: { ctx: OfficeContext }) {
   // The two treatments are always listed: absent is a real state with a
   // meaning (no GST; fund credited directly) that someone may need to change.
   const rows: Array<Setting | { key: string; missing: true }> = [
-    ...[GST, FUNDS_THROUGH_INCOME, ...PAYMENT_TERMS, ARREARS_LABEL]
+    ...[GST, FUNDS_THROUGH_INCOME, ...PAYMENT_TERMS, ARREARS_LABEL, CONVERSION_MODE]
       .filter(k => !stored.some(s => s.key === k))
       .map(k => ({ key: k, missing: true as const })),
     ...stored,
@@ -152,6 +160,8 @@ export function SettingsSection({ ctx }: { ctx: OfficeContext }) {
                   <p className="text-sm text-[var(--mv-ink)] break-words">
                     {missing && row.key === ARREARS_LABEL
                       ? `${arrearsLabel(ARREARS_LABEL_DEFAULT)} (default)`
+                      : missing && row.key === CONVERSION_MODE
+                      ? `${describe(CONVERSION_MODE, 'immediate')} (default)`
                       : missing
                       ? (PAYMENT_TERMS.includes(row.key) ? describe(row.key, undefined) : `Not set — ${describe(row.key, undefined).toLowerCase()}`)
                       : describe(row.key, row.value)}
@@ -166,7 +176,7 @@ export function SettingsSection({ ctx }: { ctx: OfficeContext }) {
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                  {row.key === ARREARS_LABEL
+                  {NO_SIGN_OFF.includes(row.key)
                     ? <Badge tone="ok">In effect</Badge>
                     : missing
                     ? (PAYMENT_TERMS.includes(row.key) ? <Badge tone="warn">Pending verification</Badge> : <Badge tone="muted">Not set</Badge>)
@@ -174,7 +184,7 @@ export function SettingsSection({ ctx }: { ctx: OfficeContext }) {
                   {mayEdit && (
                     <Button onClick={() => setEditing(row.key)} aria-label={`Edit ${known?.label ?? row.key}`}>Edit</Button>
                   )}
-                  {mayApprove && !missing && !row.approved && row.key !== ARREARS_LABEL && (
+                  {mayApprove && !missing && !row.approved && !NO_SIGN_OFF.includes(row.key) && (
                     <Button tone="primary" onClick={() => setApproving(row)} disabled={busy === `approve:${row.key}`}
                       aria-label={`Approve ${known?.label ?? row.key}`}>
                       Approve
@@ -196,7 +206,7 @@ export function SettingsSection({ ctx }: { ctx: OfficeContext }) {
             const done = await run(
               `edit:${editingRow.key}`,
               () => putSetting(ctx.client, editingRow.key, value, note),
-              editingRow.key === ARREARS_LABEL ? 'Arrears label date saved. Every screen and new PDF uses it now.' : `${KNOWN[editingRow.key]?.label ?? editingRow.key} saved. It needs approval by someone else before it takes effect.`,
+              editingRow.key === ARREARS_LABEL ? 'Arrears label date saved. Every screen and new PDF uses it now.' : editingRow.key === CONVERSION_MODE ? 'Saved. It applies to payments recorded from now on.' : `${KNOWN[editingRow.key]?.label ?? editingRow.key} saved. It needs approval by someone else before it takes effect.`,
             );
             if (done) setEditing(null);
           }}
@@ -275,6 +285,10 @@ function EditSettingDialog({ settingKey, current, busy, onClose, onSubmit }: {
     }
     if (settingKey === FUNDS_THROUGH_INCOME) return flag;
     if (settingKey === 'billing.invoicePrefix') return text.trim();
+    if (settingKey === CONVERSION_MODE) {
+      if (text !== 'immediate' && text !== 'approval') throw new Error('Choose immediate or approval.');
+      return text;
+    }
     if (settingKey === ARREARS_LABEL) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(Date.parse(text))) throw new Error('Choose a date.');
       return text;
@@ -301,8 +315,8 @@ function EditSettingDialog({ settingKey, current, busy, onClose, onSubmit }: {
     <FormDialog
       id="gov-edit-setting"
       title={`Edit ${label}`}
-      intro={settingKey === ARREARS_LABEL ? 'A label only; it takes effect when saved. Nothing posted, owed or due changes.' : 'Saving records the value unapproved and drops any earlier sign-off. Someone else with approval rights then approves it.'}
-      submitLabel={settingKey === ARREARS_LABEL ? 'Save' : 'Save for approval'}
+      intro={NO_SIGN_OFF.includes(settingKey) ? (settingKey === ARREARS_LABEL ? 'A label only; it takes effect when saved. Nothing posted, owed or due changes.' : 'Takes effect when saved, for payments recorded from then on.') : 'Saving records the value unapproved and drops any earlier sign-off. Someone else with approval rights then approves it.'}
+      submitLabel={NO_SIGN_OFF.includes(settingKey) ? 'Save' : 'Save for approval'}
       busy={busy}
       onClose={onClose}
       onSubmit={submit}
@@ -367,7 +381,14 @@ function EditSettingDialog({ settingKey, current, busy, onClose, onSubmit }: {
       {settingKey !== GST && settingKey !== FUNDS_THROUGH_INCOME && (
         <div>
           <label htmlFor="gov-setting-value" className={labelClass}>{KNOWN[settingKey] === undefined ? 'Value (JSON)' : 'Value'}</label>
-          <input id="gov-setting-value" data-autofocus className={inputClass} type={settingKey === ARREARS_LABEL ? 'date' : 'text'} value={text} onChange={e => setText(e.target.value)} />
+          {settingKey === CONVERSION_MODE
+            ? (
+              <select id="gov-setting-value" data-autofocus className={inputClass} value={text} onChange={e => setText(e.target.value)}>
+                <option value="immediate">immediate (as before)</option>
+                <option value="approval">approval (treasurer approves, then e-mailed)</option>
+              </select>
+            )
+            : <input id="gov-setting-value" data-autofocus className={inputClass} type={settingKey === ARREARS_LABEL ? 'date' : 'text'} value={text} onChange={e => setText(e.target.value)} />}
           {KNOWN[settingKey] !== undefined && <p className="text-[11px] text-[var(--mv-muted)] mt-1">{KNOWN[settingKey].help}</p>}
         </div>
       )}

@@ -26,7 +26,7 @@
 -- applied has since changed. This file ends by recording the same rows, so a
 -- database created from it is consistent with the runner too.
 --
--- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql, 010_opening_balances.sql, 011_login_emails.sql, 012_opening_dues_and_pi_details.sql, 013_payment_qr.sql, 014_receipt_requests.sql, 015_owner_extra_emails.sql, 016_owner_gstin.sql
+-- Covers: 001_initial.sql, 002_balance_guard.sql, 003_domain.sql, 004_fix_allocation_guard.sql, 005_login_identity.sql, 006_gst_register_notes.sql, 007_canonical_billing_period.sql, 008_security_hardening.sql, 009_bank_match_once.sql, 010_opening_balances.sql, 011_login_emails.sql, 012_opening_dues_and_pi_details.sql, 013_payment_qr.sql, 014_receipt_requests.sql, 015_owner_extra_emails.sql, 016_owner_gstin.sql, 017_tax_invoice_requests.sql
 
 -- ====================================================================
 -- 001_initial.sql
@@ -2003,6 +2003,47 @@ COMMIT;
 
 
 -- ====================================================================
+-- 017_tax_invoice_requests.sql
+-- ====================================================================
+
+-- Migration 017: tax invoices waiting for the treasurer's approval.
+--
+-- When the society's conversion mode is "approval" (Office > Settings), a
+-- payment no longer turns a proforma into a tax invoice by itself. It leaves a
+-- request here: which proforma, which receipt(s), when and how much was paid.
+-- The treasurer approves it (one or many at once); only then is the tax
+-- invoice numbered and posted and its PDF e-mailed. The person who recorded
+-- the payment cannot be the one who approves it. Nothing is ever deleted.
+
+BEGIN;
+
+CREATE TABLE tax_invoice_requests (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  society_id    UUID NOT NULL REFERENCES societies(id) ON DELETE RESTRICT,
+  document_id   UUID NOT NULL UNIQUE REFERENCES billing_documents(id) ON DELETE RESTRICT,
+  flat_id       UUID NOT NULL REFERENCES flats(id) ON DELETE RESTRICT,
+  receipt_nos   TEXT NOT NULL,
+  paid_on       DATE NOT NULL,
+  paid_paise    BIGINT NOT NULL CHECK (paid_paise > 0),
+  requested_by  UUID REFERENCES users(id),
+  requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_by    UUID REFERENCES users(id),
+  decided_at    TIMESTAMPTZ,
+  decision      TEXT CHECK (decision IN ('approved')),
+  tax_invoice_no TEXT,
+  CHECK (decided_by IS NULL OR requested_by IS NULL OR decided_by <> requested_by),
+  CHECK ((decision IS NULL) = (decided_at IS NULL))
+);
+
+CREATE INDEX tax_invoice_requests_open ON tax_invoice_requests (society_id, requested_at) WHERE decision IS NULL;
+
+COMMENT ON TABLE tax_invoice_requests IS
+  'A proforma whose payment has been recorded and whose tax invoice awaits the treasurer. Kept for ever.';
+
+COMMIT;
+
+
+-- ====================================================================
 -- The runner's own record, so both migration tools agree about this database.
 -- ====================================================================
 
@@ -2022,5 +2063,6 @@ INSERT INTO schema_migrations (version, checksum) VALUES
   ('013_payment_qr.sql', 'cff7733b7d9b036f'),
   ('014_receipt_requests.sql', '8f8ca777f5cbb08f'),
   ('015_owner_extra_emails.sql', '7aba7bf96980d437'),
-  ('016_owner_gstin.sql', 'd71b5ce16089c78b')
+  ('016_owner_gstin.sql', 'd71b5ce16089c78b'),
+  ('017_tax_invoice_requests.sql', 'd29a5fca0fe11f38')
 ON CONFLICT (version) DO NOTHING;

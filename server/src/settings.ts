@@ -104,6 +104,7 @@ export const SETTING_KEYS = {
   BILLING_DAY: 'billing.dayOfMonth',
   FUNDS_THROUGH_INCOME: 'accounting.sinkingFundThroughIncome',
   ARREARS_LABEL_DATE: 'billing.arrearsLabelDate',
+  CONVERSION_MODE: 'billing.conversionMode',
 } as const;
 
 /**
@@ -225,6 +226,18 @@ export async function arrearsLabelDate(tx: Queryable, societyId: string): Promis
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value))
     ? value
     : ARREARS_LABEL_DEFAULT;
+}
+
+/**
+ * What a payment does to the proforma it settles: 'immediate' (the tax invoice
+ * is issued and posted at once, as before) or 'approval' (a request waits in
+ * the treasurer's queue and nothing is issued until it is approved). Read
+ * without a sign-off, since it is the committee's working procedure rather
+ * than a tax figure; 'immediate' until someone chooses otherwise.
+ */
+export async function conversionMode(tx: Queryable, societyId: string): Promise<'immediate' | 'approval'> {
+  const row = await readOne(tx, societyId, SETTING_KEYS.CONVERSION_MODE);
+  return row?.value === 'approval' ? 'approval' : 'immediate';
 }
 
 export async function dueDays(tx: Queryable, societyId: string): Promise<number> {

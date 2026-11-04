@@ -605,3 +605,47 @@ export interface BlockList {
 export function readBlockList(client: ApiClient): Promise<BlockList> {
   return client.get('/api/notifications/blocked');
 }
+
+// --- tax invoices waiting for the treasurer ------------------------------------
+
+export interface TaxInvoiceRequest {
+  readonly id: string;
+  readonly documentId: string;
+  readonly flatNo: string;
+  readonly proformaNo: string;
+  readonly period: string;
+  readonly grossPaise: number;
+  readonly receiptNos: string;
+  readonly paidOn: string;
+  readonly paidPaise: number;
+  readonly requestedBy: string | null;
+  readonly requestedAt: string;
+  readonly taxInvoiceNo: string | null;
+  readonly decidedAt?: string;
+  readonly email?: { readonly state: 'sent' | 'failed' | 'blocked' | 'in-app' | 'none'; readonly note: string | null; readonly at: string | null };
+}
+
+export interface TaxInvoiceQueue {
+  readonly available: boolean;
+  readonly mode: 'immediate' | 'approval';
+  readonly pending: TaxInvoiceRequest[];
+  readonly recent: TaxInvoiceRequest[];
+}
+
+export function listTaxInvoiceQueue(client: ApiClient): Promise<TaxInvoiceQueue> {
+  return client.get('/api/tax-invoice-requests');
+}
+
+export interface TaxInvoiceApproval {
+  readonly approved: number;
+  readonly failed: number;
+  readonly results: ReadonlyArray<{ id: string; ok: boolean; flatNo?: string; taxInvoiceNo?: string; email?: string; emailNote?: string; error?: string }>;
+}
+
+export function approveTaxInvoices(client: ApiClient, ids: string[]): Promise<TaxInvoiceApproval> {
+  return client.post('/api/tax-invoice-requests/approve', { ids });
+}
+
+export function resendTaxInvoice(client: ApiClient, documentId: string): Promise<{ email: string; note: string }> {
+  return client.post(`/api/billing/documents/${encodeURIComponent(documentId)}/resend-tax-invoice`, {});
+}
