@@ -12,7 +12,7 @@ export const ASSOCIATION = 'Mani Vista Residents Association';
 export const ADDRESS = 'Mani Vista Complex, Block A, New Town, Kolkata, West Bengal - 700156';
 export const EMAIL = 'mvra2026@gmail.com';
 /** Set when the Association supplies it. Null prints a visible placeholder. */
-export const PHONE: string | null = null;
+export const PHONE: string | null = '+91 98361 10900';
 export const PHONE_TEXT = PHONE ?? '+91 [to be updated]';
 export const UPDATED = '24 November 2026';
 
