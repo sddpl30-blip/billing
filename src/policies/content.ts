@@ -1,8 +1,8 @@
 /**
- * The four public pages a payment gateway asks for: terms, refund and
+ * The public pages a payment gateway asks for: about us, terms, refund and
  * cancellation, privacy, contact. The wording is the Association's own text.
- * They open without signing in, at /terms, /refund-policy, /privacy and
- * /contact, and are linked from the sign-in screen and every page's footer.
+ * They open without signing in, at /about, /terms, /refund-policy, /privacy
+ * and /contact, and are linked from the sign-in screen and every page's footer.
  *
  * The contact details here must read exactly as the bank account's records do.
  * The phone number is not yet known: it prints as a placeholder until set.
@@ -16,7 +16,7 @@ export const PHONE: string | null = '+91 98361 10900';
 export const PHONE_TEXT = PHONE ?? '+91 [to be updated]';
 export const UPDATED = '24 November 2026';
 
-export type PolicyKey = 'terms' | 'refund-policy' | 'privacy' | 'contact';
+export type PolicyKey = 'about' | 'terms' | 'refund-policy' | 'privacy' | 'contact';
 
 export interface Block { readonly heading?: string; readonly text?: string; readonly list?: readonly string[] }
 
@@ -30,6 +30,20 @@ export interface PolicyPage {
 }
 
 export const POLICY_PAGES: readonly PolicyPage[] = [
+  {
+    key: 'about', path: '/about', navLabel: 'About Us', title: 'About Mani Vista Residents Association', updated: null,
+    blocks: [
+      { text: 'Mani Vista Residents Association (MVRA) is the resident body of the Mani Vista Complex, Block A, New Town, Kolkata, West Bengal - 700156. It is run by an elected Committee of owners and looks after the common needs of the complex: maintenance, security, housekeeping, common-area upkeep, utilities and shared amenities.' },
+      { heading: 'What we do', list: [
+        'Raise monthly maintenance bills and collect dues from owners.',
+        "Manage the Association's accounts openly, with every receipt, refund and correction approved by a second Committee member and kept on record.",
+        'Issue proforma invoices, receipts and, where applicable, GST tax invoices.',
+        'Handle bookings of hall and shared facilities, and resident requests.',
+      ] },
+      { heading: 'Resident billing portal', text: "This portal lets each owner see their bills, pay dues online through ICICI Bank's payment gateway, and download receipts and invoices. Payments go directly to the Association's bank account." },
+      { heading: 'Contact', text: `${EMAIL} \u00b7 ${PHONE_TEXT} \u00b7 ${ADDRESS}` },
+    ],
+  },
   {
     key: 'terms', path: '/terms', navLabel: 'Terms and Conditions', title: 'Terms and Conditions', updated: UPDATED,
     blocks: [
