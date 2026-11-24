@@ -7,7 +7,7 @@ on:
 jobs:
   # The app, the engine and every server suite, against a real Postgres.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
@@ -41,7 +41,7 @@ jobs:
 
   # The two Playwright suites: the engine and stores in a real browser.
   browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
@@ -77,7 +77,7 @@ jobs:
 
   # Both images build. Nothing has ever proved they do until this.
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - run: docker build -f Dockerfile -t societybooks-api .
