@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Mail, ArrowRight, ShieldCheck, RefreshCw, ChevronLeft, Lock } from 'lucide-react';
 import { ThemeSwitcher } from './ThemeSwitcher';
 import { apiBase } from '../api/session';
+import { PolicyLinks } from './PolicyPages';
 
 /**
  * What the server can do for sign-in.
@@ -392,6 +393,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, server }) => 
               </button>
             </form>
           )}
+        </div>
+        <div className="border-t border-[var(--mv-border)] px-4 py-3">
+          <PolicyLinks />
         </div>
       </div>
     </div>

@@ -3,11 +3,18 @@ try { document.documentElement.dataset.mvTheme = localStorage.getItem('mani-vist
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+import { PolicyFooter, PolicyPageView } from './components/PolicyPages';
+import { policyForPath } from './policies/content';
 import './index.css';
+
+// The policy pages a payment gateway needs open without signing in: they are
+// plain text and never start the app, so they work with no session at all.
+const baseUrl = (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/';
+const policy = policyForPath(window.location.pathname, baseUrl);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {policy !== null ? <PolicyPageView page={policy} /> : (<><App /><PolicyFooter /></>)}
   </StrictMode>,
 );
 
