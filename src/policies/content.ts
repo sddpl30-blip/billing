@@ -33,7 +33,7 @@ export const POLICY_PAGES: readonly PolicyPage[] = [
   {
     key: 'about', path: '/about', navLabel: 'About Us', title: 'About Mani Vista Residents Association', updated: null,
     blocks: [
-      { text: 'Mani Vista Residents Association (MVRA) is the resident body of the Mani Vista Complex, Block A, New Town, Kolkata, West Bengal - 700156. It is run by an elected Committee of owners and looks after the common needs of the complex: maintenance, security, housekeeping, common-area upkeep, utilities and shared amenities.' },
+      { text: `Mani Vista Residents Association (MVRA) is the resident body of the Mani Vista Complex, ${ADDRESS}. It is run by an elected Committee of owners and looks after the common needs of the complex: maintenance, security, housekeeping, common-area upkeep, utilities and shared amenities.` },
       { heading: 'What we do', list: [
         'Raise monthly maintenance bills and collect dues from owners.',
         "Manage the Association's accounts openly, with every receipt, refund and correction approved by a second Committee member and kept on record.",
