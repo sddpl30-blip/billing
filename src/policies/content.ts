@@ -9,7 +9,7 @@
  */
 
 export const ASSOCIATION = 'Mani Vista Residents Association';
-export const ADDRESS = '3 NSC Bose Road, Tollygunge, Kolkata';
+export const ADDRESS = 'Mani Vista, 3 NSC Bose Road, Regent Park, Tollygunge, Kolkata 700040';
 export const EMAIL = 'mvra2026@gmail.com';
 /** Set when the Association supplies it. Null prints a visible placeholder. */
 export const PHONE: string | null = '+91 98361 10900';
